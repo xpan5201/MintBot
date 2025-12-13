@@ -1,0 +1,375 @@
+"""
+用户会话管理模块
+
+维护当前登录用户的会话状态和数据
+"""
+
+from typing import Any, Dict, Optional
+
+from src.auth.user_data_manager import UserDataManager
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class UserSession:
+    """用户会话管理器 - 单例模式"""
+
+    _instance = None
+    _initialized = False
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        """初始化用户会话"""
+        if not self._initialized:
+            self.current_user: Optional[Dict[str, Any]] = None
+            self.session_token: Optional[str] = None
+            self.data_manager = UserDataManager()
+            self._initialized = True
+            logger.info("用户会话管理器初始化完成")
+
+    def login(self, user: Dict[str, Any], session_token: str):
+        """用户登录
+
+        Args:
+            user: 用户信息字典
+            session_token: 会话令牌
+        """
+        self.current_user = user
+        self.session_token = session_token
+        logger.info(f"用户 {user['username']} (ID: {user['id']}) 已登录")
+
+    def logout(self):
+        """用户登出"""
+        if self.current_user:
+            logger.info(f"用户 {self.current_user['username']} 已登出")
+        self.current_user = None
+        self.session_token = None
+
+    def is_logged_in(self) -> bool:
+        """检查是否已登录
+
+        Returns:
+            是否已登录
+        """
+        return self.current_user is not None
+
+    def get_user_id(self) -> Optional[int]:
+        """获取当前用户 ID
+
+        Returns:
+            用户 ID，未登录返回 None
+        """
+        if self.current_user:
+            return self.current_user['id']
+        return None
+
+    def get_username(self) -> Optional[str]:
+        """获取当前用户名
+
+        Returns:
+            用户名，未登录返回 None
+        """
+        if self.current_user:
+            return self.current_user['username']
+        return None
+
+    def get_user_info(self) -> Optional[Dict[str, Any]]:
+        """获取当前用户信息
+
+        Returns:
+            用户信息字典，未登录返回 None
+        """
+        return self.current_user
+
+    # ==================== 数据管理快捷方法 ====================
+
+    def add_contact(self, name: str, avatar: str = "👤", status: str = "在线") -> bool:
+        """添加联系人
+
+        Args:
+            name: 联系人名称
+            avatar: 头像
+            status: 状态
+
+        Returns:
+            是否添加成功
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法添加联系人")
+            return False
+        return self.data_manager.add_contact(user_id, name, avatar, status)
+
+    def get_contacts(self):
+        """获取联系人列表
+
+        Returns:
+            联系人列表
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法获取联系人")
+            return []
+        return self.data_manager.get_contacts(user_id)
+
+    def update_contact(self, old_name: str, new_name: str) -> bool:
+        """重命名联系人
+
+        Args:
+            old_name: 旧名称
+            new_name: 新名称
+
+        Returns:
+            是否更新成功
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法更新联系人")
+            return False
+        return self.data_manager.update_contact(user_id, old_name, new_name)
+
+    def delete_contact(self, name: str) -> bool:
+        """删除联系人
+
+        Args:
+            name: 联系人名称
+
+        Returns:
+            是否删除成功
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法删除联系人")
+            return False
+        return self.data_manager.delete_contact(user_id, name)
+
+    def add_message(self, contact_name: str, role: str, content: str) -> bool:
+        """添加聊天消息
+
+        Args:
+            contact_name: 联系人名称
+            role: 角色 (user/assistant/system)
+            content: 消息内容
+
+        Returns:
+            是否添加成功
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法添加消息")
+            return False
+        return self.data_manager.add_message(user_id, contact_name, role, content)
+
+    def get_chat_history(self, contact_name: str, limit: int = 100, offset: int = 0):
+        """获取聊天历史 (v2.30.12: 添加分页支持)
+
+        Args:
+            contact_name: 联系人名称
+            limit: 最多返回的消息数量
+            offset: 偏移量（用于分页加载）
+
+        Returns:
+            消息列表
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法获取聊天历史")
+            return []
+        return self.data_manager.get_chat_history(user_id, contact_name, limit, offset)
+
+    def get_chat_history_count(self, contact_name: str) -> int:
+        """获取聊天历史总数 (v2.30.12: 新增)
+
+        Args:
+            contact_name: 联系人名称
+
+        Returns:
+            消息总数
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法获取聊天历史总数")
+            return 0
+        return self.data_manager.get_chat_history_count(user_id, contact_name)
+
+    def clear_chat_history(self, contact_name: str) -> bool:
+        """清空聊天历史
+
+        Args:
+            contact_name: 联系人名称
+
+        Returns:
+            是否清空成功
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法清空聊天历史")
+            return False
+        return self.data_manager.clear_chat_history(user_id, contact_name)
+
+    def save_settings(self, settings: Dict[str, Any]) -> bool:
+        """保存用户设置
+
+        Args:
+            settings: 设置字典
+
+        Returns:
+            是否保存成功
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法保存设置")
+            return False
+        return self.data_manager.save_user_settings(user_id, settings)
+
+    def get_settings(self) -> Optional[Dict[str, Any]]:
+        """获取用户设置
+
+        Returns:
+            设置字典，如果不存在返回 None
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法获取设置")
+            return None
+        return self.data_manager.get_user_settings(user_id)
+
+    def export_data(self, export_dir: str = "data/exports") -> Optional[str]:
+        """导出用户数据
+
+        Args:
+            export_dir: 导出目录
+
+        Returns:
+            导出文件路径，失败返回 None
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法导出数据")
+            return None
+        return self.data_manager.export_user_data(user_id, export_dir)
+
+    def import_data(self, filepath: str) -> bool:
+        """导入用户数据
+
+        Args:
+            filepath: 导入文件路径
+
+        Returns:
+            是否导入成功
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法导入数据")
+            return False
+        return self.data_manager.import_user_data(user_id, filepath)
+
+    # ==================== 头像管理 - v2.22.0 新增 ====================
+
+    def update_user_avatar(self, avatar: str) -> bool:
+        """更新用户头像
+
+        Args:
+            avatar: 头像（emoji 或图片路径）
+
+        Returns:
+            是否更新成功
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法更新用户头像")
+            return False
+
+        from src.auth.database import UserDatabase
+        db = UserDatabase()
+        success = db.update_user_avatar(user_id, avatar)
+
+        if success and self.current_user:
+            self.current_user['user_avatar'] = avatar
+            logger.info(f"用户 {user_id} 的头像已更新")
+
+        return success
+
+    def update_ai_avatar(self, avatar: str) -> bool:
+        """更新AI助手头像
+
+        Args:
+            avatar: 头像（emoji 或图片路径）
+
+        Returns:
+            是否更新成功
+        """
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法更新AI助手头像")
+            return False
+
+        from src.auth.database import UserDatabase
+        db = UserDatabase()
+        success = db.update_ai_avatar(user_id, avatar)
+
+        if success and self.current_user:
+            self.current_user['ai_avatar'] = avatar
+            logger.info(f"用户 {user_id} 的AI助手头像已更新")
+
+        return success
+
+    def get_user_avatar(self) -> str:
+        """获取用户头像
+
+        Returns:
+            用户头像（emoji 或图片路径），未登录返回默认值
+        """
+        if self.current_user and 'user_avatar' in self.current_user:
+            return self.current_user['user_avatar']
+
+        user_id = self.get_user_id()
+        if user_id is None:
+            return '👤'
+
+        from src.auth.database import UserDatabase
+        db = UserDatabase()
+        avatars = db.get_user_avatars(user_id)
+
+        if avatars:
+            if self.current_user:
+                self.current_user['user_avatar'] = avatars['user_avatar']
+                self.current_user['ai_avatar'] = avatars['ai_avatar']
+            return avatars['user_avatar']
+
+        return '👤'
+
+    def get_ai_avatar(self) -> str:
+        """获取AI助手头像
+
+        Returns:
+            AI助手头像（emoji 或图片路径），未登录返回默认值
+        """
+        if self.current_user and 'ai_avatar' in self.current_user:
+            return self.current_user['ai_avatar']
+
+        user_id = self.get_user_id()
+        if user_id is None:
+            return '🐱'
+
+        from src.auth.database import UserDatabase
+        db = UserDatabase()
+        avatars = db.get_user_avatars(user_id)
+
+        if avatars:
+            if self.current_user:
+                self.current_user['user_avatar'] = avatars['user_avatar']
+                self.current_user['ai_avatar'] = avatars['ai_avatar']
+            return avatars['ai_avatar']
+
+        return '🐱'
+
+
+# 创建全局单例实例
+user_session = UserSession()
+

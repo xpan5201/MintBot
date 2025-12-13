@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""MintChat - 多模态猫娘女仆智能体（Material Design 3、浅色主题、QQ风格、流式输出、性能优化）"""
+
+import sys
+from pathlib import Path
+from typing import Dict, Any
+
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtGui import QFont
+from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
+
+from src.version import __version__, print_version_info
+from src.gui.light_chat_window import LightChatWindow
+from src.gui.auth_manager import AuthManager
+from src.auth.auth_service import AuthService
+from src.auth.user_session import user_session
+from src.utils.logger import logger
+from src.utils.dependency_checker import check_optional_dependencies
+
+
+def _qt_message_handler(msg_type, context, message):
+    """统一处理 Qt 日志，过滤掉已知的无害噪声信息。
+
+    目前主要用于屏蔽大量重复的：
+        QBuffer::seek: Invalid pos: XXXX
+    这类信息来自 Qt 内部对内存缓冲区的探测性 seek，不影响实际音频播放，
+    但会严重干扰控制台日志查看，因此在这里安全地忽略。
+    """
+    # 屏蔽 QBuffer::seek 的无效位置提示
+    if isinstance(message, str) and "QBuffer::seek: Invalid pos" in message:
+        return
+
+    # 其他 Qt 消息仍然通过 Python 日志系统输出，方便排查问题
+    if msg_type == QtMsgType.QtWarningMsg:
+        logger.warning(message)
+    elif msg_type in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
+        logger.error(message)
+    else:
+        # 包含 QtDebugMsg / QtInfoMsg 等
+        logger.info(message)
+
+
+# 安装 Qt 全局消息处理器（必须在 QApplication 创建之前）
+qInstallMessageHandler(_qt_message_handler)
+
+from src.utils.exceptions import handle_exception
+
+
+def _restore_session(session_file: Path) -> bool:
+    """尝试恢复用户会话（优化：减少文件I/O和异常处理开销）"""
+    if not session_file.exists():
+        return False
+
+    try:
+        session_token = session_file.read_text(encoding='utf-8').strip()
+        if not session_token:
+            logger.warning("会话文件为空")
+            return False
+
+        auth_service = AuthService()
+        if auth_service.restore_session(session_token):
+            user = auth_service.get_current_user()
+            logger.info(f"会话恢复成功，欢迎回来：{user['username']}")
+            user_session.login(user, session_token)
+            return True
+
+        logger.info("会话已过期，需要重新登录")
+        session_file.unlink(missing_ok=True)
+        return False
+    except Exception as e:
+        handle_exception(e, logger, "恢复会话失败")
+        session_file.unlink(missing_ok=True)
+        return False
+
+
+def main() -> None:
+    """主函数"""
+    # 启动前检查可选依赖，缺失时给出明确提示
+    deps_status = check_optional_dependencies()
+    if deps_status["missing"]:
+        logger.error(
+            "缺失依赖将导致高级功能不可用：%s。请安装后重启。",
+            ", ".join(deps_status["missing"]),
+        )
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("MintChat")
+    app.setApplicationVersion(__version__)
+    app.setOrganizationName("MintChat")
+
+    font = QFont("Microsoft YaHei UI", 10)
+    app.setFont(font)
+
+    # v2.48.10: 初始化 TTS 服务
+    try:
+        from src.multimodal import init_tts
+        if init_tts:
+            init_tts()
+    except Exception as e:
+        logger.warning(f"TTS 初始化失败: {e}")
+        logger.info("应用将继续运行，但 TTS 功能不可用")
+
+    session_file = Path("data/session.txt")
+    if _restore_session(session_file):
+        window = LightChatWindow()
+        window.show()
+        sys.exit(app.exec())
+
+    auth_manager = AuthManager(illustration_path="data/images/login_illustration.png")
+
+    def on_login_success(user: Dict[str, Any]) -> None:
+        """处理登录成功事件（优化：减少导入开销，合并操作）"""
+        logger.info(f"登录成功！欢迎，{user['username']}！")
+
+        try:
+            session_token = user.get('session_token')
+            remember_me = user.get('remember_me', False)
+
+            if session_token and remember_me:
+                session_file.parent.mkdir(parents=True, exist_ok=True)
+                session_file.write_text(session_token, encoding='utf-8')
+                logger.info(f"会话已保存到: {session_file}")
+            else:
+                session_file.unlink(missing_ok=True)
+                logger.info("已清除保存的会话")
+
+            user_session.login(user, session_token)
+        except Exception as e:
+            handle_exception(e, logger, "保存会话失败")
+
+        window = LightChatWindow()
+
+        from PyQt6.QtCore import QPropertyAnimation, QEasingCurve
+        from PyQt6.QtWidgets import QGraphicsOpacityEffect
+
+        auth_opacity_effect = QGraphicsOpacityEffect(auth_manager)
+        auth_manager.setGraphicsEffect(auth_opacity_effect)
+
+        auth_fade_out = QPropertyAnimation(auth_opacity_effect, b"opacity")
+        auth_fade_out.setDuration(300)
+        auth_fade_out.setStartValue(1.0)
+        auth_fade_out.setEndValue(0.0)
+        auth_fade_out.setEasingCurve(QEasingCurve.Type.InCubic)
+        auth_fade_out.finished.connect(lambda: (auth_manager.close(), window.show()))
+        auth_fade_out.start()
+
+    auth_manager.login_success.connect(on_login_success)
+    auth_manager.show()
+
+    try:
+        sys.exit(app.exec())
+    except KeyboardInterrupt:
+        logger.info("程序被用户中断")
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    print()
+    print_version_info()
+    print("正在启动 GUI...")
+    print()
+
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("程序被用户中断")
+        sys.exit(0)
+    except Exception as e:
+        handle_exception(e, logger, "程序运行出错")
+        sys.exit(1)

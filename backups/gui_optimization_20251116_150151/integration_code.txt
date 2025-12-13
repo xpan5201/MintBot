@@ -1,0 +1,20 @@
+
+# ==================== GUI 性能优化集成 v2.30.27 ====================
+# 在 LightChatWindow.__init__() 方法末尾添加以下代码：
+
+from src.gui.chat_window_optimizer import ChatWindowOptimizer
+
+# 初始化性能优化器
+self.performance_optimizer = ChatWindowOptimizer(
+    scroll_area=self.scroll_area,
+    enable_gpu=True,
+    enable_memory_management=True,
+    max_messages=200,
+)
+
+# 应用优化到现有窗口
+self.performance_optimizer.optimize_existing_window(self)
+
+logger.info("✅ GUI 性能优化已启用")
+
+# ==================== 集成完成 ====================
