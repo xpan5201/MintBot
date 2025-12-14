@@ -59,6 +59,7 @@ class MultiLevelCache:
         enable_redis: bool = True,
         connect_timeout: float = 2.0,
         socket_timeout: float = 2.0,
+        validate_connection: bool = True,
     ):
         """
         初始化多级缓存
@@ -73,6 +74,7 @@ class MultiLevelCache:
             enable_redis: 是否启用 Redis 作为 L2 缓存
             connect_timeout: Redis 连接超时时间（秒）
             socket_timeout: Redis 读写超时时间（秒）
+            validate_connection: 是否在初始化时 ping Redis
         """
         self.default_ttl = max(0, int(default_ttl))
         self.max_memory_items = max(0, int(max_memory_items))
@@ -98,9 +100,12 @@ class MultiLevelCache:
                     socket_connect_timeout=max(0.1, float(connect_timeout)),
                     socket_timeout=max(0.1, float(socket_timeout)),
                 )
-                # 测试连接
-                self.redis_client.ping()
-                logger.info("Redis 缓存已连接: %s:%s", redis_host, redis_port)
+                if validate_connection:
+                    # 测试连接：可能造成启动延迟，允许通过 validate_connection 关闭
+                    self.redis_client.ping()
+                    logger.info("Redis 缓存已连接: %s:%s", redis_host, redis_port)
+                else:
+                    logger.info("Redis 客户端已配置: %s:%s", redis_host, redis_port)
             except Exception as e:
                 self.redis_client = None
                 self.redis_enabled = False

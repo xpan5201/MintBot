@@ -402,6 +402,10 @@ class AgentConfig(BaseModel):
         default=False,
         description="启用 Redis 作为二级缓存（关闭后仅使用内存缓存）",
     )
+    redis_validate_on_startup: bool = Field(
+        default=False,
+        description="启动时是否 ping Redis 验证连接（开启会增加启动耗时）",
+    )
     redis_host: str = Field(
         default="127.0.0.1",
         description="Redis 主机地址",
@@ -429,6 +433,16 @@ class AgentConfig(BaseModel):
         default=1.0,
         ge=0.1,
         description="Redis 读写超时时间（秒）",
+    )
+
+    # 工具系统配置（v3.3.5）
+    enable_builtin_tools: bool = Field(
+        default=True,
+        description="是否启用内置高级工具（Bing/高德等，依赖 aiohttp/bs4 等）",
+    )
+    enable_mcp_tools: bool = Field(
+        default=True,
+        description="是否启用 MCP 工具注册（需要配置 MCP.servers，且安装 mcp SDK）",
     )
 
     # v2.30.36 智能日记系统配置

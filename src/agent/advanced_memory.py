@@ -346,6 +346,16 @@ class DiaryMemory:
 
     def _init_emotion_keywords(self) -> None:
         """初始化情感关键词字典 (v2.30.34 性能优化)"""
+        cls = self.__class__
+        cached_keywords = getattr(cls, "_EMOTION_KEYWORDS_CACHE", None)
+        if cached_keywords is not None:
+            self.emotion_keywords = cached_keywords
+            self.negation_words = getattr(cls, "_NEGATION_WORDS_CACHE", [])
+            self.degree_words = getattr(cls, "_DEGREE_WORDS_CACHE", {})
+            self.emotion_opposite = getattr(cls, "_EMOTION_OPPOSITE_CACHE", {})
+            self.transition_words = getattr(cls, "_TRANSITION_WORDS_CACHE", [])
+            return
+
         self.emotion_keywords = {
             "happy": {
                 "开心": 1.0, "高兴": 1.0, "快乐": 1.0, "愉快": 1.0, "喜悦": 1.0,
@@ -410,9 +420,21 @@ class DiaryMemory:
         }
 
         self.transition_words = ["但是", "但", "可是", "不过", "然而", "却", "只是", "就是"]
+        # v3.3.5: 关键词大字典只读复用，避免多实例重复构造
+        setattr(cls, "_EMOTION_KEYWORDS_CACHE", self.emotion_keywords)
+        setattr(cls, "_NEGATION_WORDS_CACHE", self.negation_words)
+        setattr(cls, "_DEGREE_WORDS_CACHE", self.degree_words)
+        setattr(cls, "_EMOTION_OPPOSITE_CACHE", self.emotion_opposite)
+        setattr(cls, "_TRANSITION_WORDS_CACHE", self.transition_words)
 
     def _init_topic_keywords(self) -> None:
         """初始化主题关键词字典 (v2.30.34 性能优化)"""
+        cls = self.__class__
+        cached_topics = getattr(cls, "_TOPIC_KEYWORDS_CACHE", None)
+        if cached_topics is not None:
+            self.topic_keywords = cached_topics
+            return
+
         self.topic_keywords = {
             "work": {
                 "工作": 2.0, "项目": 2.0, "任务": 1.8, "会议": 2.0,
@@ -453,6 +475,8 @@ class DiaryMemory:
                 "聊天": 1.2, "交流": 1.2, "沟通": 1.5, "理解": 1.2,
             },
         }
+        # v3.3.5: 主题关键词字典只读复用，避免多实例重复构造
+        setattr(cls, "_TOPIC_KEYWORDS_CACHE", self.topic_keywords)
 
     def _extract_with_llm(self, content: str) -> Dict[str, Any]:
         """
@@ -1628,6 +1652,7 @@ class LoreBook:
                 enable_redis=getattr(settings.agent, "redis_enabled", True),
                 connect_timeout=getattr(settings.agent, "redis_connect_timeout", 2.0),
                 socket_timeout=getattr(settings.agent, "redis_socket_timeout", 2.0),
+                validate_connection=bool(getattr(settings.agent, "redis_validate_on_startup", False)),
             )
 
             # 异步处理器

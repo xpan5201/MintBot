@@ -138,7 +138,7 @@ class LocalEmbeddings:
         if not texts:
             return []
 
-        results = []
+        results: List[Optional[List[float]]] = [None] * len(texts)
         uncached_texts = []
         uncached_indices = []
 
@@ -147,7 +147,7 @@ class LocalEmbeddings:
             for i, text in enumerate(texts):
                 cached_embedding = self.cache.get(text, self.model_name)
                 if cached_embedding is not None:
-                    results.append(cached_embedding)
+                    results[i] = cached_embedding
                 else:
                     uncached_texts.append(text)
                     uncached_indices.append(i)
@@ -177,9 +177,9 @@ class LocalEmbeddings:
                     for text, embedding in zip(uncached_texts, embeddings_list):
                         self.cache.set(text, self.model_name, embedding)
 
-                # 插入到结果中
+                # 回填到结果中（O(n)，避免 list.insert 的 O(n^2)）
                 for idx, embedding in zip(uncached_indices, embeddings_list):
-                    results.insert(idx, embedding)
+                    results[idx] = embedding
 
                 # 性能统计
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
@@ -197,7 +197,9 @@ class LocalEmbeddings:
                 logger.error(f"生成 embeddings 失败: {e}")
                 raise
 
-        return results
+        if any(item is None for item in results):
+            raise RuntimeError("embedding 结果回填失败：存在空结果")
+        return [item for item in results if item is not None]
 
     def embed_query(self, text: str) -> List[float]:
         """
@@ -264,4 +266,3 @@ class LocalEmbeddings:
             stats["cache"] = self.cache.get_stats()
 
         return stats
-

@@ -7,7 +7,12 @@
 - 提升可维护性：集中常量与验证帮助函数，降低重复代码。
 """
 
+import asyncio
+import ast
+import contextvars
 import logging
+import math
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
@@ -21,12 +26,18 @@ try:
     # LangChain < 0.2
     from langchain.tools import tool  # type: ignore
 except Exception:  # pragma: no cover - 兼容不同 LangChain 版本
-    # LangChain >= 0.2（工具在 langchain_core）
-    from langchain_core.tools import tool  # type: ignore
+    try:
+        # LangChain >= 0.2（工具在 langchain_core）
+        from langchain_core.tools import tool  # type: ignore
+    except Exception:  # pragma: no cover - 环境依赖差异
+        # 允许在缺少 LangChain 的环境下导入本模块（例如仅运行部分测试/工具）
+        def tool(func: Callable) -> Callable:  # type: ignore[misc]
+            return func
 
 from src.config.settings import settings
 from src.utils.logger import get_logger
 from src.utils.exceptions import ValidationError, ResourceError
+from src.utils.tool_context import tool_timeout_s_var
 
 logger = get_logger(__name__)
 
@@ -43,6 +54,123 @@ DEFAULT_TOOL_TIMEOUT = max(0.1, float(getattr(settings.agent, "tool_timeout_s", 
 DEFAULT_TOOL_WORKERS = max(1, int(getattr(settings.agent, "tool_executor_workers", 4)))
 # 防御型限制：防止单次调用过大输入导致内存放大
 DEFAULT_TOOL_MAX_ARGS_LEN = 2000
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_SENSITIVE_FILENAMES = {
+    "config.yaml",
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+}
+_SENSITIVE_DIRNAMES = {".git", ".hg", ".svn"}
+
+
+def _is_sensitive_path(path: Path) -> bool:
+    try:
+        parts_lower = {p.lower() for p in path.parts}
+    except Exception:
+        parts_lower = set()
+    if parts_lower.intersection(_SENSITIVE_DIRNAMES):
+        return True
+    try:
+        name = path.name.lower()
+    except Exception:
+        return False
+    if name in _SENSITIVE_FILENAMES:
+        return True
+    if name.startswith(".env."):
+        return True
+    return False
+
+
+_SAFE_TITLE_RE = re.compile(r"[^0-9a-zA-Z\u4e00-\u9fff _.-]+")
+
+
+def _sanitize_note_title(value: str, *, max_len: int = 60) -> str:
+    title = (value or "").strip()
+    title = _SAFE_TITLE_RE.sub("_", title)
+    title = re.sub(r"_+", "_", title).strip(" ._")
+    if not title:
+        title = "note"
+    return title[:max_len]
+
+
+def _safe_eval_math_expression(expression: str) -> object:
+    """
+    安全计算数学表达式（替代 eval），避免大整数/幂运算导致的 DoS 风险。
+    仅允许：数字常量、括号、+ - * / // 以及逗号生成 tuple。
+    """
+    if "**" in expression:
+        raise ValueError("表达式包含不允许的运算符: **")
+
+    node = ast.parse(expression, mode="eval")
+
+    max_nodes = 100
+    visited = 0
+    max_abs_int = 10**50
+
+    def ensure_safe_number(value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("不支持 bool")
+        if isinstance(value, int):
+            if abs(value) > max_abs_int:
+                raise OverflowError("整数过大")
+            return value
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise OverflowError("浮点数溢出")
+            return value
+        return value
+
+    def walk(n: ast.AST) -> object:
+        nonlocal visited
+        visited += 1
+        if visited > max_nodes:
+            raise ValueError("表达式过于复杂")
+
+        if isinstance(n, ast.Expression):
+            return walk(n.body)
+
+        if isinstance(n, ast.Constant):
+            if isinstance(n.value, (int, float)) and not isinstance(n.value, bool):
+                return ensure_safe_number(n.value)
+            raise ValueError("仅支持数字常量")
+
+        if isinstance(n, ast.Tuple):
+            return tuple(walk(elt) for elt in n.elts)
+
+        if isinstance(n, ast.UnaryOp):
+            operand = walk(n.operand)
+            if not isinstance(operand, (int, float)):
+                raise ValueError("一元运算仅支持数字")
+            if isinstance(n.op, ast.UAdd):
+                return ensure_safe_number(+operand)
+            if isinstance(n.op, ast.USub):
+                return ensure_safe_number(-operand)
+            raise ValueError("不支持的一元运算")
+
+        if isinstance(n, ast.BinOp):
+            left = walk(n.left)
+            right = walk(n.right)
+            if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+                raise ValueError("二元运算仅支持数字")
+
+            if isinstance(n.op, ast.Add):
+                return ensure_safe_number(left + right)
+            if isinstance(n.op, ast.Sub):
+                return ensure_safe_number(left - right)
+            if isinstance(n.op, ast.Mult):
+                return ensure_safe_number(left * right)
+            if isinstance(n.op, ast.Div):
+                return ensure_safe_number(left / right)
+            if isinstance(n.op, ast.FloorDiv):
+                return ensure_safe_number(left // right)
+            raise ValueError("不支持的运算符")
+
+        raise ValueError("表达式包含不允许的语法")
+
+    return walk(node)
 
 
 @dataclass
@@ -240,13 +368,16 @@ def calculator(expression: str) -> str:
         if len(expression) > 200:
             return "抱歉主人，表达式太长了喵~ 请简化一下"
 
-        # 安全的数学表达式求值
-        result = eval(expression, {"__builtins__": {}}, {})
+        # 安全的数学表达式求值（替代 eval，避免 DoS 风险）
+        result = _safe_eval_math_expression(expression)
         logger.info("计算成功: %s = %s", expression, result)
         return f"计算结果：{result} 喵~"
     except ZeroDivisionError:
         logger.warning("除零错误: %s", expression)
         return "抱歉主人，不能除以零喵~"
+    except (OverflowError, ValueError) as e:
+        logger.warning("表达式不安全或超限: %s (%s)", expression, e)
+        return f"抱歉主人，表达式不安全或超出限制喵~ 错误: {str(e)}"
     except SyntaxError:
         logger.warning("语法错误: %s", expression)
         return "抱歉主人，表达式格式不正确喵~"
@@ -333,13 +464,18 @@ def save_note(title: str, content: str) -> str:
         str: 保存结果
     """
     try:
+        content_size = len(content.encode("utf-8"))
+        if content_size > MAX_WRITE_BYTES:
+            return f"抱歉主人，笔记内容太大了（{content_size / 1024 / 1024:.2f}MB，超过10MB限制）喵~"
+
         # 创建笔记目录
         notes_dir = Path(settings.data_dir) / "notes"
         notes_dir.mkdir(parents=True, exist_ok=True)
 
         # 生成文件名（使用时间戳避免重复）
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{timestamp}_{title}.txt"
+        safe_title = _sanitize_note_title(title)
+        filename = f"{timestamp}_{safe_title}.txt"
         filepath = notes_dir / filename
 
         # 保存笔记
@@ -362,22 +498,39 @@ def _validate_path(
     *,
     must_exist: bool = False,
     must_be_file: bool = False,
+    must_be_dir: bool = False,
     base_dir: Optional[Path] = None,
 ) -> Tuple[Optional[Path], Optional[str]]:
     if not path_str or not isinstance(path_str, str):
         return None, "文件路径无效"
 
-    base = Path.cwd() if base_dir is None else base_dir.resolve()
-    path = (base / path_str).resolve() if not Path(path_str).is_absolute() else Path(path_str).resolve()
+    root = PROJECT_ROOT.resolve()
+    base_raw = Path(".") if base_dir is None else base_dir
+    if base_raw.is_absolute():
+        base = base_raw.resolve()
+    else:
+        base = (root / base_raw).resolve()
+    try:
+        base.relative_to(root)
+    except ValueError:
+        return None, "抱歉主人，只能访问项目目录内的文件喵~"
+
+    raw_path = Path(path_str)
+    path = raw_path.resolve() if raw_path.is_absolute() else (base / raw_path).resolve()
     try:
         path.relative_to(base)
     except ValueError:
         return None, "抱歉主人，只能访问项目目录内的文件喵~"
 
+    if _is_sensitive_path(path):
+        return None, "抱歉主人，出于安全考虑，无法访问该文件喵~"
+
     if must_exist and not path.exists():
         return None, f"主人，文件 {path_str} 不存在喵~"
     if must_be_file and path.exists() and not path.is_file():
         return None, f"主人，{path_str} 不是一个文件喵~"
+    if must_be_dir and path.exists() and not path.is_dir():
+        return None, f"主人，{path_str} 不是一个目录喵~"
     return path, None
 
 
@@ -471,7 +624,7 @@ def write_file(filepath: str, content: str, base_dir: str = ".") -> str:
     - 改进错误处理
     """
     try:
-        path, err = _validate_path(filepath, must_exist=False, must_be_file=False, base_dir=Path(base_dir))
+        path, err = _validate_path(filepath, must_exist=False, must_be_file=True, base_dir=Path(base_dir))
         if err:
             logger.warning(err)
             return err
@@ -511,18 +664,10 @@ def list_files(directory: str = ".", base_dir: str = ".") -> str:
         str: 文件列表
     """
     try:
-        base = Path(base_dir).resolve()
-        path = (base / directory).resolve() if not Path(directory).is_absolute() else Path(directory).resolve()
-        try:
-            path.relative_to(base)
-        except ValueError:
-            return "抱歉主人，只能查看项目目录内的文件喵~"
-
-        if not path.exists():
-            return f"主人，目录 {directory} 不存在喵~"
-
-        if not path.is_dir():
-            return f"主人，{directory} 不是一个目录喵~"
+        path, err = _validate_path(directory, must_exist=True, must_be_dir=True, base_dir=Path(base_dir))
+        if err:
+            logger.warning(err)
+            return err
 
         files = []
         dirs = []
@@ -530,8 +675,13 @@ def list_files(directory: str = ".", base_dir: str = ".") -> str:
         for idx, item in enumerate(path.iterdir()):
             if idx >= LIST_FILES_LIMIT:
                 break
+            if _is_sensitive_path(item):
+                continue
             if item.is_file():
-                size = item.stat().st_size
+                try:
+                    size = item.stat().st_size
+                except OSError:
+                    size = 0
                 files.append(f"📄 {item.name} ({size} bytes)")
             elif item.is_dir():
                 dirs.append(f"📁 {item.name}/")
@@ -557,14 +707,20 @@ class ToolRegistry:
 
     def __init__(self):
         """初始化工具注册表"""
+        self._tools_enabled = bool(getattr(settings.agent, "enable_tools", True))
         self._tools: Dict[str, Callable] = {}
         self._stats: Dict[str, ToolStats] = {}
         self._lock = Lock()
-        self._executor = ThreadPoolExecutor(
-            max_workers=DEFAULT_TOOL_WORKERS,
-            thread_name_prefix="mintchat-tool",
-        )
-        self._register_default_tools()
+        # MCP 工具（可选）单独保留列表，便于诊断/兼容脚本
+        self._mcp_tools: List[Callable] = []
+        self._optional_tools_loaded = False
+        self._optional_tools_lock = Lock()
+        self._executor: Optional[ThreadPoolExecutor] = None
+        self._executor_lock = Lock()
+        if self._tools_enabled:
+            self._register_default_tools()
+        else:
+            logger.info("工具系统已在配置中禁用，将不注册任何工具")
         logger.info("工具注册表初始化完成")
 
     @staticmethod
@@ -572,9 +728,24 @@ class ToolRegistry:
         """安全获取工具名称，兼容 LangChain StructuredTool 等对象"""
         return getattr(tool_fn, "name", None) or getattr(tool_fn, "__name__", None) or tool_fn.__class__.__name__
 
+    def _get_executor(self) -> ThreadPoolExecutor:
+        executor = self._executor
+        if executor is not None:
+            return executor
+
+        with self._executor_lock:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(
+                    max_workers=DEFAULT_TOOL_WORKERS,
+                    thread_name_prefix="mintchat-tool",
+                )
+            return self._executor
+
     def _run_with_timeout(self, func: Callable[[], Any], timeout: float) -> Any:
         """在线程池中执行并支持超时控制的帮助函数。"""
-        future = self._executor.submit(func)
+        # contextvars 默认不跨线程传播；这里显式 copy_context() 以便工具实现读取超时等上下文
+        ctx = contextvars.copy_context()
+        future = self._get_executor().submit(ctx.run, func)
         try:
             return future.result(timeout=timeout)
         except FuturesTimeoutError:
@@ -586,7 +757,7 @@ class ToolRegistry:
             self.register_tool(name, fn)
 
     def _register_default_tools(self) -> None:
-        """注册默认工具"""
+        """注册默认工具（轻量、无外部依赖）。"""
         defaults: List[Tuple[str, Callable]] = [
             ("get_current_time", get_current_time),
             ("get_current_date", get_current_date),
@@ -600,21 +771,70 @@ class ToolRegistry:
             ("list_files", list_files),
         ]
         self._register_tools(defaults)
-        # 注册内置高级工具（Bing/高德等），避免重复
-        try:
-            from src.agent.builtin_tools import get_builtin_tools
 
-            builtin = get_builtin_tools()
-            if builtin:
-                for tool_fn in builtin:
-                    tool_name = self._get_tool_name(tool_fn)
-                    if tool_name in self._tools:
-                        logger.debug("跳过重复工具: %s", tool_name)
-                        continue
-                    self.register_tool(tool_name, tool_fn)
-                logger.info("已注册内置高级工具 %d 个", len(builtin))
-        except Exception as e:
-            logger.warning("内置高级工具注册失败: %s", e)
+    def _ensure_optional_tools_loaded(self) -> None:
+        """
+        延迟加载可选工具（builtin_tools/MCP）。
+
+        设计目标：
+        - 避免 import 时就加载 aiohttp/bs4 或启动 MCP server 造成启动变慢
+        - 仅在真正需要 tools 列表/执行工具时加载一次
+        """
+        if not self._tools_enabled:
+            return
+        if self._optional_tools_loaded:
+            return
+
+        with self._optional_tools_lock:
+            if self._optional_tools_loaded:
+                return
+
+            # 1) 注册内置高级工具（Bing/高德等），避免重复
+            if bool(getattr(settings.agent, "enable_builtin_tools", True)):
+                try:
+                    from src.agent.builtin_tools import get_builtin_tools
+
+                    builtin = get_builtin_tools()
+                    if builtin:
+                        for tool_fn in builtin:
+                            tool_name = self._get_tool_name(tool_fn)
+                            with self._lock:
+                                exists = tool_name in self._tools
+                            if exists:
+                                logger.debug("跳过重复工具: %s", tool_name)
+                                continue
+                            self.register_tool(tool_name, tool_fn)
+                        logger.info("已注册内置高级工具 %d 个", len(builtin))
+                except Exception as e:
+                    logger.warning("内置高级工具注册失败: %s", e)
+
+            # 2) 注册 MCP 工具（Model Context Protocol，可选）
+            if bool(getattr(settings.agent, "enable_mcp_tools", True)):
+                cfg = getattr(settings, "mcp", None)
+                servers = getattr(cfg, "servers", None) if cfg else None
+                if not cfg or not getattr(cfg, "enabled", False) or not servers:
+                    self._mcp_tools = []
+                else:
+                    try:
+                        from src.agent.mcp_manager import mcp_manager
+
+                        mcp_tools = mcp_manager.get_tools()
+                        self._mcp_tools = list(mcp_tools)
+                        if mcp_tools:
+                            for tool_fn in mcp_tools:
+                                tool_name = self._get_tool_name(tool_fn)
+                                with self._lock:
+                                    exists = tool_name in self._tools
+                                if exists:
+                                    logger.debug("跳过重复工具: %s", tool_name)
+                                    continue
+                                self.register_tool(tool_name, tool_fn)
+                            logger.info("已注册 MCP 工具 %d 个", len(mcp_tools))
+                    except Exception as e:
+                        self._mcp_tools = []
+                        logger.warning("MCP 工具注册失败: %s", e)
+
+            self._optional_tools_loaded = True
 
     def register_tool(self, name: str, tool_func: Callable) -> None:
         """
@@ -652,6 +872,9 @@ class ToolRegistry:
         Returns:
             Optional[Callable]: 工具函数，如果不存在则返回 None
         """
+        if not self._tools_enabled:
+            return None
+        self._ensure_optional_tools_loaded()
         with self._lock:
             return self._tools.get(name)
 
@@ -662,6 +885,9 @@ class ToolRegistry:
         Returns:
             List[Callable]: 工具函数列表
         """
+        if not self._tools_enabled:
+            return []
+        self._ensure_optional_tools_loaded()
         with self._lock:
             return list(self._tools.values())
 
@@ -672,6 +898,9 @@ class ToolRegistry:
         Returns:
             List[str]: 工具名称列表
         """
+        if not self._tools_enabled:
+            return []
+        self._ensure_optional_tools_loaded()
         with self._lock:
             return sorted(self._tools.keys())
 
@@ -682,12 +911,15 @@ class ToolRegistry:
         Returns:
             List[Dict[str, str]]: 工具描述列表
         """
+        if not self._tools_enabled:
+            return []
+        self._ensure_optional_tools_loaded()
         with self._lock:
             items = list(self._tools.items())
         return [
             {
                 "name": name,
-                "description": tool_func.__doc__ or "无描述",
+                "description": getattr(tool_func, "description", None) or tool_func.__doc__ or "无描述",
             }
             for name, tool_func in items
         ]
@@ -710,6 +942,9 @@ class ToolRegistry:
         - 改进日志记录
         - 添加执行时间统计
         """
+        if not self._tools_enabled:
+            return "工具系统已禁用"
+        self._ensure_optional_tools_loaded()
         with self._lock:
             tool_func = self._tools.get(name)
             stats = self._stats.setdefault(name, ToolStats()) if tool_func is not None else None
@@ -750,9 +985,10 @@ class ToolRegistry:
                 else:
                     return tool_func(**kwargs)
 
+            token = tool_timeout_s_var.set(float(timeout))
             try:
                 result = self._run_with_timeout(_execute, timeout)
-            except FuturesTimeoutError:
+            except (FuturesTimeoutError, asyncio.TimeoutError):
                 timeout_msg = f"工具 '{name}' 执行超时（{timeout}秒）"
                 with self._lock:
                     stats.calls += 1
@@ -761,6 +997,8 @@ class ToolRegistry:
                 execution_time = time.time() - start_time
                 logger.error("工具 '%s' 执行超时（%.2f秒）", name, timeout)
                 return f"抱歉主人，工具 '{name}' 执行超时了（超过 {timeout} 秒）喵~"
+            finally:
+                tool_timeout_s_var.reset(token)
 
             execution_time = time.time() - start_time
             logger.info("工具 '%s' 执行成功，耗时: %.2f秒", name, execution_time)
@@ -821,11 +1059,35 @@ class ToolRegistry:
 
     def close(self) -> None:
         """关闭内部线程池"""
-        try:
+        with self._executor_lock:
+            executor = self._executor
+            self._executor = None
+        if executor is not None:
             try:
-                self._executor.shutdown(wait=False, cancel_futures=True)
-            except TypeError:
-                self._executor.shutdown(wait=False)
+                try:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except TypeError:
+                    executor.shutdown(wait=False)
+            except Exception:
+                pass
+        # 关闭 builtin_tools 的后台 loop/aiohttp session（若已加载）
+        try:
+            import sys
+
+            if "src.agent.builtin_tools" in sys.modules:
+                from src.agent.builtin_tools import shutdown_builtin_tools_runtime
+
+                shutdown_builtin_tools_runtime()
+        except Exception:
+            pass
+        # 关闭 MCP 会话（若已启用）
+        try:
+            import sys
+
+            if "src.agent.mcp_manager" in sys.modules:
+                from src.agent.mcp_manager import mcp_manager
+
+                mcp_manager.close()
         except Exception:
             pass
 

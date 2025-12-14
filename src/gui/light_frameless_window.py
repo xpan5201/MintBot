@@ -12,10 +12,19 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QPoint, QRect, pyqtSignal
 from PyQt6.QtGui import QMouseEvent, QCursor, QPainter, QColor, QPainterPath, QFont
 
+import os
+
 from .material_design_light import (
     MD3_LIGHT_COLORS, MD3_RADIUS, get_light_elevation_shadow
 )
 from .material_icons import MATERIAL_ICONS
+
+WINDOW_SHADOW_ENABLED = os.getenv("MINTCHAT_GUI_WINDOW_SHADOW", "0").lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 
 
 class LightTitleBar(QWidget):
@@ -160,7 +169,9 @@ class LightFramelessWindow(QWidget):
         """设置 UI"""
         # 主布局
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        # 性能：窗口外层阴影会导致每次重绘都进行大面积离屏渲染，默认关闭并同步去掉外边距
+        outer_margin = 10 if WINDOW_SHADOW_ENABLED else 0
+        main_layout.setContentsMargins(outer_margin, outer_margin, outer_margin, outer_margin)
         main_layout.setSpacing(0)
 
         # 容器 widget（用于圆角和背景）
@@ -196,6 +207,12 @@ class LightFramelessWindow(QWidget):
 
     def add_shadow(self):
         """添加阴影效果"""
+        if not WINDOW_SHADOW_ENABLED:
+            try:
+                self.container.setGraphicsEffect(None)
+            except Exception:
+                pass
+            return
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(20)
         shadow.setXOffset(0)

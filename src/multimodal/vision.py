@@ -193,34 +193,29 @@ class VisionProcessor:
         Returns:
             str: 图像分析结果
         """
-        try:
-            # 加载图像以验证其存在性
-            _ = self.load_image(image_path)
+        # 加载图像以验证其存在性：让 FileNotFoundError 等显式抛出，便于上层处理
+        _ = self.load_image(image_path)
 
+        try:
             # 如果提供了支持视觉的 LLM，使用它进行分析
             if llm is not None:
-                try:
-                    from langchain_core.messages import HumanMessage
+                from langchain_core.messages import HumanMessage
 
-                    # 准备图像数据
-                    image_data = self.prepare_image_for_llm(image_path)
+                # 准备图像数据
+                image_data = self.prepare_image_for_llm(image_path)
 
-                    # 构建消息
-                    message = HumanMessage(
-                        content=[
-                            {"type": "text", "text": prompt},
-                            image_data,
-                        ]
-                    )
+                # 构建消息
+                message = HumanMessage(
+                    content=[
+                        {"type": "text", "text": prompt},
+                        image_data,
+                    ]
+                )
 
-                    # 调用 LLM
-                    response = llm.invoke([message])
-                    logger.info(f"图像分析完成: {image_path}")
-                    return response.content
-
-                except Exception as e:
-                    logger.error(f"LLM 图像分析失败: {e}")
-                    return f"图像分析失败: {str(e)}"
+                # 调用 LLM
+                response = llm.invoke([message])
+                logger.info(f"图像分析完成: {image_path}")
+                return response.content
 
             # 如果没有提供 LLM，返回基本信息
             info = self.get_image_info(image_path)
@@ -429,5 +424,26 @@ class VisionProcessor:
             }
 
 
-# 创建全局视觉处理器实例
-vision_processor = VisionProcessor()
+_vision_processor_instance: VisionProcessor | None = None
+
+
+def get_vision_processor_instance() -> VisionProcessor:
+    """获取全局视觉处理器实例（惰性初始化）。
+
+    避免在 import 阶段创建实例，减少 GUI 启动时的阻塞与无意义日志。
+    """
+    global _vision_processor_instance
+    if _vision_processor_instance is None:
+        _vision_processor_instance = VisionProcessor()
+    return _vision_processor_instance
+
+
+def __getattr__(name: str):  # pragma: no cover
+    # 兼容旧代码：from src.multimodal.vision import vision_processor
+    if name == "vision_processor":
+        return get_vision_processor_instance()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:  # pragma: no cover
+    return sorted(list(globals().keys()) + ["vision_processor"])

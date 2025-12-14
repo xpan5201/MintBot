@@ -2,6 +2,8 @@
 """MintChat - 多模态猫娘女仆智能体（Material Design 3、浅色主题、QQ风格、流式输出、性能优化）"""
 
 import sys
+import os
+import threading
 from pathlib import Path
 from typing import Dict, Any
 
@@ -19,6 +21,34 @@ from src.auth.auth_service import AuthService
 from src.auth.user_session import user_session
 from src.utils.logger import logger
 from src.utils.dependency_checker import check_optional_dependencies
+
+GUI_ANIMATIONS_ENABLED = os.getenv("MINTCHAT_GUI_ANIMATIONS", "0").lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+_tts_init_started = False
+
+
+def _start_tts_init_async() -> None:
+    """后台初始化 TTS（避免阻塞 GUI 启动与首帧渲染）。"""
+    global _tts_init_started
+    if _tts_init_started:
+        return
+    _tts_init_started = True
+
+    def _runner() -> None:
+        try:
+            from src.multimodal import init_tts
+
+            if callable(init_tts):
+                init_tts()
+        except Exception as e:
+            logger.warning(f"TTS 初始化失败: {e}")
+            logger.info("应用将继续运行，但 TTS 功能暂不可用")
+
+    threading.Thread(target=_runner, name="MintChatTTSInit", daemon=True).start()
 
 
 def _qt_message_handler(msg_type, context, message):
@@ -94,14 +124,8 @@ def main() -> None:
     font = QFont("Microsoft YaHei UI", 10)
     app.setFont(font)
 
-    # v2.48.10: 初始化 TTS 服务
-    try:
-        from src.multimodal import init_tts
-        if init_tts:
-            init_tts()
-    except Exception as e:
-        logger.warning(f"TTS 初始化失败: {e}")
-        logger.info("应用将继续运行，但 TTS 功能不可用")
+    # v2.48.10: 初始化 TTS 服务（后台线程，避免健康检查阻塞 GUI 启动）
+    _start_tts_init_async()
 
     session_file = Path("data/session.txt")
     if _restore_session(session_file):
@@ -132,6 +156,11 @@ def main() -> None:
             handle_exception(e, logger, "保存会话失败")
 
         window = LightChatWindow()
+
+        if not GUI_ANIMATIONS_ENABLED:
+            auth_manager.close()
+            window.show()
+            return
 
         from PyQt6.QtCore import QPropertyAnimation, QEasingCurve
         from PyQt6.QtWidgets import QGraphicsOpacityEffect

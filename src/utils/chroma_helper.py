@@ -14,6 +14,7 @@ ChromaDB 辅助工具模块 (v2.30.27)
 
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -94,6 +95,53 @@ except ImportError:
     SENTENCE_TRANSFORMERS_AVAILABLE = False
     logger.debug("本地 embedding 模块未找到，将使用 API embedding")
 
+_DEFAULT_LOCAL_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+_LOCAL_MODEL_MAP = {
+    "BAAI/bge-large-zh-v1.5": "BAAI/bge-large-zh-v1.5",
+    "BAAI/bge-m3": "BAAI/bge-m3",
+    "Qwen/Qwen3-Embedding-8B": _DEFAULT_LOCAL_MODEL,  # 替代
+    "text-embedding-ada-002": "sentence-transformers/all-MiniLM-L6-v2",  # 替代
+}
+_EMBEDDING_CACHE_DIR = "data/cache/embeddings"
+
+
+def _resolve_local_model(model: str) -> str:
+    return _LOCAL_MODEL_MAP.get(model, _DEFAULT_LOCAL_MODEL)
+
+
+@lru_cache(maxsize=8)
+def _get_local_embedding_function(model_name: str, enable_cache: bool) -> "LocalEmbeddings":
+    """
+    复用本地 embedding 模型实例，避免为每个 collection 重复加载 SentenceTransformer。
+    """
+    if not SENTENCE_TRANSFORMERS_AVAILABLE:
+        raise ImportError("sentence-transformers 未安装，无法使用本地 embedding")
+    return LocalEmbeddings(
+        model_name=model_name,
+        cache_dir=_EMBEDDING_CACHE_DIR,
+        device=None,  # 自动检测最优设备（GPU/CPU）
+        enable_cache=enable_cache,
+    )
+
+
+@lru_cache(maxsize=8)
+def _get_openai_embedding_function(model: str, api_base: str, api_key: str) -> "OpenAIEmbeddings":
+    """复用 API embedding 客户端，减少重复初始化开销。"""
+    if OpenAIEmbeddings is None:
+        raise ImportError(
+            "OpenAIEmbeddings 依赖未就绪，请安装 `langchain-openai`（或升级/安装 langchain）"
+        ) from (_OPENAI_EMBEDDINGS_IMPORT_ERROR or _OPENAI_EMBEDDINGS_IMPORT_ERROR_FALLBACK)
+
+    embeddings_kwargs = {
+        "model": model,
+        "api_key": api_key,
+    }
+
+    # 如果不是 OpenAI 官方 API，设置 base_url；空字符串不应传入 base_url
+    if api_base and "openai.com" not in api_base.lower():
+        embeddings_kwargs["base_url"] = api_base
+    return OpenAIEmbeddings(**embeddings_kwargs)
+
 
 def create_chroma_vectorstore(
     collection_name: str,
@@ -131,34 +179,17 @@ def create_chroma_vectorstore(
         persist_dir.mkdir(parents=True, exist_ok=True)
 
         # 确定嵌入模型参数
-        model = embedding_model or settings.embedding_model
-        api_base = embedding_api_base or settings.embedding_api_base or settings.llm.api
-        key = api_key or settings.llm.key
+        model = str(embedding_model or settings.embedding_model or "").strip()
+        api_base = str(embedding_api_base or settings.embedding_api_base or settings.llm.api or "").strip()
+        key = str(api_key or settings.llm.key or "").strip()
 
         # 选择 embedding 方案
         if use_local_embedding and SENTENCE_TRANSFORMERS_AVAILABLE:
             # 使用本地 embedding 模型
             logger.info("使用本地 embedding 模型: %s", model)
 
-            # 本地模型映射（API 模型名 -> 本地模型名）
-            local_model_map = {
-                "BAAI/bge-large-zh-v1.5": "BAAI/bge-large-zh-v1.5",
-                "BAAI/bge-m3": "BAAI/bge-m3",
-                "Qwen/Qwen3-Embedding-8B": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",  # 替代
-                "text-embedding-ada-002": "sentence-transformers/all-MiniLM-L6-v2",  # 替代
-            }
-
-            local_model = local_model_map.get(
-                model,
-                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"  # 默认
-            )
-
-            embedding_function = LocalEmbeddings(
-                model_name=local_model,
-                cache_dir="data/cache/embeddings",
-                device="cpu",  # TODO: 支持 GPU
-                enable_cache=enable_cache,
-            )
+            local_model = _resolve_local_model(model)
+            embedding_function = _get_local_embedding_function(local_model, bool(enable_cache))
         else:
             # 使用 API embedding
             logger.info("使用 API embedding 模型: %s", model)
@@ -168,16 +199,10 @@ def create_chroma_vectorstore(
                 )
                 return None
 
-            embeddings_kwargs = {
-                "model": model,
-                "api_key": key,
-            }
-
-            # 如果不是 OpenAI 官方 API，设置 base_url
-            if "openai.com" not in api_base.lower():
-                embeddings_kwargs["base_url"] = api_base
-
-            embedding_function = OpenAIEmbeddings(**embeddings_kwargs)
+            if not key:
+                logger.error("embedding API key 未配置，无法初始化 API embedding")
+                return None
+            embedding_function = _get_openai_embedding_function(model, api_base, key)
 
         # 禁用 ChromaDB telemetry（避免版本兼容性问题）
         from chromadb.config import Settings as ChromaSettings

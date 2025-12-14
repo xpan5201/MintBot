@@ -5,12 +5,16 @@ Material Design 图标组件
 符合 Material Design 3 规范
 """
 
+from functools import lru_cache
+
 from PyQt6.QtWidgets import QLabel, QPushButton
 from PyQt6.QtCore import Qt, pyqtProperty, QPropertyAnimation, QEasingCurve, QPoint, QTimer
 from PyQt6.QtGui import QFont, QFontDatabase, QPainter, QColor, QBrush, QMouseEvent
 
 from .material_design_light import MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION, MD3_STATE_LAYERS
-from src.utils.logger import logger
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # Material Symbols 图标名称映射
@@ -336,7 +340,8 @@ class MaterialIconButton(QPushButton):
             )
 
 
-def load_material_symbols_font():
+@lru_cache(maxsize=1)
+def load_material_symbols_font() -> bool:
     """
     加载 Material Symbols 字体
 
@@ -344,7 +349,11 @@ def load_material_symbols_font():
     可以从 Google Fonts 下载：https://fonts.google.com/icons
     """
     # 尝试加载系统字体
-    font_families = QFontDatabase.families()
+    try:
+        font_families = set(QFontDatabase.families())
+    except Exception as exc:
+        logger.warning("读取系统字体列表失败: %s", exc)
+        return False
 
     if "Material Symbols Outlined" not in font_families:
         logger.warning("警告: Material Symbols Outlined 字体未安装")

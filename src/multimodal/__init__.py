@@ -2,64 +2,94 @@
 多模态处理模块
 
 提供视觉、音频等多模态输入输出处理功能。
+
+性能说明：
+- 该包通常会被 GUI 启动路径间接导入（例如初始化 TTS），因此避免在 import 阶段做重实例化或重依赖导入；
+- 使用模块级 `__getattr__` 实现按需懒加载，减少 GUI 启动卡顿与无意义日志。
 """
 
-# 音频处理模块（必需）
-from .audio import AudioProcessor
+from __future__ import annotations
 
-# 视觉处理模块（可选）
-try:
-    from .vision import VisionProcessor
-    _has_vision = True
-except ImportError:
-    VisionProcessor = None
-    _has_vision = False
+from typing import Any
 
-# TTS 模块（可选）
-try:
-    from .gpt_sovits_client import GPTSoVITSClient
-    from .tts_manager import (
-        AgentSpeechProfile,
-        TTSConfig,
-        TTSManager,
-        get_tts_manager,
-    )
-    from .audio_player import AudioPlayer, get_audio_player
-    from .tts_initializer import (
-        init_tts,
-        get_tts_manager_instance,
-        get_tts_config_instance,
-        is_tts_available,
-    )
-    _has_tts = True
-except ImportError as e:
-    GPTSoVITSClient = None
-    TTSManager = None
-    TTSConfig = None
-    get_tts_manager = None
-    AudioPlayer = None
-    get_audio_player = None
-    init_tts = None
-    get_tts_manager_instance = None
-    get_tts_config_instance = None
-    is_tts_available = None
-    _has_tts = False
+__all__ = [
+    # Audio
+    "AudioProcessor",
+    "get_audio_processor_instance",
+    # Vision
+    "VisionProcessor",
+    "get_vision_processor_instance",
+    # TTS
+    "AgentSpeechProfile",
+    "GPTSoVITSClient",
+    "TTSManager",
+    "TTSConfig",
+    "get_tts_manager",
+    "AudioPlayer",
+    "get_audio_player",
+    "init_tts",
+    "get_tts_manager_instance",
+    "get_tts_config_instance",
+    "is_tts_available",
+]
 
-# 导出列表
-__all__ = ["AudioProcessor"]
-if _has_vision:
-    __all__.extend(["VisionProcessor"])
-if _has_tts:
-    __all__.extend([
-        "AgentSpeechProfile",
-        "GPTSoVITSClient",
-        "TTSManager",
-        "TTSConfig",
-        "get_tts_manager",
-        "AudioPlayer",
-        "get_audio_player",
+
+def __getattr__(name: str) -> Any:  # pragma: no cover - 仅用于 import 懒加载
+    if name in {"AudioProcessor", "get_audio_processor_instance"}:
+        from .audio import AudioProcessor, get_audio_processor_instance
+
+        return AudioProcessor if name == "AudioProcessor" else get_audio_processor_instance
+
+    if name in {"VisionProcessor", "get_vision_processor_instance"}:
+        from .vision import VisionProcessor, get_vision_processor_instance
+
+        return VisionProcessor if name == "VisionProcessor" else get_vision_processor_instance
+
+    if name == "GPTSoVITSClient":
+        from .gpt_sovits_client import GPTSoVITSClient
+
+        return GPTSoVITSClient
+
+    if name in {"AgentSpeechProfile", "TTSConfig", "TTSManager", "get_tts_manager"}:
+        from .tts_manager import AgentSpeechProfile, TTSConfig, TTSManager, get_tts_manager
+
+        mapping = {
+            "AgentSpeechProfile": AgentSpeechProfile,
+            "TTSConfig": TTSConfig,
+            "TTSManager": TTSManager,
+            "get_tts_manager": get_tts_manager,
+        }
+        return mapping[name]
+
+    if name in {"AudioPlayer", "get_audio_player"}:
+        from .audio_player import AudioPlayer, get_audio_player
+
+        return AudioPlayer if name == "AudioPlayer" else get_audio_player
+
+    if name in {
         "init_tts",
         "get_tts_manager_instance",
         "get_tts_config_instance",
         "is_tts_available",
-    ])
+    }:
+        from .tts_initializer import (
+            init_tts,
+            get_tts_manager_instance,
+            get_tts_config_instance,
+            is_tts_available,
+        )
+
+        mapping = {
+            "init_tts": init_tts,
+            "get_tts_manager_instance": get_tts_manager_instance,
+            "get_tts_config_instance": get_tts_config_instance,
+            "is_tts_available": is_tts_available,
+        }
+        return mapping[name]
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:  # pragma: no cover
+    return sorted(set(globals().keys()) | set(__all__))
+

@@ -45,6 +45,7 @@
 import asyncio
 import json
 import time
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List, Tuple
 from zoneinfo import ZoneInfo
@@ -54,10 +55,19 @@ from collections import OrderedDict
 from enum import Enum
 
 import aiohttp
-import yaml
-from bs4 import BeautifulSoup
-from langchain_core.tools import tool
+
+try:
+    from langchain_core.tools import tool  # type: ignore
+except Exception:  # pragma: no cover - 兼容不同 LangChain 版本/最小依赖环境
+    try:
+        from langchain.tools import tool  # type: ignore
+    except Exception:  # pragma: no cover
+        def tool(func):  # type: ignore[misc]
+            return func
+
 from src.utils.logger import get_logger
+from src.utils.async_loop_thread import AsyncLoopThread
+from src.utils.tool_context import get_current_tool_timeout_s
 
 logger = get_logger(__name__)
 
@@ -65,6 +75,11 @@ logger = get_logger(__name__)
 # ==================== 配置和工具函数 ====================
 def load_config() -> Dict[str, Any]:
     """加载 config.yaml 配置文件"""
+    try:
+        import yaml  # 延迟导入：避免模块导入阶段引入额外依赖/解析开销
+    except Exception:
+        return {}
+
     config_path = Path(__file__).parent.parent.parent / "config.yaml"
     if config_path.exists():
         with open(config_path, "r", encoding="utf-8") as f:
@@ -72,7 +87,15 @@ def load_config() -> Dict[str, Any]:
     return {}
 
 
-_config = load_config()
+_config: Optional[Dict[str, Any]] = None
+
+
+def _get_config() -> Dict[str, Any]:
+    """惰性加载配置，避免模块导入阶段读取/解析 config.yaml。"""
+    global _config
+    if _config is None:
+        _config = load_config()
+    return _config
 
 # 性能统计 (v2.30.25 增强：添加延迟百分位统计)
 _tool_stats = {
@@ -83,6 +106,7 @@ _tool_stats = {
     "latencies": {},    # v2.30.25: 新增延迟列表（用于计算 P50/P95/P99）
     "cache_hits": {},   # v2.30.25: 新增缓存命中统计
 }
+_tool_stats_lock = threading.Lock()
 
 
 # ==================== 错误分类 (v2.30.23) ====================
@@ -107,7 +131,17 @@ class ToolError(Exception):
 class ConnectionPool:
     """全局 aiohttp ClientSession 连接池"""
     _session: Optional[aiohttp.ClientSession] = None
-    _lock = asyncio.Lock()
+    _lock: Optional[asyncio.Lock] = None
+    _lock_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    @classmethod
+    def _get_lock(cls) -> asyncio.Lock:
+        # asyncio.Lock 绑定 event loop；避免在 import 时创建导致跨 loop 使用报错
+        loop = asyncio.get_running_loop()
+        if cls._lock is None or cls._lock_loop is not loop:
+            cls._lock = asyncio.Lock()
+            cls._lock_loop = loop
+        return cls._lock
 
     @classmethod
     async def get_session(cls) -> aiohttp.ClientSession:
@@ -133,7 +167,7 @@ class ConnectionPool:
                     pass
 
             if cls._session is None or cls._session.closed:
-                async with cls._lock:
+                async with cls._get_lock():
                     if cls._session is None or cls._session.closed:
                         # 配置连接池参数
                         connector = aiohttp.TCPConnector(
@@ -205,11 +239,11 @@ class TTLCache:
         self.ttl_seconds = ttl_seconds
         self.maxsize = maxsize
         self.cache: OrderedDict[str, Tuple[Any, datetime]] = OrderedDict()
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
-    async def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Optional[Any]:
         """获取缓存值"""
-        async with self._lock:
+        with self._lock:
             if key in self.cache:
                 value, expire_time = self.cache[key]
                 if datetime.now() < expire_time:
@@ -221,9 +255,9 @@ class TTLCache:
                     del self.cache[key]
         return None
 
-    async def set(self, key: str, value: Any):
+    def set(self, key: str, value: Any) -> None:
         """设置缓存值"""
-        async with self._lock:
+        with self._lock:
             expire_time = datetime.now() + timedelta(seconds=self.ttl_seconds)
             self.cache[key] = (value, expire_time)
             self.cache.move_to_end(key)
@@ -232,9 +266,9 @@ class TTLCache:
             if len(self.cache) > self.maxsize:
                 self.cache.popitem(last=False)
 
-    async def clear(self):
+    def clear(self) -> None:
         """清空缓存"""
-        async with self._lock:
+        with self._lock:
             self.cache.clear()
 
 
@@ -305,7 +339,8 @@ def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0, max_delay:
 
                         # 更新重试统计
                         tool_name = kwargs.get('_tool_name', func_name)
-                        _tool_stats["retry_count"][tool_name] = _tool_stats["retry_count"].get(tool_name, 0) + 1
+                        with _tool_stats_lock:
+                            _tool_stats["retry_count"][tool_name] = _tool_stats["retry_count"].get(tool_name, 0) + 1
                     else:
                         logger.error(f"{func_name} 已达最大重试次数 ({max_retries}): {e}")
                         raise ToolError(ErrorType.NETWORK_ERROR, f"网络请求失败: {str(e)}")
@@ -320,10 +355,18 @@ def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0, max_delay:
     return decorator
 
 
-# 全局 event loop（用于 async_to_sync）
-import threading  # v3.3.3: 添加threading导入（必须在_global_loop之前）
-_global_loop: Optional[asyncio.AbstractEventLoop] = None
-_loop_lock = threading.Lock()  # 使用threading.Lock而不是asyncio.Lock，因为可能在非async上下文中使用
+_async_runtime: Optional[AsyncLoopThread] = None
+_async_runtime_lock = threading.Lock()
+
+
+def _get_async_runtime() -> AsyncLoopThread:
+    global _async_runtime
+    if _async_runtime is not None:
+        return _async_runtime
+    with _async_runtime_lock:
+        if _async_runtime is None:
+            _async_runtime = AsyncLoopThread(thread_name="mintchat-builtin-tools")
+    return _async_runtime
 
 
 def async_to_sync(async_func):
@@ -341,29 +384,60 @@ def async_to_sync(async_func):
     """
     @wraps(async_func)
     def wrapper(*args, **kwargs):
-        global _global_loop
+        timeout_s = get_current_tool_timeout_s()
+        runtime_timeout: Optional[float] = None
+        if timeout_s is not None:
+            try:
+                timeout_value = float(timeout_s)
+                if timeout_value > 0:
+                    # 给线程池外层 timeout 留一点余量，优先在协程侧触发取消，避免线程泄露
+                    runtime_timeout = max(0.01, timeout_value - 0.05)
+            except Exception:
+                runtime_timeout = None
 
         try:
-            # 尝试获取当前运行的 event loop
+            # 当前线程存在运行中的 event loop（例如在 Jupyter/异步上下文中被同步调用）
             loop = asyncio.get_running_loop()
-            # 如果已经在 event loop 中，使用 nest_asyncio
-            import nest_asyncio
-            nest_asyncio.apply()
-            return loop.run_until_complete(async_func(*args, **kwargs))
-        except RuntimeError:
-            # 没有运行中的 event loop
-            # 使用全局 event loop 避免重复创建（线程安全）
-            with _loop_lock:
-                if _global_loop is None or _global_loop.is_closed():
-                    _global_loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(_global_loop)
-
             try:
-                return _global_loop.run_until_complete(async_func(*args, **kwargs))
-            except Exception as e:
-                logger.error(f"async_to_sync 执行失败: {e}")
-                raise
+                import nest_asyncio
+
+                nest_asyncio.apply()
+                coro = async_func(*args, **kwargs)
+                if runtime_timeout is not None:
+                    coro = asyncio.wait_for(coro, timeout=runtime_timeout)
+                return loop.run_until_complete(coro)
+            except Exception:
+                # fallback：避免 re-entrancy/版本差异导致的异常
+                return _get_async_runtime().run(async_func(*args, **kwargs), timeout=runtime_timeout)
+        except RuntimeError:
+            # 常见路径：同步/线程池环境下，统一在后台 event loop 执行，保证线程安全与 aiohttp 会话复用
+            return _get_async_runtime().run(async_func(*args, **kwargs), timeout=runtime_timeout)
     return wrapper
+
+
+def shutdown_builtin_tools_runtime(timeout_s: float = 2.0) -> None:
+    """
+    显式关闭 builtin_tools 的后台事件循环与 HTTP 连接池。
+
+    说明：
+    - ToolRegistry.close()/Agent.close() 可调用此函数，避免 aiohttp session 残留与线程泄露。
+    """
+    global _async_runtime
+    runtime = _async_runtime
+    if runtime is None:
+        return
+
+    try:
+        # aiohttp ClientSession 必须在创建它的 loop 中关闭
+        runtime.run(ConnectionPool.close(), timeout=max(0.1, float(timeout_s)))
+    except Exception as exc:
+        logger.debug("关闭 builtin_tools 连接池失败（可忽略）: %s", exc)
+    finally:
+        try:
+            runtime.close(timeout=max(0.1, float(timeout_s)))
+        except Exception:
+            pass
+        _async_runtime = None
 
 
 def track_performance(tool_name: str):
@@ -377,22 +451,24 @@ def track_performance(tool_name: str):
                 execution_time = time.time() - start_time
 
                 # 更新统计
-                _tool_stats["call_count"][tool_name] = _tool_stats["call_count"].get(tool_name, 0) + 1
-                _tool_stats["total_time"][tool_name] = _tool_stats["total_time"].get(tool_name, 0) + execution_time
+                with _tool_stats_lock:
+                    _tool_stats["call_count"][tool_name] = _tool_stats["call_count"].get(tool_name, 0) + 1
+                    _tool_stats["total_time"][tool_name] = _tool_stats["total_time"].get(tool_name, 0) + execution_time
 
-                # v2.30.25: 记录延迟（用于计算 P50/P95/P99）
-                if tool_name not in _tool_stats["latencies"]:
-                    _tool_stats["latencies"][tool_name] = []
-                _tool_stats["latencies"][tool_name].append(execution_time)
+                    # v2.30.25: 记录延迟（用于计算 P50/P95/P99）
+                    if tool_name not in _tool_stats["latencies"]:
+                        _tool_stats["latencies"][tool_name] = []
+                    _tool_stats["latencies"][tool_name].append(execution_time)
 
-                # 限制延迟列表大小（最多保留最近 1000 次）
-                if len(_tool_stats["latencies"][tool_name]) > 1000:
-                    _tool_stats["latencies"][tool_name] = _tool_stats["latencies"][tool_name][-1000:]
+                    # 限制延迟列表大小（最多保留最近 1000 次）
+                    if len(_tool_stats["latencies"][tool_name]) > 1000:
+                        _tool_stats["latencies"][tool_name] = _tool_stats["latencies"][tool_name][-1000:]
 
                 logger.debug(f"工具 {tool_name} 执行成功，耗时: {execution_time:.3f}秒")
                 return result
             except Exception as e:
-                _tool_stats["error_count"][tool_name] = _tool_stats["error_count"].get(tool_name, 0) + 1
+                with _tool_stats_lock:
+                    _tool_stats["error_count"][tool_name] = _tool_stats["error_count"].get(tool_name, 0) + 1
                 logger.error(f"工具 {tool_name} 执行失败: {e}")
                 raise
         return wrapper
@@ -403,14 +479,17 @@ def get_tool_stats() -> Dict[str, Any]:
     """获取工具性能统计（v2.30.25 增强：添加延迟百分位统计）"""
     import numpy as np
 
+    with _tool_stats_lock:
+        snapshot = {key: dict(value) if isinstance(value, dict) else value for key, value in _tool_stats.items()}
+
     stats = {}
-    for tool_name in _tool_stats["call_count"]:
-        call_count = _tool_stats["call_count"].get(tool_name, 0)
-        total_time = _tool_stats["total_time"].get(tool_name, 0)
-        error_count = _tool_stats["error_count"].get(tool_name, 0)
-        retry_count = _tool_stats["retry_count"].get(tool_name, 0)
-        cache_hits = _tool_stats["cache_hits"].get(tool_name, 0)
-        latencies = _tool_stats["latencies"].get(tool_name, [])
+    for tool_name in snapshot["call_count"]:
+        call_count = snapshot["call_count"].get(tool_name, 0)
+        total_time = snapshot["total_time"].get(tool_name, 0)
+        error_count = snapshot["error_count"].get(tool_name, 0)
+        retry_count = snapshot["retry_count"].get(tool_name, 0)
+        cache_hits = snapshot["cache_hits"].get(tool_name, 0)
+        latencies = snapshot["latencies"].get(tool_name, [])
 
         # 计算延迟百分位（P50/P95/P99）
         p50 = p95 = p99 = 0.0
@@ -448,11 +527,12 @@ async def _bing_search_async(query: str, count: int = 5, _tool_name: str = "bing
     """
     # 检查缓存
     cache_key = f"bing_{query}_{count}"
-    cached_result = await _bing_cache.get(cache_key)
+    cached_result = _bing_cache.get(cache_key)
     if cached_result is not None:
         logger.debug(f"Bing 搜索命中缓存: {query}")
         # v2.30.25: 更新缓存命中统计
-        _tool_stats["cache_hits"][_tool_name] = _tool_stats["cache_hits"].get(_tool_name, 0) + 1
+        with _tool_stats_lock:
+            _tool_stats["cache_hits"][_tool_name] = _tool_stats["cache_hits"].get(_tool_name, 0) + 1
         return cached_result
 
     headers = {
@@ -470,8 +550,10 @@ async def _bing_search_async(query: str, count: int = 5, _tool_name: str = "bing
 
         html = await response.text()
 
-        # 使用 BeautifulSoup 解析 HTML
-        soup = BeautifulSoup(html, 'html.parser')
+        # 使用 BeautifulSoup 解析 HTML（延迟导入避免启动时额外开销）
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html, "html.parser")
         results = []
 
         # 查找搜索结果（Bing 的结果在 li.b_algo 中）
@@ -498,7 +580,7 @@ async def _bing_search_async(query: str, count: int = 5, _tool_name: str = "bing
                 continue
 
         # 缓存结果
-        await _bing_cache.set(cache_key, results)
+        _bing_cache.set(cache_key, results)
 
         return results
 
@@ -570,7 +652,7 @@ async def _amap_api_call(endpoint: str, params: Dict[str, Any], _tool_name: str 
     - 指数退避重试
     - 错误分类处理
     """
-    api_key = _config.get("AMAP", {}).get("api_key", "")
+    api_key = _get_config().get("AMAP", {}).get("api_key", "")
     if not api_key:
         raise ToolError(ErrorType.PARAM_ERROR, "高德地图 API Key 未配置")
 
@@ -579,11 +661,12 @@ async def _amap_api_call(endpoint: str, params: Dict[str, Any], _tool_name: str 
 
     # 生成缓存键
     cache_key = f"amap_{endpoint}_{json.dumps(params, sort_keys=True)}"
-    cached_result = await _amap_cache.get(cache_key)
+    cached_result = _amap_cache.get(cache_key)
     if cached_result is not None:
         logger.debug(f"高德 API 命中缓存: {endpoint}")
         # v2.30.25: 更新缓存命中统计
-        _tool_stats["cache_hits"][_tool_name] = _tool_stats["cache_hits"].get(_tool_name, 0) + 1
+        with _tool_stats_lock:
+            _tool_stats["cache_hits"][_tool_name] = _tool_stats["cache_hits"].get(_tool_name, 0) + 1
         return cached_result
 
     url = f"https://restapi.amap.com/v3/{endpoint}"
@@ -602,7 +685,7 @@ async def _amap_api_call(endpoint: str, params: Dict[str, Any], _tool_name: str 
             raise ToolError(ErrorType.API_ERROR, f"高德 API 错误: {error_msg}")
 
         # 缓存结果
-        await _amap_cache.set(cache_key, result)
+        _amap_cache.set(cache_key, result)
 
         return result
 
