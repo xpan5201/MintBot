@@ -11,7 +11,9 @@ from PyQt6.QtCore import QTimer
 from typing import Callable, Optional
 import time
 
-from src.utils.logger import logger
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class RenderOptimizer:
@@ -93,7 +95,7 @@ class RenderOptimizer:
         if self.flush_callback:
             self.flush_callback(batched_text)
 
-        logger.debug(f"批量文本更新: {batch_size}字符")
+        logger.debug("批量文本更新: %d 字符", batch_size)
 
     def debounce(
         self,
@@ -180,4 +182,3 @@ class RenderOptimizer:
                 timer.stop()
 
         self.debounce_timers.clear()
-

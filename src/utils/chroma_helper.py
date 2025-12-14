@@ -156,7 +156,7 @@ def create_chroma_vectorstore(
             embedding_function = LocalEmbeddings(
                 model_name=local_model,
                 cache_dir="data/cache/embeddings",
-                device="cpu",  # TODO: 支持 GPU
+                device=None,  # 自动检测最优设备（GPU/CPU）
                 enable_cache=enable_cache,
             )
         else:

@@ -21,8 +21,13 @@ try:
     # LangChain < 0.2
     from langchain.tools import tool  # type: ignore
 except Exception:  # pragma: no cover - 兼容不同 LangChain 版本
-    # LangChain >= 0.2（工具在 langchain_core）
-    from langchain_core.tools import tool  # type: ignore
+    try:
+        # LangChain >= 0.2（工具在 langchain_core）
+        from langchain_core.tools import tool  # type: ignore
+    except Exception:  # pragma: no cover - 环境依赖差异
+        # 允许在缺少 LangChain 的环境下导入本模块（例如仅运行部分测试/工具）
+        def tool(func: Callable) -> Callable:  # type: ignore[misc]
+            return func
 
 from src.config.settings import settings
 from src.utils.logger import get_logger

@@ -4,25 +4,25 @@
 实现短期记忆和长期记忆管理，支持对话历史和语义检索。
 """
 
+from __future__ import annotations
+
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional, Sequence
-
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-)
-from langchain_openai import OpenAIEmbeddings
+from typing import Any, Dict, List, Optional, Sequence, TypedDict, Literal
 
 from src.config.settings import settings
 from src.utils.logger import get_logger
 from src.utils.chroma_helper import create_chroma_vectorstore, get_collection_count
 
 logger = get_logger(__name__)
+
+# 轻量消息结构：避免短期记忆依赖 LangChain 消息类型，提升启动速度与兼容性
+class _ChatMessage(TypedDict):
+    role: Literal["user", "assistant", "system"]
+    content: str
+
 
 # 重要性评估常量（热路径：避免每次调用重复构造列表）
 _IMPORTANCE_KEYWORDS = (
@@ -97,7 +97,7 @@ class ShortTermMemory:
             k: 保留的最近消息数量
         """
         self.k = k
-        self.messages: List[BaseMessage] = []
+        self.messages: List[_ChatMessage] = []
         self._lock = Lock()
         logger.info("短期记忆初始化完成，保留最近 %d 条消息", k)
 
@@ -109,27 +109,24 @@ class ShortTermMemory:
             role: 消息角色 (user/assistant/system)
             content: 消息内容
         """
+        if role not in {"user", "assistant", "system"}:
+            logger.warning("未知的消息角色: %s", role)
+            return
+
+        msg: _ChatMessage = {"role": role, "content": content}
         with self._lock:
-            if role == "user":
-                self.messages.append(HumanMessage(content=content))
-            elif role == "assistant":
-                self.messages.append(AIMessage(content=content))
-            elif role == "system":
-                self.messages.append(SystemMessage(content=content))
-            else:
-                logger.warning("未知的消息角色: %s", role)
-                return
+            self.messages.append(msg)
+            # 保持窗口大小：每轮对话包含用户和助手消息
+            limit = self.k * 2
+            if limit > 0 and len(self.messages) > limit:
+                self.messages = self.messages[-limit:]
 
-            # 保持窗口大小
-            if len(self.messages) > self.k * 2:  # 每轮对话包含用户和助手消息
-                self.messages = self.messages[-(self.k * 2):]
-
-    def get_messages(self) -> List[BaseMessage]:
+    def get_messages(self) -> List[_ChatMessage]:
         """
         获取短期记忆中的消息
 
         Returns:
-            List[BaseMessage]: 消息列表
+            List[_ChatMessage]: 消息列表
         """
         with self._lock:
             return list(self.messages)
@@ -142,17 +139,7 @@ class ShortTermMemory:
             List[Dict[str, str]]: 消息列表
         """
         with self._lock:
-            snapshot = list(self.messages)
-
-        messages: List[Dict[str, str]] = []
-        for msg in snapshot:
-            if isinstance(msg, HumanMessage):
-                messages.append({"role": "user", "content": msg.content})
-            elif isinstance(msg, AIMessage):
-                messages.append({"role": "assistant", "content": msg.content})
-            elif isinstance(msg, SystemMessage):
-                messages.append({"role": "system", "content": msg.content})
-        return messages
+            return [dict(item) for item in self.messages]
 
     def clear(self) -> None:
         """清空短期记忆"""
@@ -197,38 +184,6 @@ class LongTermMemory:
         self._batch_buffer_lock = Lock()  # 保护批量缓冲区的锁
         self._batch_size = 10  # 每10条记忆批量写入一次
 
-        # 初始化嵌入模型
-        try:
-            # 确定 API 地址
-            embedding_api_base = (
-                settings.embedding_api_base
-                if settings.embedding_api_base
-                else settings.llm.api
-            )
-
-            # 构建 OpenAIEmbeddings 参数
-            embeddings_kwargs = {
-                "model": settings.embedding_model,
-                "api_key": settings.llm.key,
-            }
-
-            # 如果不是 OpenAI 官方 API，设置 base_url
-            if "openai.com" not in embedding_api_base.lower():
-                embeddings_kwargs["base_url"] = embedding_api_base
-
-            self.embeddings = OpenAIEmbeddings(**embeddings_kwargs)
-            logger.info(
-                f"嵌入模型初始化成功: {settings.embedding_model} "
-                f"(API: {embedding_api_base})"
-            )
-
-        except Exception as e:
-            from src.utils.exceptions import handle_exception
-            handle_exception(e, logger, "嵌入模型初始化失败，长期记忆功能将不可用")
-            self.embeddings = None
-            self.vectorstore = None
-            return
-
         # 初始化向量数据库 - 使用统一的初始化函数（v2.30.27: 支持本地 embedding 和缓存）
         self.vectorstore = create_chroma_vectorstore(
             collection_name=collection_name,
@@ -238,15 +193,14 @@ class LongTermMemory:
         )
 
         if self.vectorstore:
-            # 替换为我们自己的嵌入模型实例（用于缓存）
-            self.vectorstore._embedding_function = self.embeddings
-
             count = get_collection_count(self.vectorstore)
             logger.info(
                 "长期记忆初始化完成，存储路径: %s，已有记忆: %d 条",
                 self.persist_directory,
                 count,
             )
+        else:
+            logger.warning("长期记忆向量库初始化失败，长期记忆功能将不可用")
 
     def add_memory(
         self,
@@ -536,12 +490,16 @@ class LongTermMemory:
         try:
             # 删除集合并重新创建
             self.vectorstore.delete_collection()
-            self.vectorstore = Chroma(
+            self.vectorstore = create_chroma_vectorstore(
                 collection_name=self.collection_name,
-                embedding_function=self.embeddings,
                 persist_directory=str(self.persist_directory),
+                use_local_embedding=settings.use_local_embedding,
+                enable_cache=settings.enable_embedding_cache,
             )
-            logger.info("长期记忆已清空")
+            if self.vectorstore is None:
+                logger.error("长期记忆已删除，但向量库重新初始化失败")
+            else:
+                logger.info("长期记忆已清空")
         except Exception as e:
             logger.error("清空长期记忆失败: %s", e)
 

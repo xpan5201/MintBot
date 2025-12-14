@@ -248,6 +248,7 @@ python MintChat.py
 - 😊 **高级情绪系统**: 基于数学函数的情绪计算，更真实的情绪变化
 - 📊 **性能监控**: 实时追踪性能指标，优化系统性能（v2.4）
 - 🔄 **批处理支持**: 批量操作性能提升 30%+（v2.4）
+- 🖥️ **GUI 性能调优**: 支持通过环境变量调节流式刷新/线程批量 emit/气泡高度节流/气泡最大高度/阴影预算/平滑滚动/FPS 叠加层/窗口阴影/自动滚动锁（`MINTCHAT_GUI_STREAM_FLUSH_MS`、`MINTCHAT_GUI_STREAM_EMIT_MS`、`MINTCHAT_GUI_STREAM_EMIT_THRESHOLD`、`MINTCHAT_GUI_STREAM_BUBBLE_HEIGHT_MS`、`MINTCHAT_GUI_STREAM_BUBBLE_MAX_HEIGHT`、`MINTCHAT_GUI_SHADOW_BUDGET`、`MINTCHAT_GUI_SMOOTH_SCROLL`、`MINTCHAT_GUI_FPS_OVERLAY`、`MINTCHAT_GUI_WINDOW_SHADOW`、`MINTCHAT_GUI_AUTO_SCROLL_BOTTOM_PX`）
 - ⚙️ **YAML 配置**: 统一配置管理，支持所有高级功能
 
 ### 多模态能力 (v2.1 NEW!)

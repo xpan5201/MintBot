@@ -51,16 +51,28 @@ v2.19.0 优化内容：
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QGraphicsOpacityEffect,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit, QGraphicsOpacityEffect,
     QGraphicsDropShadowEffect, QSizePolicy
 )
 from PyQt6.QtCore import (
     Qt, QPropertyAnimation, QEasingCurve, QTimer,
     QParallelAnimationGroup, QSequentialAnimationGroup, QPoint, pyqtProperty, QSize
 )
-from PyQt6.QtGui import QFont, QColor, QPixmap, QMovie
+from PyQt6.QtGui import (
+    QFont,
+    QColor,
+    QPixmap,
+    QMovie,
+    QPainter,
+    QPainterPath,
+    QTextCursor,
+    QTextOption,
+)
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
+import time
+import os
 
 from .material_design_light import (
     MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION, get_light_elevation_shadow
@@ -71,6 +83,159 @@ from .material_design_enhanced import (
     get_elevation_shadow, get_typography_css
 )
 from .enhanced_animations import AnimationMixin
+
+from src.utils.logger import get_logger
+
+
+logger = get_logger(__name__)
+
+# 预解析常用 spacing（避免每个气泡都做字符串 replace/int 转换）
+_SPACING_LG = int(MD3_ENHANCED_SPACING["lg"].removesuffix("px"))
+_SPACING_SM = int(MD3_ENHANCED_SPACING["sm"].removesuffix("px"))
+_SPACING_1 = int(MD3_ENHANCED_SPACING["1"].removesuffix("px"))
+
+# 流式气泡高度更新节流（过高会导致“气泡扩张跟不上文本”，过低会导致频繁布局重算）
+STREAMING_HEIGHT_UPDATE_INTERVAL_MS = max(
+    0, int(os.getenv("MINTCHAT_GUI_STREAM_BUBBLE_HEIGHT_MS", "33"))
+)
+STREAMING_BUBBLE_MAX_HEIGHT = max(0, int(os.getenv("MINTCHAT_GUI_STREAM_BUBBLE_MAX_HEIGHT", "0")))
+BUBBLE_WRAP_DEBUG = os.getenv("MINTCHAT_GUI_BUBBLE_WRAP_DEBUG", "0").lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+
+_MESSAGE_LABEL_QSS_USER = f"""
+    QLabel {{
+        background: {MD3_ENHANCED_COLORS['primary_container']};
+        color: {MD3_ENHANCED_COLORS['on_primary_container']};
+        border-radius: 20px;
+        padding: 12px 16px;
+        {get_typography_css('body_large')}
+        font-weight: 500;
+        line-height: 1.5;
+    }}
+"""
+
+_MESSAGE_LABEL_QSS_AI = f"""
+    QLabel {{
+        background: {MD3_ENHANCED_COLORS['surface_container_high']};
+        color: {MD3_ENHANCED_COLORS['on_surface']};
+        border-radius: 20px;
+        padding: 12px 16px;
+        {get_typography_css('body_large')}
+        line-height: 1.5;
+        border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
+    }}
+"""
+
+_TIME_LABEL_QSS = f"""
+    QLabel {{
+        color: {MD3_ENHANCED_COLORS['on_surface_variant']};
+        {get_typography_css('label_small')}
+        background: transparent;
+    }}
+"""
+
+_IMAGE_LABEL_QSS = f"""
+    QLabel {{
+        background: {MD3_ENHANCED_COLORS['surface_bright']};
+        border-radius: 16px;
+        padding: 4px;
+        border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
+    }}
+"""
+
+_IMAGE_LABEL_ERROR_QSS = f"""
+    QLabel {{
+        background: {MD3_ENHANCED_COLORS['error_container']};
+        color: {MD3_ENHANCED_COLORS['on_error_container']};
+        border-radius: 16px;
+        padding: 20px 30px;
+        {get_typography_css('body_large')}
+    }}
+"""
+
+
+@lru_cache(maxsize=16)
+def _get_avatar_qss(size: int, is_user: bool) -> str:
+    """获取头像样式（缓存），减少每条消息重复格式化 QSS 的开销。"""
+    border_radius = size // 2
+    font_size = size // 2
+    border_color = MD3_ENHANCED_COLORS["surface_bright"]
+    if is_user:
+        start = MD3_ENHANCED_COLORS["primary_40"]
+        end = MD3_ENHANCED_COLORS["secondary_40"]
+    else:
+        start = MD3_ENHANCED_COLORS["tertiary_40"]
+        end = MD3_ENHANCED_COLORS["primary_40"]
+    return f"""
+        QLabel {{
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:1,
+                stop:0 {start},
+                stop:1 {end}
+            );
+            border-radius: {border_radius}px;
+            font-size: {font_size}px;
+            border: 2px solid {border_color};
+        }}
+    """
+
+
+@lru_cache(maxsize=128)
+def _load_scaled_pixmap(path: str, max_size: int) -> QPixmap:
+    """
+    读取并按需缩放图片（带 LRU 缓存），减少频繁磁盘 IO 与重复缩放开销。
+    """
+    pixmap = QPixmap(path)
+    if pixmap.isNull():
+        return pixmap
+    if pixmap.width() > max_size or pixmap.height() > max_size:
+        pixmap = pixmap.scaled(
+            max_size,
+            max_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+    return pixmap
+
+
+@lru_cache(maxsize=128)
+def _load_rounded_avatar_pixmap(path: str, size: int, mtime_ns: int) -> QPixmap:
+    """加载并裁剪为圆形头像（带缓存）。"""
+    _ = mtime_ns  # 仅用于缓存键，文件变更时自动失效
+
+    pixmap = QPixmap(path)
+    if pixmap.isNull():
+        return QPixmap()
+
+    scaled_pixmap = pixmap.scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    if scaled_pixmap.width() > size or scaled_pixmap.height() > size:
+        x = (scaled_pixmap.width() - size) // 2
+        y = (scaled_pixmap.height() - size) // 2
+        scaled_pixmap = scaled_pixmap.copy(x, y, size, size)
+
+    rounded_pixmap = QPixmap(size, size)
+    rounded_pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(rounded_pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+    path_obj = QPainterPath()
+    path_obj.addEllipse(0, 0, size, size)
+    painter.setClipPath(path_obj)
+    painter.drawPixmap(0, 0, scaled_pixmap)
+    painter.end()
+
+    return rounded_pixmap
 
 
 def _create_avatar_label(avatar_text: str, size: int, is_user: bool) -> QLabel:
@@ -84,84 +249,30 @@ def _create_avatar_label(avatar_text: str, size: int, is_user: bool) -> QLabel:
     Returns:
         QLabel: 配置好的头像标签
     """
-    from PyQt6.QtGui import QPainter, QPainterPath
-
     avatar_label = QLabel()
     avatar_label.setFixedSize(size, size)
     avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
     # 检查是否为图片路径
-    if avatar_text and Path(avatar_text).exists() and Path(avatar_text).is_file():
-        # 图片路径：加载图片
-        pixmap = QPixmap(avatar_text)
-        if not pixmap.isNull():
-            # 缩放图片
-            scaled_pixmap = pixmap.scaled(
-                size, size,
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            # 裁剪为正方形
-            if scaled_pixmap.width() > size or scaled_pixmap.height() > size:
-                x = (scaled_pixmap.width() - size) // 2
-                y = (scaled_pixmap.height() - size) // 2
-                scaled_pixmap = scaled_pixmap.copy(x, y, size, size)
+    avatar_path = Path(avatar_text) if avatar_text else None
+    if avatar_path and avatar_path.is_file():
+        try:
+            mtime_ns = avatar_path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = 0
 
-            # v2.23.1 创建圆形遮罩
-            rounded_pixmap = QPixmap(size, size)
-            rounded_pixmap.fill(Qt.GlobalColor.transparent)
-
-            painter = QPainter(rounded_pixmap)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-
-            # 创建圆形路径
-            path = QPainterPath()
-            path.addEllipse(0, 0, size, size)
-
-            # 裁剪并绘制
-            painter.setClipPath(path)
-            painter.drawPixmap(0, 0, scaled_pixmap)
-            painter.end()
-
+        rounded_pixmap = _load_rounded_avatar_pixmap(str(avatar_path), size, mtime_ns)
+        if not rounded_pixmap.isNull():
             avatar_label.setPixmap(rounded_pixmap)
             avatar_label.setScaledContents(False)
         else:
-            # 图片加载失败，使用默认 emoji
             avatar_label.setText("👤" if is_user else "🐱")
     else:
         # emoji 或无效路径：直接显示文本
         avatar_label.setText(avatar_text if avatar_text else ("👤" if is_user else "🐱"))
 
-    # 设置样式
-    if is_user:
-        # 用户头像：主色调渐变
-        avatar_label.setStyleSheet(f"""
-            QLabel {{
-                background: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:1,
-                    stop:0 {MD3_ENHANCED_COLORS['primary_40']},
-                    stop:1 {MD3_ENHANCED_COLORS['secondary_40']}
-                );
-                border-radius: {size // 2}px;
-                font-size: {size // 2}px;
-                border: 2px solid {MD3_ENHANCED_COLORS['surface_bright']};
-            }}
-        """)
-    else:
-        # AI头像：第三色调渐变
-        avatar_label.setStyleSheet(f"""
-            QLabel {{
-                background: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:1,
-                    stop:0 {MD3_ENHANCED_COLORS['tertiary_40']},
-                    stop:1 {MD3_ENHANCED_COLORS['primary_40']}
-                );
-                border-radius: {size // 2}px;
-                font-size: {size // 2}px;
-                border: 2px solid {MD3_ENHANCED_COLORS['surface_bright']};
-            }}
-        """)
+    # 设置样式（缓存）
+    avatar_label.setStyleSheet(_get_avatar_qss(size, is_user))
 
     return avatar_label
 
@@ -169,10 +280,11 @@ def _create_avatar_label(avatar_text: str, size: int, is_user: bool) -> QLabel:
 class LightMessageBubble(QWidget):
     """浅色主题消息气泡 - v2.22.0 增强版（支持自定义头像）"""
 
-    def __init__(self, message: str, is_user: bool = True, parent=None):
+    def __init__(self, message: str, is_user: bool = True, parent=None, *, enable_shadow: bool = True):
         super().__init__(parent)
         self.message = message
         self.is_user = is_user
+        self._enable_shadow = bool(enable_shadow)
 
         # 动画参数
         self._scale = 0.85
@@ -186,10 +298,10 @@ class LightMessageBubble(QWidget):
         # 主布局
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(
-            int(MD3_ENHANCED_SPACING["lg"].replace("px", "")),
-            int(MD3_ENHANCED_SPACING["sm"].replace("px", "")),
-            int(MD3_ENHANCED_SPACING["lg"].replace("px", "")),
-            int(MD3_ENHANCED_SPACING["sm"].replace("px", ""))
+            _SPACING_LG,
+            _SPACING_SM,
+            _SPACING_LG,
+            _SPACING_SM,
         )
         main_layout.setSpacing(8)
 
@@ -211,7 +323,7 @@ class LightMessageBubble(QWidget):
 
         # 气泡容器
         bubble_layout = QVBoxLayout()
-        bubble_layout.setSpacing(int(MD3_ENHANCED_SPACING["1"].replace("px", "")))
+        bubble_layout.setSpacing(_SPACING_1)
 
         # 消息文本 - 使用 QLabel，自适应宽度
         self.message_label = QLabel(self.message)
@@ -223,7 +335,6 @@ class LightMessageBubble(QWidget):
         self.message_label.setMaximumWidth(max_width)
 
         # 设置尺寸策略：优先使用内容宽度
-        from PyQt6.QtWidgets import QSizePolicy
         self.message_label.setSizePolicy(
             QSizePolicy.Policy.Preferred,  # 水平方向优先使用内容宽度
             QSizePolicy.Policy.Minimum     # 垂直方向最小化
@@ -241,59 +352,35 @@ class LightMessageBubble(QWidget):
         # 设置样式 - 使用 MD3 标准 Elevation 和 Surface Tints
         if self.is_user:
             # 用户消息 - MD3 Primary Container + Elevation Level 1
-            self.message_label.setStyleSheet(f"""
-                QLabel {{
-                    background: {MD3_ENHANCED_COLORS['primary_container']};
-                    color: {MD3_ENHANCED_COLORS['on_primary_container']};
-                    border-radius: 20px;
-                    padding: 12px 16px;
-                    {get_typography_css('body_large')}
-                    font-weight: 500;
-                    line-height: 1.5;
-                }}
-            """)
+            self.message_label.setStyleSheet(_MESSAGE_LABEL_QSS_USER)
 
             # 添加 MD3 Elevation Level 1 阴影效果
-            shadow = QGraphicsDropShadowEffect(self.message_label)
-            shadow.setBlurRadius(3)
-            shadow.setXOffset(0)
-            shadow.setYOffset(1)
-            shadow.setColor(QColor(0, 0, 0, 38))
-            self.message_label.setGraphicsEffect(shadow)
+            if self._enable_shadow:
+                shadow = QGraphicsDropShadowEffect(self.message_label)
+                shadow.setBlurRadius(3)
+                shadow.setXOffset(0)
+                shadow.setYOffset(1)
+                shadow.setColor(QColor(0, 0, 0, 38))
+                self.message_label.setGraphicsEffect(shadow)
         else:
             # AI 消息 - MD3 Surface Container High + Elevation Level 1
-            self.message_label.setStyleSheet(f"""
-                QLabel {{
-                    background: {MD3_ENHANCED_COLORS['surface_container_high']};
-                    color: {MD3_ENHANCED_COLORS['on_surface']};
-                    border-radius: 20px;
-                    padding: 12px 16px;
-                    {get_typography_css('body_large')}
-                    line-height: 1.5;
-                    border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
-                }}
-            """)
+            self.message_label.setStyleSheet(_MESSAGE_LABEL_QSS_AI)
 
             # 添加 MD3 Elevation Level 1 阴影效果
-            shadow = QGraphicsDropShadowEffect(self.message_label)
-            shadow.setBlurRadius(3)
-            shadow.setXOffset(0)
-            shadow.setYOffset(1)
-            shadow.setColor(QColor(0, 0, 0, 38))
-            self.message_label.setGraphicsEffect(shadow)
+            if self._enable_shadow:
+                shadow = QGraphicsDropShadowEffect(self.message_label)
+                shadow.setBlurRadius(3)
+                shadow.setXOffset(0)
+                shadow.setYOffset(1)
+                shadow.setColor(QColor(0, 0, 0, 38))
+                self.message_label.setGraphicsEffect(shadow)
 
         bubble_layout.addWidget(self.message_label)
 
         # 时间戳 - 优化排版
         time_str = datetime.now().strftime("%H:%M")
         self.time_label = QLabel(time_str)
-        self.time_label.setStyleSheet(f"""
-            QLabel {{
-                color: {MD3_ENHANCED_COLORS['on_surface_variant']};
-                {get_typography_css('label_small')}
-                background: transparent;
-            }}
-        """)
+        self.time_label.setStyleSheet(_TIME_LABEL_QSS)
 
         # v2.48.5 优化：时间戳根据消息类型对齐
         # 用户消息时间戳右对齐，AI消息时间戳左对齐
@@ -321,13 +408,20 @@ class LightMessageBubble(QWidget):
         """
         pass
 
+    def disable_shadow(self) -> None:
+        """关闭阴影效果（用于大量消息时降低渲染开销）。"""
+        if not getattr(self, "_enable_shadow", True):
+            return
+        self._enable_shadow = False
+        if hasattr(self, "message_label") and self.message_label:
+            self.message_label.setGraphicsEffect(None)
+
     def show_with_animation(self):
         """显示时带 Material Design 3 增强动画效果 - v2.48.6 优化
 
         组合动画效果（符合 MD3 规范）：
         1. 淡入动画 (250ms) - 透明度从 0 到 1
-        2. 缩放动画 (250ms) - 从 0.85 缩放到 1.0
-        3. 滑入动画 (250ms) - 从侧边滑入 30px
+        2. 滑入动画 (250ms) - 从侧边滑入 30px
 
         所有动画并行执行，创造流畅的视觉体验
         动画时长：250ms（MD3 标准中等复杂度动画）
@@ -344,14 +438,7 @@ class LightMessageBubble(QWidget):
         self.fade_in.setEndValue(1.0)
         self.fade_in.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-        # 2. Material Design 3 缩放动画 - 使用 OutCubic 缓动
-        self.scale_anim = QPropertyAnimation(self, b"scale")
-        self.scale_anim.setDuration(250)  # 250ms 快速响应
-        self.scale_anim.setStartValue(0.85)  # 从 85% 尺寸开始
-        self.scale_anim.setEndValue(1.0)
-        self.scale_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-
-        # 3. Material Design 3 滑入动画 - 使用 OutCubic 缓动
+        # 2. Material Design 3 滑入动画 - 使用 OutCubic 缓动
         self.slide_in = QPropertyAnimation(self, b"pos")
         self.slide_in.setDuration(250)  # 250ms 快速响应
         self.slide_in.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -371,7 +458,6 @@ class LightMessageBubble(QWidget):
         # 4. 并行动画组 - 同时执行所有动画，创造流畅的组合效果
         self.animation_group = QParallelAnimationGroup()
         self.animation_group.addAnimation(self.fade_in)
-        self.animation_group.addAnimation(self.scale_anim)
         self.animation_group.addAnimation(self.slide_in)
 
         # 动画完成后清理资源，提升性能
@@ -383,8 +469,30 @@ class LightMessageBubble(QWidget):
 
         移除图形效果以减少 GPU 负担，提升渲染性能
         """
-        # 移除透明度效果，减少 GPU 渲染负担
-        self.setGraphicsEffect(None)
+        # 移除透明度效果，减少 GPU 渲染负担，并释放动画对象避免累计占用
+        try:
+            self.setGraphicsEffect(None)
+        except Exception:
+            pass
+
+        for attr in ("opacity_effect", "fade_in", "slide_in", "animation_group"):
+            obj = getattr(self, attr, None)
+            if obj is None:
+                continue
+            try:
+                if hasattr(obj, "stop"):
+                    obj.stop()
+            except Exception:
+                pass
+            try:
+                if hasattr(obj, "deleteLater"):
+                    obj.deleteLater()
+            except Exception:
+                pass
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
 
     @pyqtProperty(float)
     def scale(self):
@@ -414,8 +522,6 @@ class LightMessageBubble(QWidget):
             self.animation_group.stop()
         if hasattr(self, 'fade_in') and self.fade_in:
             self.fade_in.stop()
-        if hasattr(self, 'scale_anim') and self.scale_anim:
-            self.scale_anim.stop()
         if hasattr(self, 'slide_in') and self.slide_in:
             self.slide_in.stop()
 
@@ -439,6 +545,13 @@ class LightStreamingMessageBubble(QWidget):
         super().__init__(parent)
         self._scale = 0.85
         self._adjust_timer = None  # 高度调整定时器
+        self._doc_size_connected = False
+        self._pending_height: int | None = None
+        self._height_dirty = False
+        self._last_height_update_ts = 0.0
+        self._shadow_applied = False
+        self._last_wrap_width = 0
+        self._wrap_retry_count = 0
         self.setup_ui()
         self.setup_animations()
 
@@ -447,16 +560,16 @@ class LightStreamingMessageBubble(QWidget):
 
         使用容器模式解决 QTextEdit 圆角不显示的问题：
         1. 创建 QWidget 容器，应用圆角、边框、渐变、阴影
-        2. QTextEdit 使用透明背景，让容器的样式显示出来
-        3. 容器自动适应 QTextEdit 的高度变化
+        2. QPlainTextEdit 使用透明背景，让容器的样式显示出来
+        3. 容器自动适应 QPlainTextEdit 的高度变化
         """
         # 主布局
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(
-            int(MD3_ENHANCED_SPACING["lg"].replace("px", "")),
-            int(MD3_ENHANCED_SPACING["sm"].replace("px", "")),
-            int(MD3_ENHANCED_SPACING["lg"].replace("px", "")),
-            int(MD3_ENHANCED_SPACING["sm"].replace("px", ""))
+            _SPACING_LG,
+            _SPACING_SM,
+            _SPACING_LG,
+            _SPACING_SM,
         )
         main_layout.setSpacing(8)
 
@@ -469,9 +582,9 @@ class LightStreamingMessageBubble(QWidget):
 
         # 气泡容器
         bubble_layout = QVBoxLayout()
-        bubble_layout.setSpacing(int(MD3_ENHANCED_SPACING["1"].replace("px", "")))
+        bubble_layout.setSpacing(_SPACING_1)
 
-        # 创建圆角容器 Widget 来包裹 QTextEdit，确保圆角正确显示
+        # 创建圆角容器 Widget 来包裹 QPlainTextEdit，确保圆角正确显示
         # 使用 MD3 Surface Container High + Elevation Level 1
         self.bubble_container = QWidget()
         # v2.21.4 优化：只设置最大宽度，让容器自适应内容
@@ -491,31 +604,74 @@ class LightStreamingMessageBubble(QWidget):
             }}
         """)
 
-        # 添加 MD3 Elevation Level 1 阴影到容器
-        shadow = QGraphicsDropShadowEffect(self.bubble_container)
-        shadow.setBlurRadius(3)  # MD3 Level 1
-        shadow.setXOffset(0)
-        shadow.setYOffset(1)  # MD3 Level 1
-        shadow.setColor(QColor(0, 0, 0, 38))  # 0.15 * 255
-        self.bubble_container.setGraphicsEffect(shadow)
+        # v2.49.0 性能优化：流式过程中频繁更新文本/高度，阴影会显著拖慢帧率；
+        # 因此默认延后到 finish() 再一次性加阴影（保持视觉一致同时提升流式 FPS）。
+        self.bubble_container.setGraphicsEffect(None)
 
         # 容器内部布局
         container_layout = QVBoxLayout(self.bubble_container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
 
-        # 消息文本（使用 QTextEdit 以支持流式追加）
-        self.message_text = QTextEdit()
+        # 消息文本（使用 QPlainTextEdit 提升流式追加性能）
+        self.message_text = QPlainTextEdit()
         self.message_text.setReadOnly(True)
+        # 约束宽度：在部分平台上 QPlainTextEdit 的 sizeHint 会倾向于“单行展开”，配合最大宽度可确保触发换行
+        try:
+            self.message_text.setMaximumWidth(self.bubble_container.maximumWidth())
+        except Exception:
+            pass
+        try:
+            self.message_text.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        except Exception:
+            pass
+        # 修复：确保按控件宽度自动换行，否则会出现文本被裁切、气泡无法随内容增高的问题
+        try:
+            self.message_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        except Exception:
+            # 不同 Qt/PyQt 版本可能缺少相关 API，兜底为默认行为
+            pass
+        wrap_modes = []
+        # 兼容中文/无空格文本：优先使用 WrapAnywhere，避免部分平台下按“词边界”不换行的问题
+        for attr in ("WrapAnywhere", "WrapAtWordBoundaryOrAnywhere"):
+            try:
+                wrap_modes.append(getattr(QTextOption.WrapMode, attr))
+            except Exception:
+                continue
+        for mode in wrap_modes:
+            try:
+                self.message_text.setWordWrapMode(mode)
+                break
+            except Exception:
+                continue
+        try:
+            option = self.message_text.document().defaultTextOption()
+            for mode in wrap_modes:
+                try:
+                    option.setWrapMode(mode)
+                    self.message_text.document().setDefaultTextOption(option)
+                    break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        # 性能：禁用撤销栈/最小化视口更新，减少流式追加时的内部开销
+        self.message_text.setUndoRedoEnabled(False)
+        try:
+            self.message_text.setViewportUpdateMode(
+                QPlainTextEdit.ViewportUpdateMode.MinimalViewportUpdate
+            )
+        except Exception:
+            pass
         # v2.48.8 修复：设置初始高度为 60px（合理的最小值）
         self.message_text.setMinimumHeight(60)
         self.message_text.setMaximumHeight(60)
         self.message_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.message_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.message_text.setFrameStyle(0)  # 移除边框
-        # QTextEdit 使用透明背景，让容器的背景显示出来
+        # QPlainTextEdit 使用透明背景，让容器的背景显示出来
         self.message_text.setStyleSheet(f"""
-            QTextEdit {{
+            QPlainTextEdit {{
                 background: transparent;
                 color: {MD3_ENHANCED_COLORS['on_surface']};
                 border: none;
@@ -529,8 +685,15 @@ class LightStreamingMessageBubble(QWidget):
         # 使用零宽空格，不可见但能撑起高度
         self.message_text.setPlainText("\u200B")
 
+        # v2.49.0 性能优化：用 documentSizeChanged 事件驱动高度更新（替代频繁动画/轮询）
+        self._setup_document_size_tracking()
+
         container_layout.addWidget(self.message_text)
         bubble_layout.addWidget(self.bubble_container)
+
+        # 兼容：部分平台/主题下 QPlainTextEdit 的 document 宽度不会自动更新，导致不换行；
+        # 这里在事件循环空闲时根据 viewport 宽度显式设置 textWidth，确保换行与高度计算生效。
+        QTimer.singleShot(0, self._ensure_text_wrap)
 
         # 时间戳
         time_str = datetime.now().strftime("%H:%M")
@@ -549,6 +712,77 @@ class LightStreamingMessageBubble(QWidget):
         main_layout.addLayout(bubble_layout)
         main_layout.addStretch()
 
+    def _ensure_text_wrap(self) -> None:
+        """确保文档按视口宽度换行（解决文本不换行导致气泡不扩张的问题）。"""
+        try:
+            viewport = self.message_text.viewport() if hasattr(self, "message_text") else None
+            width = int(viewport.width()) if viewport is not None else 0
+        except Exception:
+            width = 0
+
+        # QSS: padding 12px 16px（左右共 32px），需要从视口宽度中扣除，否则仍可能出现右侧裁切
+        wrap_width = max(0, width - 32)
+        if wrap_width <= 0:
+            # 某些平台 showEvent 触发时布局尚未完成，viewport 宽度可能为 0，这里做有限次重试
+            if self._wrap_retry_count < 3:
+                self._wrap_retry_count += 1
+                QTimer.singleShot(0, self._ensure_text_wrap)
+            return
+
+        if wrap_width == self._last_wrap_width:
+            return
+
+        self._last_wrap_width = wrap_width
+        self._wrap_retry_count = 0
+
+        # 兜底：再次明确启用按控件宽度换行（避免某些环境下 wrapMode 未生效）
+        try:
+            self.message_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        except Exception:
+            pass
+
+        wrap_modes = []
+        # 兼容中文/无空格文本：优先使用 WrapAnywhere，避免部分平台下按“词边界”不换行的问题
+        for attr in ("WrapAnywhere", "WrapAtWordBoundaryOrAnywhere"):
+            try:
+                wrap_modes.append(getattr(QTextOption.WrapMode, attr))
+            except Exception:
+                continue
+        for mode in wrap_modes:
+            try:
+                self.message_text.setWordWrapMode(mode)
+                break
+            except Exception:
+                continue
+
+        try:
+            doc = self.message_text.document()
+            if doc is not None:
+                doc.setTextWidth(wrap_width)
+                # 主动触发一次高度评估：换行宽度变化时 documentSizeChanged 可能不可靠（QPlainTextEdit 下常见）
+                self._on_document_size_changed(None)
+        except Exception:
+            pass
+
+        if BUBBLE_WRAP_DEBUG:
+            try:
+                logger.debug(
+                    "StreamBubble wrap updated: viewport=%s, wrap_width=%s, lineWrapMode=%s",
+                    width,
+                    wrap_width,
+                    getattr(self.message_text, "lineWrapMode", lambda: None)(),
+                )
+            except Exception:
+                pass
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._ensure_text_wrap()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._ensure_text_wrap()
+
     def setup_animations(self):
         """设置动画 - v2.48.6 优化：添加入场动画
 
@@ -561,13 +795,36 @@ class LightStreamingMessageBubble(QWidget):
         """
         pass  # 动画在 show_with_animation 中按需创建
 
+    def disable_shadow(self) -> None:
+        """关闭阴影效果（用于大量消息时降低渲染开销）。"""
+        if getattr(self, "_shadow_disabled", False):
+            return
+        self._shadow_disabled = True
+        self._shadow_applied = False
+        if hasattr(self, "bubble_container") and self.bubble_container:
+            self.bubble_container.setGraphicsEffect(None)
+
+    def _apply_shadow_if_needed(self) -> None:
+        """在不影响流式性能的前提下补齐阴影效果。"""
+        if getattr(self, "_shadow_disabled", False) or self._shadow_applied:
+            return
+        if not hasattr(self, "bubble_container") or self.bubble_container is None:
+            return
+
+        shadow = QGraphicsDropShadowEffect(self.bubble_container)
+        shadow.setBlurRadius(3)  # MD3 Level 1
+        shadow.setXOffset(0)
+        shadow.setYOffset(1)  # MD3 Level 1
+        shadow.setColor(QColor(0, 0, 0, 38))  # 0.15 * 255
+        self.bubble_container.setGraphicsEffect(shadow)
+        self._shadow_applied = True
+
     def show_with_animation(self):
         """显示时带 Material Design 3 入场动画 - v2.48.6 新增
 
         组合动画效果：
         1. 淡入动画 (250ms) - 透明度从 0 到 1
-        2. 缩放动画 (250ms) - 从 0.9 缩放到 1.0
-        3. 滑入动画 (250ms) - 从左侧滑入 30px
+        2. 滑入动画 (250ms) - 从左侧滑入 30px
 
         所有动画并行执行，创造流畅的视觉体验
         """
@@ -582,14 +839,7 @@ class LightStreamingMessageBubble(QWidget):
         self.fade_in.setEndValue(1.0)
         self.fade_in.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-        # 2. Material Design 3 缩放动画 - 使用 OutCubic 缓动
-        self.scale_anim = QPropertyAnimation(self, b"scale")
-        self.scale_anim.setDuration(250)  # 250ms 快速响应
-        self.scale_anim.setStartValue(0.9)  # 从 90% 尺寸开始（更subtle）
-        self.scale_anim.setEndValue(1.0)
-        self.scale_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-
-        # 3. Material Design 3 滑入动画 - 使用 OutCubic 缓动
+        # 2. Material Design 3 滑入动画 - 使用 OutCubic 缓动
         self.slide_in = QPropertyAnimation(self, b"pos")
         self.slide_in.setDuration(250)  # 250ms 快速响应
         self.slide_in.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -603,7 +853,6 @@ class LightStreamingMessageBubble(QWidget):
         # 4. 并行动画组 - 同时执行所有动画
         self.animation_group = QParallelAnimationGroup()
         self.animation_group.addAnimation(self.fade_in)
-        self.animation_group.addAnimation(self.scale_anim)
         self.animation_group.addAnimation(self.slide_in)
 
         # 动画完成后清理资源
@@ -615,8 +864,30 @@ class LightStreamingMessageBubble(QWidget):
 
         移除图形效果以减少 GPU 负担，提升渲染性能
         """
-        # 移除透明度效果，减少 GPU 渲染负担
-        self.setGraphicsEffect(None)
+        # 移除透明度效果，减少 GPU 渲染负担，并释放动画对象避免累计占用
+        try:
+            self.setGraphicsEffect(None)
+        except Exception:
+            pass
+
+        for attr in ("opacity_effect", "fade_in", "slide_in", "animation_group"):
+            obj = getattr(self, attr, None)
+            if obj is None:
+                continue
+            try:
+                if hasattr(obj, "stop"):
+                    obj.stop()
+            except Exception:
+                pass
+            try:
+                if hasattr(obj, "deleteLater"):
+                    obj.deleteLater()
+            except Exception:
+                pass
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
 
     @pyqtProperty(float)
     def scale(self):
@@ -648,29 +919,47 @@ class LightStreamingMessageBubble(QWidget):
             self._first_append_done = True
             self.message_text.clear()
 
-        # v2.21.5 优化：暂时禁用更新，减少重绘
-        self.message_text.setUpdatesEnabled(False)
+        # 小片段（逐字流式）不值得频繁切换 updatesEnabled，反而会引入额外开销；仅对较大追加使用。
+        disable_updates = len(text) >= 32
+        if disable_updates:
+            # v2.21.5 优化：暂时禁用更新，减少重绘（务必用 finally 保证恢复，避免偶发异常导致界面不再刷新）
+            self.message_text.setUpdatesEnabled(False)
+        try:
+            # 确保文档按当前视口宽度换行（某些环境下仅在插入后才会更新布局）
+            try:
+                self._ensure_text_wrap()
+            except Exception:
+                pass
+            # 双保险：若 wrap 配置被重置，重新应用
+            try:
+                if hasattr(self.message_text, "lineWrapMode"):
+                    if (
+                        self.message_text.lineWrapMode()
+                        != QPlainTextEdit.LineWrapMode.WidgetWidth
+                    ):
+                        self.message_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+            except Exception:
+                pass
 
-        # 批量更新文本，减少重绘次数
-        cursor = self.message_text.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        cursor.insertText(text)
-        self.message_text.setTextCursor(cursor)
+            # 批量更新文本，减少重绘次数（避免 setTextCursor 影响用户选中/触发额外更新）
+            cursor = self.message_text.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            try:
+                cursor.beginEditBlock()
+            except Exception:
+                pass
+            cursor.insertText(text)
+            try:
+                cursor.endEditBlock()
+            except Exception:
+                pass
+        finally:
+            # v2.21.5 优化：重新启用更新
+            if disable_updates:
+                self.message_text.setUpdatesEnabled(True)
 
-        # v2.21.5 优化：重新启用更新
-        self.message_text.setUpdatesEnabled(True)
-
-        # v2.48.9 修复：减少延迟到 20ms，提升高度自适应响应速度
-        # 20ms 是最佳平衡点：
-        # - 足够批量更新多个字符（流式输出通常每次 1-5 个字符）
-        # - 及时响应换行导致的高度变化
-        # - 避免新内容挤压上一行
-        if not hasattr(self, '_resize_timer'):
-            self._resize_timer = QTimer()
-            self._resize_timer.setSingleShot(True)
-            self._resize_timer.timeout.connect(self._adjust_height_smooth)
-
-        self._resize_timer.start(20)  # v2.48.9: 20ms 延迟，及时响应高度变化
+        # 高度更新：不依赖 documentSizeChanged（在 QPlainTextEdit 下常见不可靠），统一用节流计时器调度
+        self._on_document_size_changed(None)
 
     def _adjust_height(self):
         """根据内容自动调整高度 - 性能优化版
@@ -678,78 +967,162 @@ class LightStreamingMessageBubble(QWidget):
         调整策略：
         1. 计算文档实际高度
         2. 添加内边距（24px = 12px top + 12px bottom）
-        3. 限制在最小高度（40px）和最大高度（600px）之间
+        3. 限制在最小高度（60px）和最大高度（600px）之间
         4. 同时设置 min 和 max 高度，让容器自动适应
         """
-        # 获取文档实际高度
-        doc_height = self.message_text.document().size().height()
-        # 添加内边距（QTextEdit 的 padding: 12px 18px）
+        # 获取文档实际高度（优先使用 documentLayout 的 documentSize，避免部分平台下 size() 不准确）
+        try:
+            self._ensure_text_wrap()
+        except Exception:
+            pass
+
+        doc_height = self._get_visual_document_height()
+        # 添加内边距（QPlainTextEdit 的 padding: 12px 16px）
         padding = 24  # 12px top + 12px bottom
         # 设置最小和最大高度限制
-        min_height = 40
-        max_height = 600
+        min_height = 60
+        max_height = self._get_max_stream_height()
         # 计算最终高度
         new_height = int(max(min_height, min(doc_height + padding, max_height)))
-        # 设置 QTextEdit 的高度
+        # 设置 QPlainTextEdit 的高度
         self.message_text.setMinimumHeight(new_height)
         self.message_text.setMaximumHeight(new_height)
+        try:
+            self.bubble_container.updateGeometry()
+            self.updateGeometry()
+        except Exception:
+            pass
         # 容器会自动调整大小
 
-    def _adjust_height_smooth(self):
-        """平滑调整高度 - v2.48.9 修复：优化动画时长和响应速度
+    def _get_visual_document_height(self) -> float:
+        """获取 QPlainTextEdit 的可视文档高度（包含换行后的行数）。"""
+        try:
+            doc = self.message_text.document()
+            if doc is None:
+                return 0.0
 
-        使用动画平滑调整气泡高度，避免突然跳动
-        """
-        # v2.48.8 修复：检查文档是否有效
-        if not self.message_text.document():
+            last_block = doc.lastBlock()
+            if not last_block.isValid():
+                return 0.0
+
+            # 注意：QPlainTextEdit 的 QTextDocument.size()/documentSize() 在某些平台/版本下
+            # 不会反映“自动换行”带来的高度变化；blockBounding* 才能拿到真实可视高度。
+            geometry = self.message_text.blockBoundingGeometry(last_block)
+            rect = self.message_text.blockBoundingRect(last_block)
+            height = float(geometry.y() + rect.height())
+            if height <= 0 or height > 100000:
+                return 0.0
+
+            # 兼容：部分平台 contentOffset 会带来额外偏移（通常很小），这里取正值补偿
+            try:
+                offset_y = float(self.message_text.contentOffset().y())
+                if offset_y > 0:
+                    height += offset_y
+            except Exception:
+                pass
+
+            return height
+        except Exception:
+            return 0.0
+
+    def _setup_document_size_tracking(self) -> None:
+        """连接 documentSizeChanged，用更低开销的方式驱动高度更新。"""
+        try:
+            # 计时器总是可用：即便 documentSizeChanged 不触发，也能通过 append_text/_ensure_text_wrap 手动调度
+            if not hasattr(self, "_height_update_timer"):
+                self._height_update_timer = QTimer()
+                self._height_update_timer.setSingleShot(True)
+                self._height_update_timer.timeout.connect(self._apply_pending_height)
+
+            doc = self.message_text.document()
+            layout = doc.documentLayout() if doc is not None else None
+            if layout is None or not hasattr(layout, "documentSizeChanged"):
+                self._doc_size_connected = False
+                return
+
+            layout.documentSizeChanged.connect(self._on_document_size_changed)
+            self._doc_size_connected = True
+        except Exception:
+            self._doc_size_connected = False
+
+    def _on_document_size_changed(self, size) -> None:
+        """文档尺寸变化事件：节流后批量应用高度，避免频繁触发布局重算。"""
+        # QPlainTextEdit 下 documentLayout().documentSize() 往往只随 blockCount 改变，
+        # 并不会反映“自动换行”导致的可视高度变化；
+        # 因此这里只负责“标记脏 + 定时器节流”，实际高度计算放到 _apply_pending_height()。
+        self._height_dirty = True
+
+        timer = getattr(self, "_height_update_timer", None)
+        if timer is None:
             return
 
-        # 获取文档实际高度
-        doc_height = self.message_text.document().size().height()
+        if timer.isActive():
+            return
 
-        # v2.48.8 修复：检查文档高度是否有效（避免异常值）
+        now = time.monotonic()
+        interval_ms = STREAMING_HEIGHT_UPDATE_INTERVAL_MS
+        elapsed_ms = (now - self._last_height_update_ts) * 1000.0 if self._last_height_update_ts else 9999.0
+        wait_ms = max(0, int(interval_ms - elapsed_ms))
+        timer.start(wait_ms)
+
+    def _apply_pending_height(self) -> None:
+        """应用已计算的目标高度（不使用动画，避免持续掉帧）。"""
+        self._last_height_update_ts = time.monotonic()
+        if not getattr(self, "_height_dirty", False):
+            return
+
+        self._height_dirty = False
+
+        try:
+            self._ensure_text_wrap()
+        except Exception:
+            pass
+
+        doc_height = self._get_visual_document_height()
         if doc_height <= 0 or doc_height > 10000:
             return
 
         padding = 24
-        min_height = 60  # v2.48.8: 提高最小高度到 60px
-        max_height = 600
+        min_height = 60
+        max_height = self._get_max_stream_height()
         new_height = int(max(min_height, min(doc_height + padding, max_height)))
 
-        # 获取当前高度
         current_height = self.message_text.minimumHeight()
-
-        # v2.48.8 修复：如果是首次调整（从初始 60px 开始），直接设置，避免动画
-        if current_height == 60 and not hasattr(self, '_height_adjusted_once'):
-            self._height_adjusted_once = True
-            self.message_text.setMinimumHeight(new_height)
-            self.message_text.setMaximumHeight(new_height)
+        if abs(new_height - current_height) < 12:
             return
 
-        # v2.48.9 优化：降低直接设置的阈值到 5px，让更多情况使用动画
-        # 但对于极小的变化（<5px）仍然直接设置，避免不必要的动画
-        if abs(new_height - current_height) < 5:
-            self.message_text.setMinimumHeight(new_height)
-            self.message_text.setMaximumHeight(new_height)
-            return
+        self.message_text.setMinimumHeight(new_height)
+        self.message_text.setMaximumHeight(new_height)
+        try:
+            self.bubble_container.updateGeometry()
+            self.updateGeometry()
+        except Exception:
+            pass
+        # 高度变化会改变滚动区域的 maximum，这里异步触发一次“到达底部”，避免文本增长时视图不跟随
+        try:
+            window = self.window()
+            if window is not None and hasattr(window, "_scroll_to_bottom"):
+                QTimer.singleShot(0, window._scroll_to_bottom)
+        except Exception:
+            pass
 
-        # v2.48.9 修复：缩短动画时长到 80ms，提升响应速度
-        # 80ms 是最佳平衡点：
-        # - 足够平滑，不会有突兀感
-        # - 足够快速，及时跟随流式输出
-        # - 避免动画累积导致的延迟
-        if not hasattr(self, '_height_anim'):
-            self._height_anim = QPropertyAnimation(self.message_text, b"minimumHeight")
-            self._height_anim.setDuration(80)  # v2.48.9: 80ms 快速平滑过渡
-            self._height_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-            # 动画完成后同步设置最大高度
-            self._height_anim.finished.connect(
-                lambda: self.message_text.setMaximumHeight(self.message_text.minimumHeight())
-            )
+    def _get_max_stream_height(self) -> int:
+        """获取流式气泡最大高度（可配置，默认随视口动态变化）。"""
+        if STREAMING_BUBBLE_MAX_HEIGHT > 0:
+            return STREAMING_BUBBLE_MAX_HEIGHT
 
-        self._height_anim.setStartValue(current_height)
-        self._height_anim.setEndValue(new_height)
-        self._height_anim.start()
+        # 默认：不超过视口高度的 70%，并限制在 [600, 900]，避免过大导致布局成本飙升
+        try:
+            window = self.window()
+            scroll_area = getattr(window, "scroll_area", None) if window is not None else None
+            viewport = scroll_area.viewport() if scroll_area is not None else None
+            viewport_height = int(viewport.height()) if viewport is not None else 0
+            if viewport_height > 0:
+                return min(900, max(600, int(viewport_height * 0.7)))
+        except Exception:
+            pass
+
+        return 600
 
     def finish(self):
         """完成流式输出 - 清理资源
@@ -758,19 +1131,22 @@ class LightStreamingMessageBubble(QWidget):
         """
         # 最终调整高度到准确值
         self._adjust_height()
+        # 流式结束后再补齐阴影，避免流式期间持续掉帧
+        self._apply_shadow_if_needed()
         # 清理定时器，释放资源
-        if hasattr(self, '_resize_timer'):
-            self._resize_timer.stop()
-            del self._resize_timer
+        if hasattr(self, "_height_update_timer"):
+            self._height_update_timer.stop()
 
     def cleanup(self):
         """清理资源 - v2.19.2 新增：停止定时器，释放资源"""
         # 停止定时器
-        if hasattr(self, '_resize_timer') and self._resize_timer:
-            self._resize_timer.stop()
+        if hasattr(self, "_height_update_timer") and self._height_update_timer:
+            self._height_update_timer.stop()
 
         # 移除图形效果
         self.setGraphicsEffect(None)
+        if hasattr(self, "bubble_container") and self.bubble_container:
+            self.bubble_container.setGraphicsEffect(None)
 
 
 class LightTypingIndicator(QWidget):
@@ -799,10 +1175,10 @@ class LightTypingIndicator(QWidget):
         # 主布局
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(
-            int(MD3_ENHANCED_SPACING["lg"].replace("px", "")),
-            int(MD3_ENHANCED_SPACING["sm"].replace("px", "")),
-            int(MD3_ENHANCED_SPACING["lg"].replace("px", "")),
-            int(MD3_ENHANCED_SPACING["sm"].replace("px", ""))
+            _SPACING_LG,
+            _SPACING_SM,
+            _SPACING_LG,
+            _SPACING_SM,
         )
 
         # 气泡容器
@@ -905,29 +1281,41 @@ class LightImageMessageBubble(QWidget):
     - 视觉效果：圆角边框、柔和阴影
     """
 
-    def __init__(self, image_path: str, is_user: bool = True, is_sticker: bool = False, parent=None):
+    def __init__(
+        self,
+        image_path: str,
+        is_user: bool = True,
+        is_sticker: bool = False,
+        parent=None,
+        *,
+        with_animation: bool = True,
+        enable_shadow: bool = True,
+    ):
         super().__init__(parent)
         self.image_path = image_path
         self.is_user = is_user
         self.is_sticker = is_sticker  # 是否为表情包
         self.movie = None  # 用于播放动画
+        self._with_animation = bool(with_animation)
+        self._enable_shadow = bool(enable_shadow)
 
         # 动画参数
         self._scale = 0.85
         self._opacity = 0.0
 
         self.setup_ui()
-        self.setup_animations()
+        if self._with_animation:
+            self.setup_animations()
 
     def setup_ui(self):
         """设置 UI - v2.22.0 优化：添加头像显示"""
         # 主布局
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(
-            int(MD3_ENHANCED_SPACING["lg"].replace("px", "")),
-            int(MD3_ENHANCED_SPACING["sm"].replace("px", "")),
-            int(MD3_ENHANCED_SPACING["lg"].replace("px", "")),
-            int(MD3_ENHANCED_SPACING["sm"].replace("px", ""))
+            _SPACING_LG,
+            _SPACING_SM,
+            _SPACING_LG,
+            _SPACING_SM,
         )
         main_layout.setSpacing(8)
 
@@ -940,21 +1328,7 @@ class LightImageMessageBubble(QWidget):
 
         # v2.22.0 添加头像（AI消息在左侧）
         if not self.is_user:
-            avatar_label = QLabel(avatar_text)
-            avatar_label.setFixedSize(40, 40)
-            avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            avatar_label.setStyleSheet(f"""
-                QLabel {{
-                    background: qlineargradient(
-                        x1:0, y1:0, x2:1, y2:1,
-                        stop:0 {MD3_ENHANCED_COLORS['tertiary_40']},
-                        stop:1 {MD3_ENHANCED_COLORS['primary_40']}
-                    );
-                    border-radius: 20px;
-                    font-size: 20px;
-                    border: 2px solid {MD3_ENHANCED_COLORS['surface_bright']};
-                }}
-            """)
+            avatar_label = _create_avatar_label(avatar_text, 40, False)
             main_layout.addWidget(avatar_label, alignment=Qt.AlignmentFlag.AlignTop)
 
         if self.is_user:
@@ -962,7 +1336,7 @@ class LightImageMessageBubble(QWidget):
 
         # 气泡容器
         bubble_layout = QVBoxLayout()
-        bubble_layout.setSpacing(int(MD3_ENHANCED_SPACING["1"].replace("px", "")))
+        bubble_layout.setSpacing(_SPACING_1)
 
         # 图片标签
         self.image_label = QLabel()
@@ -972,20 +1346,14 @@ class LightImageMessageBubble(QWidget):
         # 尝试加载图片
         try:
             path = Path(self.image_path)
+            max_size = 200 if self.is_sticker else 400
 
             # 检查是否为动画格式
             if path.suffix.lower() in ['.gif', '.webp']:
                 # 使用 QMovie 播放动画
                 self.movie = QMovie(str(path))
 
-                # 设置尺寸
-                if self.is_sticker:
-                    max_size = 200  # 表情包较小
-                else:
-                    max_size = 400  # 普通图片较大
-
                 self.movie.setScaledSize(QSize(max_size, max_size))
-                self.movie.frameChanged.connect(self.update_frame)
                 self.image_label.setMovie(self.movie)
                 self.movie.start()
 
@@ -997,71 +1365,38 @@ class LightImageMessageBubble(QWidget):
                     self.image_label.setFixedSize(max_size, max_size)
             else:
                 # 静态图片
-                pixmap = QPixmap(str(path))
+                pixmap = _load_scaled_pixmap(str(path), max_size)
                 if pixmap.isNull():
                     raise ValueError("无法加载图片")
-
-                # 缩放图片到合适尺寸
-                if self.is_sticker:
-                    max_size = 200  # 表情包较小
-                else:
-                    max_size = 400  # 普通图片较大
-
-                if pixmap.width() > max_size or pixmap.height() > max_size:
-                    pixmap = pixmap.scaled(
-                        max_size, max_size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation
-                    )
 
                 self.image_label.setPixmap(pixmap)
                 self.image_label.setFixedSize(pixmap.size())
 
             # 设置样式 - MD3 圆角边框 + Elevation Level 2
-            self.image_label.setStyleSheet(f"""
-                QLabel {{
-                    background: {MD3_ENHANCED_COLORS['surface_bright']};
-                    border-radius: 16px;
-                    padding: 4px;
-                    border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
-                }}
-            """)
+            self.image_label.setStyleSheet(_IMAGE_LABEL_QSS)
 
             # 添加 MD3 Elevation Level 2 阴影效果（图片需要更明显的阴影）
             # MD3 Level 2: 0px 2px 6px 2px rgba(0,0,0,0.15)
-            shadow = QGraphicsDropShadowEffect(self.image_label)
-            shadow.setBlurRadius(6)  # MD3 Level 2
-            shadow.setXOffset(0)
-            shadow.setYOffset(2)  # MD3 Level 2
-            shadow.setColor(QColor(0, 0, 0, 38))  # 0.15 * 255
-            self.image_label.setGraphicsEffect(shadow)
+            if self._enable_shadow:
+                shadow = QGraphicsDropShadowEffect(self.image_label)
+                shadow.setBlurRadius(6)  # MD3 Level 2
+                shadow.setXOffset(0)
+                shadow.setYOffset(2)  # MD3 Level 2
+                shadow.setColor(QColor(0, 0, 0, 38))  # 0.15 * 255
+                self.image_label.setGraphicsEffect(shadow)
 
         except Exception as e:
             # 图片加载失败，显示错误提示
             self.image_label.setText("❌ 图片加载失败")
-            self.image_label.setStyleSheet(f"""
-                QLabel {{
-                    background: {MD3_ENHANCED_COLORS['error_container']};
-                    color: {MD3_ENHANCED_COLORS['on_error_container']};
-                    border-radius: 16px;
-                    padding: 20px 30px;
-                    {get_typography_css('body_large')}
-                }}
-            """)
-            print(f"图片加载失败: {e}")
+            self.image_label.setStyleSheet(_IMAGE_LABEL_ERROR_QSS)
+            logger.warning("图片加载失败: %s", e)
 
         bubble_layout.addWidget(self.image_label)
 
         # 时间戳
         time_str = datetime.now().strftime("%H:%M")
         self.time_label = QLabel(time_str)
-        self.time_label.setStyleSheet(f"""
-            QLabel {{
-                color: {MD3_ENHANCED_COLORS['on_surface_variant']};
-                {get_typography_css('label_small')}
-                background: transparent;
-            }}
-        """)
+        self.time_label.setStyleSheet(_TIME_LABEL_QSS)
 
         if self.is_user:
             self.time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
@@ -1081,7 +1416,7 @@ class LightImageMessageBubble(QWidget):
             main_layout.addStretch()
 
     def setup_animations(self):
-        """设置动画 - 淡入 + 缩放"""
+        """设置动画 - 淡入（性能优先）"""
         # 透明度动画
         self.opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.opacity_effect)
@@ -1092,24 +1427,36 @@ class LightImageMessageBubble(QWidget):
         self.opacity_animation.setStartValue(0.0)
         self.opacity_animation.setEndValue(1.0)
         self.opacity_animation.setEasingCurve(MD3_ENHANCED_EASING["emphasized_decelerate"])
+        self.opacity_animation.finished.connect(self._on_animation_finished)
 
-        # 缩放动画（通过 scale 属性）
-        self.scale_animation = QPropertyAnimation(self, b"scale")
-        self.scale_animation.setDuration(MD3_ENHANCED_DURATION["medium4"])
-        self.scale_animation.setStartValue(0.85)
-        self.scale_animation.setEndValue(1.0)
-        self.scale_animation.setEasingCurve(MD3_ENHANCED_EASING["emphasized_decelerate"])
+        # 启动动画（小延迟避免首次 show 期间的额外布局抖动）
+        QTimer.singleShot(30, self.opacity_animation.start)
 
-        # 并行动画组
-        self.animation_group = QParallelAnimationGroup()
-        self.animation_group.addAnimation(self.opacity_animation)
-        self.animation_group.addAnimation(self.scale_animation)
+    def _on_animation_finished(self):
+        """动画完成后清理资源（避免累计占用与无意义重绘）。"""
+        try:
+            self.setGraphicsEffect(None)
+        except Exception:
+            pass
 
-        # 动画完成后移除图形效果（性能优化）
-        self.animation_group.finished.connect(lambda: self.setGraphicsEffect(None))
-
-        # 启动动画
-        QTimer.singleShot(50, self.animation_group.start)
+        for attr in ("opacity_effect", "opacity_animation"):
+            obj = getattr(self, attr, None)
+            if obj is None:
+                continue
+            try:
+                if hasattr(obj, "stop"):
+                    obj.stop()
+            except Exception:
+                pass
+            try:
+                if hasattr(obj, "deleteLater"):
+                    obj.deleteLater()
+            except Exception:
+                pass
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
 
     @pyqtProperty(float)
     def scale(self):
@@ -1126,11 +1473,13 @@ class LightImageMessageBubble(QWidget):
         # v2.48.5: 移除不支持的 CSS transform 属性，改用 update() 触发重绘
         self.update()
 
-    def update_frame(self):
-        """更新动画帧 - v2.19.0 新增"""
-        if self.movie:
-            # QMovie 会自动更新 QLabel，这里不需要额外操作
-            pass
+    def disable_shadow(self) -> None:
+        """关闭阴影效果（用于大量消息时降低渲染开销）。"""
+        if not getattr(self, "_enable_shadow", True):
+            return
+        self._enable_shadow = False
+        if hasattr(self, "image_label") and self.image_label:
+            self.image_label.setGraphicsEffect(None)
 
     def cleanup(self):
         """清理资源 - v2.19.0 新增"""

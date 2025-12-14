@@ -623,9 +623,13 @@ class MintChatAgent:
             logger.error(f"Agent 创建失败: {e}")
             raise
 
-    def _build_tool_selector_middleware(self) -> Optional["LLMToolSelectorMiddleware"]:
+    def _build_tool_selector_middleware(self) -> Optional[Any]:
         """
-        根据配置构建 LangChain 官方 LLMToolSelectorMiddleware，减少无关工具占用上下文。
+        根据配置构建工具筛选中间件，减少无关工具占用上下文。
+
+        说明：LangChain 1.0.x 自带的 `LLMToolSelectorMiddleware` 在部分 OpenAI 兼容网关上
+        可能出现 structured output 解析为空（缺少 `tools` 字段）而导致 KeyError 闪退。
+        MintChat 默认使用更兼容的实现，并在失败时自动降级为“不过滤工具”。
         """
         if not HAS_TOOL_SELECTOR:
             return None
@@ -635,6 +639,8 @@ class MintChatAgent:
             return None
 
         try:
+            from src.agent.tool_selector_middleware import MintChatToolSelectorMiddleware
+
             selector_model_id = getattr(settings.agent, "tool_selector_model", "auto")
             if not selector_model_id or selector_model_id == "auto":
                 model_ref: Any = self.llm
@@ -649,14 +655,22 @@ class MintChatAgent:
                 )
             )
             max_tools = max(1, int(getattr(settings.agent, "tool_selector_max_tools", 4)))
-            middleware = LLMToolSelectorMiddleware(
+            api_base = str(getattr(settings.llm, "api", "") or "")
+            default_method = "json_schema" if "api.openai.com" in api_base else "json_mode"
+            structured_method = str(
+                getattr(settings.agent, "tool_selector_structured_method", default_method) or default_method
+            )
+
+            middleware = MintChatToolSelectorMiddleware(
                 model=model_ref,
                 max_tools=max_tools,
                 always_include=always_include,
+                structured_output_method=structured_method,
             )
             logger.info(
-                "已启用 LLM 工具筛选中间件 (max=%d, 保留: %s)",
+                "已启用 LLM 工具筛选中间件 (max=%d, method=%s, 保留: %s)",
                 max_tools,
+                structured_method,
                 ",".join(always_include) or "无",
             )
             return middleware
@@ -2658,20 +2672,28 @@ class MintChatAgent:
 
         # 尝试解析 JSON，如果是工具选择结构则直接丢弃
         if raw.startswith("{") or raw.startswith("["):
-            try:
-                data = json.loads(raw)
-                if isinstance(data, dict):
-                    lowered_keys = {k.lower() for k in data.keys()}
-                    if "tools" in lowered_keys or data.get("type") == "tool_calls":
-                        return ""
-                if isinstance(data, list) and data and all(isinstance(item, dict) for item in data):
-                    if all("tool" in {k.lower() for k in item.keys()} for item in data):
-                        return ""
-            except Exception:
-                pass
+            # 性能优化：仅在“看起来是完整 JSON 且包含工具相关键”时才尝试解析，
+            # 避免流式碎片频繁触发 json.loads 异常开销。
+            looks_complete = raw.endswith("}") or raw.endswith("]")
+            if looks_complete and len(raw) <= 200_000:
+                lowered_raw = raw.lower()
+                if "tool" in lowered_raw or "\"tools\"" in lowered_raw or "tool_calls" in lowered_raw:
+                    try:
+                        data = json.loads(raw)
+                        if isinstance(data, dict):
+                            lowered_keys = {k.lower() for k in data.keys()}
+                            if "tools" in lowered_keys or data.get("type") == "tool_calls":
+                                return ""
+                        if isinstance(data, list) and data and all(isinstance(item, dict) for item in data):
+                            if all("tool" in {k.lower() for k in item.keys()} for item in data):
+                                return ""
+                    except Exception:
+                        pass
 
         # 清理代码块形式的工具描述
-        cleaned = _TOOL_CODEBLOCK_RE.sub("", raw)
+        cleaned = raw
+        if "```" in raw:
+            cleaned = _TOOL_CODEBLOCK_RE.sub("", raw)
 
         # 逐行过滤残留的工具提示/调试行
         filtered_lines = []

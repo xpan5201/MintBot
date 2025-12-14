@@ -18,6 +18,7 @@ class VirtualScrollArea(QScrollArea):
         super().__init__(parent)
 
         self.messages: List[Dict] = []
+        self._total_height = 0  # 累计高度（避免 add_message 时 O(n) 求和）
         self.visible_start = 0
         self.visible_end = 0
         self.message_pool: List[QWidget] = []
@@ -37,7 +38,8 @@ class VirtualScrollArea(QScrollArea):
         
     def add_message(self, widget: QWidget, height: int):
         """添加消息到虚拟列表"""
-        y_position = sum(msg["height"] for msg in self.messages)
+        y_position = self._total_height
+        self._total_height += height
 
         self.messages.append({
             "widget": widget,
@@ -103,7 +105,7 @@ class VirtualScrollArea(QScrollArea):
         self.stats["render_time_ms"] = elapsed_ms
         
         if elapsed_ms > 16:  # 超过 60fps
-            logger.warning(f"虚拟滚动渲染耗时: {elapsed_ms:.2f}ms（超过 16ms）")
+            logger.warning("虚拟滚动渲染耗时: %.2fms（超过 16ms）", elapsed_ms)
         
     def get_stats(self) -> Dict:
         """获取性能统计"""
@@ -176,7 +178,7 @@ class GPUAccelerator:
         # 启用双缓冲
         widget.setAttribute(Qt.WidgetAttribute.WA_PaintOnScreen, False)
 
-        logger.debug(f"已为 {widget.__class__.__name__} 启用 GPU 加速")
+        logger.debug("已为 %s 启用 GPU 加速", widget.__class__.__name__)
 
     @staticmethod
     def enable_for_scroll_area(scroll_area: QScrollArea):
@@ -221,28 +223,35 @@ class BatchRenderer:
         """
         self.pending_updates.append(callback)
 
-        if self.timer is None or not self.timer.isActive():
+        if self.timer is None:
             self.timer = QTimer()
             self.timer.timeout.connect(self._flush_updates)
             self.timer.setSingleShot(True)
+
+        if not self.timer.isActive():
             self.timer.start(self.interval_ms)
 
     def _flush_updates(self):
         """刷新所有待处理的更新"""
+        if not self.pending_updates:
+            return
+
+        # 先拷贝并清空，避免回调内部再次 schedule_update() 时被本次 clear 掉
+        callbacks = self.pending_updates
+        self.pending_updates = []
+
         start_time = time.perf_counter()
 
-        for callback in self.pending_updates:
+        for callback in callbacks:
             try:
                 callback()
             except Exception as e:
-                logger.error(f"批量更新失败: {e}")
+                logger.error("批量更新失败: %s", e)
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
         if elapsed_ms > 16:
-            logger.warning(f"批量更新耗时: {elapsed_ms:.2f}ms（超过 16ms）")
-
-        self.pending_updates.clear()
+            logger.warning("批量更新耗时: %.2fms（超过 16ms）", elapsed_ms)
 
 
 class LazyLoader:
@@ -275,7 +284,7 @@ class LazyLoader:
         try:
             self.load_callback(self.batch_size)
         except Exception as e:
-            logger.error(f"懒加载失败: {e}")
+            logger.error("懒加载失败: %s", e)
         finally:
             self.is_loading = False
 
@@ -315,11 +324,12 @@ class MemoryManager:
         # 保留最新的消息
         to_remove = len(self.messages) - self.max_messages
 
-        for i in range(to_remove):
-            widget = self.messages.pop(0)
+        old_widgets = self.messages[:to_remove]
+        self.messages = self.messages[to_remove:]
+        for widget in old_widgets:
             widget.deleteLater()
 
-        logger.debug(f"已回收 {to_remove} 条旧消息")
+        logger.debug("已回收 %s 条旧消息", to_remove)
 
 
 class PerformanceMonitor:
@@ -370,4 +380,3 @@ class PerformanceMonitor:
             "avg_frame_time_ms": f"{self.get_avg_frame_time():.2f}",
             "samples": len(self.frame_times),
         }
-

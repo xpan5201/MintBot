@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve, pyqtProperty
 from PyQt6.QtGui import QFont, QPainter, QColor, QBrush, QAction, QPainterPath, QPixmap
+from functools import lru_cache
 from pathlib import Path
 
 from .material_design_light import MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION, MD3_STATE_LAYERS
@@ -35,7 +36,46 @@ from .material_design_enhanced import (
 )
 from .material_icons import MaterialIconButton, MATERIAL_ICONS
 from src.auth.user_session import user_session
-from src.utils.logger import logger
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+@lru_cache(maxsize=128)
+def _load_rounded_avatar_pixmap(image_path: str, size: int, mtime_ns: int) -> QPixmap:
+    """加载并裁剪为圆形头像（带缓存）。"""
+    _ = mtime_ns  # 仅用于缓存键，文件变更时自动失效
+
+    pixmap = QPixmap(image_path)
+    if pixmap.isNull():
+        return QPixmap()
+
+    scaled_pixmap = pixmap.scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+    if scaled_pixmap.width() > size or scaled_pixmap.height() > size:
+        x = (scaled_pixmap.width() - size) // 2
+        y = (scaled_pixmap.height() - size) // 2
+        scaled_pixmap = scaled_pixmap.copy(x, y, size, size)
+
+    rounded_pixmap = QPixmap(size, size)
+    rounded_pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(rounded_pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+    path = QPainterPath()
+    path.addEllipse(0, 0, size, size)
+    painter.setClipPath(path)
+    painter.drawPixmap(0, 0, scaled_pixmap)
+    painter.end()
+
+    return rounded_pixmap
 
 
 def _create_contact_avatar_label(avatar_text: str, size: int) -> QLabel:
@@ -53,43 +93,18 @@ def _create_contact_avatar_label(avatar_text: str, size: int) -> QLabel:
     avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
     # 检查是否为图片路径
-    if avatar_text and Path(avatar_text).exists() and Path(avatar_text).is_file():
-        # 图片路径：加载图片
-        pixmap = QPixmap(avatar_text)
-        if not pixmap.isNull():
-            # 缩放图片
-            scaled_pixmap = pixmap.scaled(
-                size, size,
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            # 裁剪为正方形
-            if scaled_pixmap.width() > size or scaled_pixmap.height() > size:
-                x = (scaled_pixmap.width() - size) // 2
-                y = (scaled_pixmap.height() - size) // 2
-                scaled_pixmap = scaled_pixmap.copy(x, y, size, size)
+    avatar_path = Path(avatar_text) if avatar_text else None
+    if avatar_path and avatar_path.exists() and avatar_path.is_file():
+        try:
+            mtime_ns = avatar_path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = 0
 
-            # 创建圆形遮罩
-            rounded_pixmap = QPixmap(size, size)
-            rounded_pixmap.fill(Qt.GlobalColor.transparent)
-
-            painter = QPainter(rounded_pixmap)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-
-            # 创建圆形路径
-            path = QPainterPath()
-            path.addEllipse(0, 0, size, size)
-
-            # 裁剪并绘制
-            painter.setClipPath(path)
-            painter.drawPixmap(0, 0, scaled_pixmap)
-            painter.end()
-
+        rounded_pixmap = _load_rounded_avatar_pixmap(str(avatar_path), size, mtime_ns)
+        if not rounded_pixmap.isNull():
             avatar_label.setPixmap(rounded_pixmap)
             avatar_label.setScaledContents(False)
         else:
-            # 图片加载失败，使用默认 emoji
             avatar_label.setText("👤")
     else:
         # emoji 或无效路径：直接显示文本
@@ -597,7 +612,7 @@ class AddContactDialog(QDialog):
             for btn in self.avatar_buttons:
                 btn.setChecked(False)
 
-            logger.debug(f"已选择自定义头像: {file_path}")
+            logger.debug("已选择自定义头像: %s", file_path)
 
     def on_confirm(self):
         """确认添加 - v2.23.1 优化：支持自定义头像"""

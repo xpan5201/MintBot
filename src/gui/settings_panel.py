@@ -19,7 +19,9 @@ from src.gui.material_icons import MaterialIconButton, MATERIAL_ICONS
 from src.auth.user_session import user_session
 import yaml
 from pathlib import Path
-from src.utils.logger import logger
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class SettingsPanel(QWidget):
@@ -1665,7 +1667,7 @@ class SettingsPanel(QWidget):
                     # 合并用户设置到配置数据
                     self._merge_settings(user_settings)
             except Exception as e:
-                logger.info(f"加载用户设置失败: {e}")
+                logger.info("加载用户设置失败: %s", e)
 
         # LLM 配置
         llm_config = self.config_data.get("LLM", {})
@@ -1768,19 +1770,19 @@ class SettingsPanel(QWidget):
                     user_avatar = self.user_avatar_input.text()
                     if user_avatar:
                         user_session.update_user_avatar(user_avatar)
-                        logger.info(f"用户头像已更新: {user_avatar}")
+                        logger.info("用户头像已更新: %s", user_avatar)
 
                     # 保存AI助手头像
                     ai_avatar = self.ai_avatar_input.text()
                     if ai_avatar:
                         user_session.update_ai_avatar(ai_avatar)
-                        logger.info(f"AI助手头像已更新: {ai_avatar}")
+                        logger.info("AI助手头像已更新: %s", ai_avatar)
 
                     # 保存其他设置到数据库
                     user_session.save_settings(self.config_data)
                     logger.info("用户设置已保存到数据库")
                 except Exception as e:
-                    logger.info(f"保存用户设置到数据库失败: {e}")
+                    logger.info("保存用户设置到数据库失败: %s", e)
 
             # 同时保存到全局配置文件（作为默认值）
             config_file = Path("config.yaml")

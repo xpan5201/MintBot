@@ -6,6 +6,8 @@ Material Design 3 增强设计系统 (v2.15.0)
 专为 MintChat 薄荷绿主题优化
 """
 
+from functools import lru_cache
+
 from PyQt6.QtCore import QEasingCurve
 
 # ============================================================================
@@ -234,19 +236,23 @@ MD3_ENHANCED_TYPOGRAPHY = {
 }
 
 
+@lru_cache(maxsize=64)
+def _get_typography_css_cached(variant: str) -> str:
+    typo = MD3_ENHANCED_TYPOGRAPHY[variant]
+    return (
+        f"font-family: '{typo['font']}', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;"
+        f"font-size: {typo['size']}px;"
+        f"font-weight: {typo['weight']};"
+        f"line-height: {typo['line_height']}px;"
+        f"letter-spacing: {typo['letter_spacing']}px;"
+    )
+
+
 def get_typography_css(variant: str) -> str:
-    """获取排版CSS样式"""
+    """获取排版CSS样式（带缓存）。"""
     if variant not in MD3_ENHANCED_TYPOGRAPHY:
         variant = "body_medium"
-
-    typo = MD3_ENHANCED_TYPOGRAPHY[variant]
-    return f"""
-        font-family: '{typo['font']}', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: {typo['size']}px;
-        font-weight: {typo['weight']};
-        line-height: {typo['line_height']}px;
-        letter-spacing: {typo['letter_spacing']}px;
-    """
+    return _get_typography_css_cached(variant)
 
 
 # ============================================================================
@@ -356,16 +362,22 @@ MD3_ENHANCED_ELEVATION = {
 }
 
 
-def get_elevation_shadow(level: int) -> str:
-    """获取阴影CSS样式"""
-    if level not in MD3_ENHANCED_ELEVATION:
-        level = 0
-
+@lru_cache(maxsize=16)
+def _get_elevation_shadow_cached(level: int) -> str:
     shadow = MD3_ENHANCED_ELEVATION[level]
     if level == 0:
         return "none"
+    return (
+        f"{shadow['offset_x']}px {shadow['offset_y']}px "
+        f"{shadow['blur']}px {shadow['spread']}px {shadow['color']}"
+    )
 
-    return f"{shadow['offset_x']}px {shadow['offset_y']}px {shadow['blur']}px {shadow['spread']}px {shadow['color']}"
+
+def get_elevation_shadow(level: int) -> str:
+    """获取阴影CSS样式（带缓存）。"""
+    if level not in MD3_ENHANCED_ELEVATION:
+        level = 0
+    return _get_elevation_shadow_cached(level)
 
 
 # ============================================================================

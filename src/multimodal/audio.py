@@ -269,5 +269,26 @@ class AudioProcessor:
             raise
 
 
-# 创建全局音频处理器实例
-audio_processor = AudioProcessor()
+_audio_processor_instance: AudioProcessor | None = None
+
+
+def get_audio_processor_instance() -> AudioProcessor:
+    """获取全局音频处理器实例（惰性初始化）。
+
+    避免在 import 阶段创建实例，减少 GUI 启动时的阻塞与无意义日志。
+    """
+    global _audio_processor_instance
+    if _audio_processor_instance is None:
+        _audio_processor_instance = AudioProcessor()
+    return _audio_processor_instance
+
+
+def __getattr__(name: str):  # pragma: no cover
+    # 兼容旧代码：from src.multimodal.audio import audio_processor
+    if name == "audio_processor":
+        return get_audio_processor_instance()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:  # pragma: no cover
+    return sorted(list(globals().keys()) + ["audio_processor"])

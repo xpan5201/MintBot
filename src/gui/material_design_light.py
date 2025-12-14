@@ -10,6 +10,8 @@ Material Design 3 浅色主题设计系统
 # Material Design 3 浅色主题颜色系统
 # ============================================================================
 
+from functools import lru_cache
+
 MD3_LIGHT_COLORS = {
     # Primary - 薄荷绿主题色（加深版）
     "primary": "#4ECDC4",  # 主薄荷绿（加深）
@@ -115,13 +117,20 @@ MD3_LIGHT_ELEVATION = {
 }
 
 
+@lru_cache(maxsize=16)
+def _get_light_elevation_shadow_cached(level: int) -> str:
+    shadow = MD3_LIGHT_ELEVATION[level]
+    return (
+        f"{shadow['offset_x']}px {shadow['offset_y']}px "
+        f"{shadow['blur']}px {shadow['spread']}px rgba(0,0,0,{shadow['opacity']})"
+    )
+
+
 def get_light_elevation_shadow(level: int) -> str:
-    """获取浅色主题阴影样式"""
+    """获取浅色主题阴影样式（带缓存）。"""
     if level not in MD3_LIGHT_ELEVATION:
         level = 0
-
-    shadow = MD3_LIGHT_ELEVATION[level]
-    return f"{shadow['offset_x']}px {shadow['offset_y']}px {shadow['blur']}px {shadow['spread']}px rgba(0,0,0,{shadow['opacity']})"
+    return _get_light_elevation_shadow_cached(level)
 
 
 # ============================================================================
