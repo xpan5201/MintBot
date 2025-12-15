@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+<<<<<<< HEAD
 from functools import lru_cache
+=======
+>>>>>>> 866b2aa79970aa1bc7427113d905e91b189aa5e5
 from typing import Any, Awaitable, Callable, Optional
 
 from src.utils.logger import get_logger
@@ -57,11 +60,14 @@ class _SelectionRequest:
 
 
 def _build_selection_schema(valid_tool_names: list[str]) -> dict[str, Any]:
+<<<<<<< HEAD
     return _build_selection_schema_cached(tuple(valid_tool_names))
 
 
 @lru_cache(maxsize=128)
 def _build_selection_schema_cached(valid_tool_names: tuple[str, ...]) -> dict[str, Any]:
+=======
+>>>>>>> 866b2aa79970aa1bc7427113d905e91b189aa5e5
     # 选择器只需要工具名枚举，避免 LangChain 默认 anyOf+description 过大导致兼容性问题。
     return {
         "title": "ToolSelectionResponse",
@@ -408,3 +414,7 @@ class MintChatToolSelectorMiddleware(AgentMiddleware):
             logger.warning("工具筛选结果处理失败，已跳过筛选: %s", exc)
             return await handler(request)
         return await handler(modified_request)
+<<<<<<< HEAD
+=======
+
+>>>>>>> 866b2aa79970aa1bc7427113d905e91b189aa5e5
