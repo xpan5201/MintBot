@@ -14,7 +14,17 @@ from pathlib import Path
 def temp_dir():
     """创建临时目录 fixture"""
     with tempfile.TemporaryDirectory() as tmpdir:
-        yield Path(tmpdir)
+        try:
+            yield Path(tmpdir)
+        finally:
+            # Windows 下 SQLite 可能因全局预编译连接导致临时库文件无法删除；
+            # 这里统一关闭，避免 fixture teardown 报 WinError 32。
+            try:
+                from src.utils.prepared_statements import close_all_prepared_statement_managers
+
+                close_all_prepared_statement_managers()
+            except Exception:
+                pass
 
 
 @pytest.fixture

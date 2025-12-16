@@ -1,0 +1,95 @@
+# MintChat configuration example (DO NOT put secrets here in git)
+#
+# 使用方式：
+# - 将本文件复制为 `config.yaml`（`config.yaml` 已在 .gitignore 中忽略）
+# - 填写你的 API Key / 模型等配置
+#
+# 注意：
+# - 主 LLM（LLM）可以是纯文本模型
+# - 视觉识别（图片描述/OCR）建议使用独立的 VISION_LLM（支持多模态的模型）
+#
+
+LLM:
+  api: "https://api.openai.com/v1"
+  key: "YOUR_TEXT_LLM_API_KEY"
+  model: "gpt-4o-mini"
+  temperature: 0.7
+  max_tokens: 2000
+  extra_config: {}
+
+# 视觉模型（可选）：用于图片描述 / OCR
+# - enabled=false：不会调用视觉 LLM，图片识别将回退到 pytesseract（若已安装）或基础信息提示
+# - enabled=true：将使用此处配置的模型进行图片识别（建议选择支持 image_url 的模型）
+VISION_LLM:
+  enabled: false
+  # api: "https://api.openai.com/v1"
+  # key: "YOUR_VISION_LLM_API_KEY"
+  # model: "gpt-4o-mini"
+  # temperature: 0.2
+  # max_tokens: 1500
+  extra_config: {}
+
+Agent:
+  char: "小雪糕"
+  user: "主人"
+  enable_streaming: true
+  max_history_length: 20
+  enable_tools: true
+
+# MCP（可选）：Model Context Protocol 工具系统
+MCP:
+  enable: false
+  servers: {}
+  # servers:
+  #   example:
+  #     enabled: true
+  #     command: "python"
+  #     args: ["-m", "your_mcp_server"]
+  #     env: {}
+  #     transport: "stdio"
+  #     max_concurrency: 1
+
+# TTS（可选）：文本转语音
+TTS:
+  enabled: false
+  api_url: "http://127.0.0.1:9880/tts"
+  ref_audio_path: ""
+  ref_audio_text: ""
+  text_lang: "zh"
+  prompt_lang: "zh"
+  top_k: 5
+  top_p: 1.0
+  temperature: 1.0
+  speed: 1.0
+  stream: false
+  http2: false
+  pool_max_connections: 10
+  pool_max_keepalive_connections: 5
+  pool_keepalive_expiry: 30.0
+  circuit_break_threshold: 4
+  circuit_break_cooldown: 15.0
+  ex_config: {}
+
+log_level: "INFO"
+log_dir: "logs"
+log_rotation: "50 MB"
+log_retention: "14 days"
+log_json: true
+
+data_dir: "./data"
+vector_db_path: "./data/vector_db"
+memory_path: "./data/memory"
+cache_path: "./data/cache"
+
+# 用户系统（登录/会话/用户数据）
+# - 默认 users.db / user_data.db / session.txt 都会放在 data_dir 下
+# - 如需迁移整个数据目录，只需修改 data_dir 即可
+# - 如需更细粒度自定义，可在代码中传入 db_path/session_file 覆盖默认
+
+embedding_model: "BAAI/bge-large-zh-v1.5"
+embedding_api_base: ""
+use_local_embedding: false
+enable_embedding_cache: true
+
+max_image_size: 1024
+max_audio_duration: 300

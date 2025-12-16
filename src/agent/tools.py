@@ -682,9 +682,9 @@ def list_files(directory: str = ".", base_dir: str = ".") -> str:
                     size = item.stat().st_size
                 except OSError:
                     size = 0
-                files.append(f"📄 {item.name} ({size} bytes)")
+                files.append(f"- {item.name} ({size} bytes)")
             elif item.is_dir():
-                dirs.append(f"📁 {item.name}/")
+                dirs.append(f"- {item.name}/")
 
         result = f"目录 {directory} 的内容：\n\n"
         if dirs:
@@ -711,6 +711,9 @@ class ToolRegistry:
         self._tools: Dict[str, Callable] = {}
         self._stats: Dict[str, ToolStats] = {}
         self._lock = Lock()
+        self._cache_version = 0
+        self._cached_tool_names: Optional[Tuple[int, List[str]]] = None
+        self._cached_tools_description: Optional[Tuple[int, List[Dict[str, str]]]] = None
         # MCP 工具（可选）单独保留列表，便于诊断/兼容脚本
         self._mcp_tools: List[Callable] = []
         self._optional_tools_loaded = False
@@ -848,6 +851,9 @@ class ToolRegistry:
             self._tools[name] = tool_func
             if name not in self._stats:
                 self._stats[name] = ToolStats()
+            self._cache_version += 1
+            self._cached_tool_names = None
+            self._cached_tools_description = None
         logger.debug("注册工具: %s", name)
 
     def unregister_tool(self, name: str) -> None:
@@ -860,6 +866,9 @@ class ToolRegistry:
         with self._lock:
             if name in self._tools:
                 del self._tools[name]
+                self._cache_version += 1
+                self._cached_tool_names = None
+                self._cached_tools_description = None
                 logger.debug("注销工具: %s", name)
 
     def get_tool(self, name: str) -> Optional[Callable]:
@@ -902,7 +911,12 @@ class ToolRegistry:
             return []
         self._ensure_optional_tools_loaded()
         with self._lock:
-            return sorted(self._tools.keys())
+            cached = self._cached_tool_names
+            if cached is not None and cached[0] == self._cache_version:
+                return list(cached[1])
+            names = sorted(self._tools.keys())
+            self._cached_tool_names = (self._cache_version, names)
+            return list(names)
 
     def get_tools_description(self) -> List[Dict[str, str]]:
         """
@@ -915,14 +929,23 @@ class ToolRegistry:
             return []
         self._ensure_optional_tools_loaded()
         with self._lock:
+            version = self._cache_version
+            cached = self._cached_tools_description
+            if cached is not None and cached[0] == version:
+                return list(cached[1])
             items = list(self._tools.items())
-        return [
+
+        descriptions = [
             {
                 "name": name,
                 "description": getattr(tool_func, "description", None) or tool_func.__doc__ or "无描述",
             }
             for name, tool_func in items
         ]
+        with self._lock:
+            if self._cache_version == version:
+                self._cached_tools_description = (version, descriptions)
+        return list(descriptions)
 
     def execute_tool(self, name: str, timeout: float = DEFAULT_TOOL_TIMEOUT, **kwargs: Any) -> str:
         """

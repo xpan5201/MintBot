@@ -19,6 +19,11 @@ from src.gui.light_chat_window import LightChatWindow
 from src.gui.auth_manager import AuthManager
 from src.auth.auth_service import AuthService
 from src.auth.user_session import user_session
+from src.auth.session_store import (
+    delete_session_token_file,
+    read_session_token,
+    write_session_token_file,
+)
 from src.utils.logger import logger
 from src.utils.dependency_checker import check_optional_dependencies
 
@@ -81,28 +86,25 @@ from src.utils.exceptions import handle_exception
 
 def _restore_session(session_file: Path) -> bool:
     """尝试恢复用户会话（优化：减少文件I/O和异常处理开销）"""
-    if not session_file.exists():
+    session_token = read_session_token(session_file, delete_on_invalid=True)
+    if not session_token:
         return False
 
     try:
-        session_token = session_file.read_text(encoding='utf-8').strip()
-        if not session_token:
-            logger.warning("会话文件为空")
-            return False
-
         auth_service = AuthService()
         if auth_service.restore_session(session_token):
             user = auth_service.get_current_user()
-            logger.info(f"会话恢复成功，欢迎回来：{user['username']}")
+            logger.info("会话恢复成功，欢迎回来：%s", user.get("username"))
             user_session.login(user, session_token)
             return True
 
-        logger.info("会话已过期，需要重新登录")
-        session_file.unlink(missing_ok=True)
+        # 明确无效/过期：清除会话文件，避免下次启动反复尝试
+        logger.info("会话无效或已过期，需要重新登录")
+        delete_session_token_file(session_file)
         return False
     except Exception as e:
-        handle_exception(e, logger, "恢复会话失败")
-        session_file.unlink(missing_ok=True)
+        # 可能是临时性错误（如 DB 锁/IO 问题），不要误删会话文件
+        handle_exception(e, logger, "恢复会话失败（将保留会话文件以便下次重试）")
         return False
 
 
@@ -127,13 +129,20 @@ def main() -> None:
     # v2.48.10: 初始化 TTS 服务（后台线程，避免健康检查阻塞 GUI 启动）
     _start_tts_init_async()
 
-    session_file = Path("data/session.txt")
+    try:
+        from src.config.settings import settings
+
+        data_dir = Path(settings.data_dir)
+    except Exception:
+        data_dir = Path("data")
+
+    session_file = data_dir / "session.txt"
     if _restore_session(session_file):
         window = LightChatWindow()
         window.show()
         sys.exit(app.exec())
 
-    auth_manager = AuthManager(illustration_path="data/images/login_illustration.png")
+    auth_manager = AuthManager(illustration_path=str(data_dir / "images" / "login_illustration.png"))
 
     def on_login_success(user: Dict[str, Any]) -> None:
         """处理登录成功事件（优化：减少导入开销，合并操作）"""
@@ -144,11 +153,10 @@ def main() -> None:
             remember_me = user.get('remember_me', False)
 
             if session_token and remember_me:
-                session_file.parent.mkdir(parents=True, exist_ok=True)
-                session_file.write_text(session_token, encoding='utf-8')
-                logger.info(f"会话已保存到: {session_file}")
+                if write_session_token_file(session_file, session_token):
+                    logger.info(f"会话已保存到: {session_file}")
             else:
-                session_file.unlink(missing_ok=True)
+                delete_session_token_file(session_file)
                 logger.info("已清除保存的会话")
 
             user_session.login(user, session_token)

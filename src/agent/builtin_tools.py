@@ -44,6 +44,7 @@
 
 import asyncio
 import json
+import sys
 import time
 import threading
 from datetime import datetime, timezone, timedelta
@@ -169,13 +170,19 @@ class ConnectionPool:
             if cls._session is None or cls._session.closed:
                 async with cls._get_lock():
                     if cls._session is None or cls._session.closed:
+                        def _make_connector() -> aiohttp.TCPConnector:
+                            connector_kwargs: dict[str, Any] = {
+                                "limit": 100,  # 最大连接数
+                                "limit_per_host": 30,  # 每个主机最大连接数
+                                "ttl_dns_cache": 300,  # DNS 缓存时间（秒）
+                            }
+                            # Python 3.13.5+ 已修复底层问题，aiohttp 会忽略并给出弃用警告
+                            if sys.version_info < (3, 13, 5):
+                                connector_kwargs["enable_cleanup_closed"] = True
+                            return aiohttp.TCPConnector(**connector_kwargs)
+
                         # 配置连接池参数
-                        connector = aiohttp.TCPConnector(
-                            limit=100,  # 最大连接数
-                            limit_per_host=30,  # 每个主机最大连接数
-                            ttl_dns_cache=300,  # DNS 缓存时间（秒）
-                            enable_cleanup_closed=True,  # 自动清理关闭的连接
-                        )
+                        connector = _make_connector()
                         timeout = aiohttp.ClientTimeout(total=30, connect=10)
                         cls._session = aiohttp.ClientSession(
                             connector=connector,
@@ -189,12 +196,14 @@ class ConnectionPool:
         except Exception as e:
             logger.error(f"获取 HTTP 连接池失败: {e}")
             # 如果出错，创建新的 session
-            connector = aiohttp.TCPConnector(
-                limit=100,
-                limit_per_host=30,
-                ttl_dns_cache=300,
-                enable_cleanup_closed=True,
-            )
+            connector_kwargs: dict[str, Any] = {
+                "limit": 100,
+                "limit_per_host": 30,
+                "ttl_dns_cache": 300,
+            }
+            if sys.version_info < (3, 13, 5):
+                connector_kwargs["enable_cleanup_closed"] = True
+            connector = aiohttp.TCPConnector(**connector_kwargs)
             timeout = aiohttp.ClientTimeout(total=30, connect=10)
             cls._session = aiohttp.ClientSession(
                 connector=connector,

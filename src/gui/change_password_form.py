@@ -7,12 +7,17 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
 from PyQt6.QtCore import Qt, pyqtSignal
 
+from typing import TYPE_CHECKING, Optional
+
 from .auth_window import MD3TextField, MD3Button, MD3TextButton
 from .material_design_enhanced import MD3_ENHANCED_COLORS
 from .notifications import show_toast, Toast
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from src.auth.auth_service import AuthService
 
 
 class ChangePasswordForm(QWidget):
@@ -24,7 +29,15 @@ class ChangePasswordForm(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._auth_service: Optional["AuthService"] = None
         self.setup_ui()
+
+    def _get_auth_service(self) -> "AuthService":
+        if self._auth_service is None:
+            from src.auth.auth_service import AuthService
+
+            self._auth_service = AuthService()
+        return self._auth_service
 
     def setup_ui(self):
         """设置 UI - 优化布局和间距"""
@@ -56,7 +69,7 @@ class ChangePasswordForm(QWidget):
         layout.addWidget(title_label)
 
         # 副标题
-        subtitle_label = QLabel("请输入您的用户名和新密码")
+        subtitle_label = QLabel("请输入您的用户名、邮箱和新密码")
         subtitle_label.setStyleSheet(f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface_variant']};
@@ -83,6 +96,23 @@ class ChangePasswordForm(QWidget):
         self.username_input = MD3TextField("请输入用户名")
         self.username_input.setFocus()
         layout.addWidget(self.username_input)
+
+        layout.addSpacing(20)
+
+        # 邮箱输入框
+        email_label = QLabel("邮箱")
+        email_label.setStyleSheet(f"""
+            QLabel {{
+                color: {MD3_ENHANCED_COLORS['on_surface']};
+                font-size: 14px;
+                font-weight: 600;
+                margin-bottom: 8px;
+            }}
+        """)
+        layout.addWidget(email_label)
+
+        self.email_input = MD3TextField("请输入注册邮箱")
+        layout.addWidget(self.email_input)
 
         layout.addSpacing(20)
 
@@ -154,12 +184,17 @@ class ChangePasswordForm(QWidget):
         """修改密码按钮点击"""
         try:
             username = self.username_input.text().strip()
+            email = self.email_input.text().strip()
             new_password = self.new_password_input.text().strip()
             confirm_password = self.confirm_password_input.text().strip()
 
             # 表单验证
             if not username:
                 self.username_input.set_error(True, "请输入用户名")
+                return
+
+            if not email:
+                self.email_input.set_error(True, "请输入邮箱")
                 return
 
             if not new_password:
@@ -179,9 +214,8 @@ class ChangePasswordForm(QWidget):
             self.change_password_btn.set_loading(True)
 
             # 执行密码重置
-            from src.auth.auth_service import AuthService
-            auth_service = AuthService()
-            success, message = auth_service.reset_password(username, new_password, confirm_password)
+            auth_service = self._get_auth_service()
+            success, message = auth_service.reset_password(username, email, new_password, confirm_password)
 
             # 恢复按钮状态
             self.change_password_btn.set_loading(False)
@@ -202,6 +236,8 @@ class ChangePasswordForm(QWidget):
                 # 根据错误消息设置错误状态
                 if "用户名" in message or "不存在" in message:
                     self.username_input.set_error(True, message)
+                elif "邮箱" in message:
+                    self.email_input.set_error(True, message)
                 elif "密码" in message:
                     self.new_password_input.set_error(True, message)
         except Exception as e:

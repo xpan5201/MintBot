@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 import sys
 
 import yaml
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 # 允许直接执行该模块时也能解析到 src.* 包
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -59,6 +59,71 @@ class LLMConfig(BaseModel):
         default_factory=dict,
         description="额外的模型参数（temperature、top_p 等）",
     )
+
+
+# ==================== 视觉 LLM 配置模型 ====================
+#
+# 目标：将视觉识别所用模型与主 LLM 解耦（主 LLM 可能是纯文本模型）。
+#
+
+
+class VisionLLMConfig(BaseModel):
+    """视觉 LLM 配置（独立于主 LLM，可选启用）。"""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    enabled: bool = Field(
+        default=False,
+        description="是否启用视觉 LLM（用于图片描述/OCR）。",
+        validation_alias=AliasChoices("enabled", "enable"),
+    )
+
+    api: Optional[str] = Field(
+        default=None,
+        description="视觉 LLM API 地址（为空则继承主 LLM.api）。",
+    )
+
+    key: Optional[str] = Field(
+        default=None,
+        description="视觉 LLM API Key（为空则继承主 LLM.key）。",
+    )
+
+    model: Optional[str] = Field(
+        default=None,
+        description="视觉模型名称（为空则继承主 LLM.model）。",
+    )
+
+    temperature: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="视觉模型温度参数（为空则继承主 LLM.temperature）。",
+    )
+
+    max_tokens: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="视觉模型最大 tokens（为空则继承主 LLM.max_tokens）。",
+    )
+
+    extra_config: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="视觉模型额外参数（会覆盖/合并主 LLM.extra_config）。",
+    )
+
+    def resolve(self, base: LLMConfig) -> LLMConfig:
+        """用主 LLM 作为底座补全视觉模型配置，返回可直接用于构建 Chat Model 的 LLMConfig。"""
+        merged_extra: Dict[str, Any] = dict(base.extra_config or {})
+        if self.extra_config:
+            merged_extra.update(self.extra_config)
+        return LLMConfig(
+            api=self.api if self.api is not None else base.api,
+            key=self.key if self.key is not None else base.key,
+            model=self.model if self.model is not None else base.model,
+            temperature=self.temperature if self.temperature is not None else base.temperature,
+            max_tokens=self.max_tokens if self.max_tokens is not None else base.max_tokens,
+            extra_config=merged_extra,
+        )
 
 
 # ==================== 情绪系统配置模型 ====================
@@ -304,6 +369,12 @@ class MCPServerConfig(BaseModel):
     transport: str = Field(
         default="stdio",
         description="MCP 传输协议 (stdio, sse, http)",
+    )
+
+    max_concurrency: int = Field(
+        default=1,
+        ge=1,
+        description="单个 MCP 服务器最大并发调用数（默认 1，建议按 server 能力调整）",
     )
 
 
@@ -679,6 +750,12 @@ class Settings(BaseModel):
         description="LLM 配置",
     )
 
+    # 视觉 LLM 配置（独立于主 LLM）
+    vision_llm: VisionLLMConfig = Field(
+        default_factory=VisionLLMConfig,
+        description="Vision LLM 配置（用于图片描述/OCR，主 LLM 可为纯文本模型）。",
+    )
+
     # Agent 配置
     agent: AgentConfig = Field(
         default_factory=AgentConfig,
@@ -936,6 +1013,7 @@ class Settings(BaseModel):
 
             # 转换为小写键名（兼容性处理）
             llm_config = config_data.get("LLM", {})
+            vision_llm_config = config_data.get("VISION_LLM", {}) or {}
             agent_config = config_data.get("Agent", {})
             log_level = config_data.get("log_level", "INFO")
             log_dir = config_data.get("log_dir", "logs")
@@ -959,6 +1037,8 @@ class Settings(BaseModel):
             # 处理 extra_config（可能为 None）
             if "extra_config" in llm_config and llm_config["extra_config"] is None:
                 llm_config["extra_config"] = {}
+            if "extra_config" in vision_llm_config and vision_llm_config["extra_config"] is None:
+                vision_llm_config["extra_config"] = {}
 
             # 处理 Agent 配置中可能为 None 的字符串字段
             none_fields = [
@@ -978,6 +1058,7 @@ class Settings(BaseModel):
             # 构建完整的配置参数
             settings_kwargs = {
                 "llm": LLMConfig(**llm_config),
+                "vision_llm": VisionLLMConfig(**vision_llm_config),
                 "agent": AgentConfig(**agent_config),
                 "log_level": log_level,
                 "log_dir": log_dir,
@@ -1065,6 +1146,7 @@ class Settings(BaseModel):
         """
         config_dict = {
             "LLM": self.llm.model_dump(by_alias=True, exclude_none=True),
+            "VISION_LLM": self.vision_llm.model_dump(by_alias=True, exclude_none=True),
             "Agent": self.agent.model_dump(by_alias=True, exclude_none=True),
             "log_level": self.log_level,
             "log_dir": self.log_dir,

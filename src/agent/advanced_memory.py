@@ -2737,46 +2737,101 @@ class LoreBook:
         Returns:
             List[str]: 学习到的知识ID列表
         """
-        learned_ids = []
+        if self.vectorstore is None:
+            return []
 
+        learned_ids: List[str] = []
         try:
-            # 读取文件内容
             content = self._read_file_content(filepath, file_type)
             if not content:
                 return []
 
-            # 分块处理
             chunks = self._split_content_into_chunks(content, chunk_size)
+            if not chunks:
+                return []
 
-            # 从每个块中提取知识
-            for i, chunk in enumerate(chunks):
-                # 提取标题
-                title = self._extract_title_from_chunk(chunk, i)
+            # v3.x: 批量写入向量库 + 一次性写 JSON（避免逐条 add_texts / 频繁 invalidate cache）
+            try:
+                import uuid
 
-                # 提取类别
-                category = self._extract_category_from_content(chunk)
+                ids: list[str] = []
+                metadatas: list[Dict[str, Any]] = []
+                texts: list[str] = []
+                json_records: list[Dict[str, Any]] = []
 
-                # 提取关键词
-                keywords = self._extract_keywords_from_content(chunk)
+                for i, chunk in enumerate(chunks):
+                    title = self._extract_title_from_chunk(chunk, i)
+                    category = self._extract_category_from_content(chunk)
+                    keywords = self._extract_keywords_from_content(chunk)
 
-                # 添加知识
-                lore_id = self.add_lore(
-                    title=title,
-                    content=chunk,
-                    category=category,
-                    keywords=keywords,
-                    source="file",
-                )
+                    lore_id = str(uuid.uuid4())
+                    ids.append(lore_id)
 
-                if lore_id:
-                    learned_ids.append(lore_id)
+                    metadata = self._create_lore_metadata(
+                        lore_id=lore_id,
+                        title=title,
+                        category=category,
+                        keywords=keywords,
+                        source="file",
+                    )
+                    metadatas.append(metadata)
+                    texts.append(f"【{title}】\n{chunk}")
+                    json_records.append(
+                        {
+                            "id": lore_id,
+                            "title": title,
+                            "content": chunk,
+                            "category": category,
+                            "keywords": keywords or [],
+                            "source": "file",
+                            "timestamp": metadata["timestamp"],
+                            "update_count": 0,
+                            "usage_count": 0,
+                            "positive_feedback": 0,
+                            "negative_feedback": 0,
+                        }
+                    )
 
-            logger.info(f"从文件中学习到 {len(learned_ids)} 条知识: {filepath}")
+                self.vectorstore.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+
+                # 一次性写入 JSON，提升大文件学习性能
+                try:
+                    with self._lock:
+                        existing = self._read_json_records_unlocked()
+                        existing.extend(json_records)
+                        self._write_json_records_unlocked(existing)
+                except Exception as exc:
+                    logger.error("批量保存到 JSON 失败，将回退逐条追加: %s", exc)
+                    for record in json_records:
+                        self._save_to_json(record)
+
+                self._invalidate_cache()
+                learned_ids = ids
+
+            except Exception as batch_exc:
+                logger.error("批量写入失败，回退为逐条写入: %s", batch_exc)
+                learned_ids = []
+                for i, chunk in enumerate(chunks):
+                    title = self._extract_title_from_chunk(chunk, i)
+                    category = self._extract_category_from_content(chunk)
+                    keywords = self._extract_keywords_from_content(chunk)
+                    lore_id = self.add_lore(
+                        title=title,
+                        content=chunk,
+                        category=category,
+                        keywords=keywords,
+                        source="file",
+                        skip_quality_check=True,
+                    )
+                    if lore_id:
+                        learned_ids.append(lore_id)
+
+            logger.info("从文件中学习到 %s 条知识: %s", len(learned_ids), filepath)
+            return learned_ids
 
         except Exception as e:
             logger.error(f"从文件中学习失败: {e}")
-
-        return learned_ids
+            return learned_ids
 
     def learn_from_mcp(
         self,
@@ -3013,12 +3068,45 @@ class LoreBook:
                 return None
 
             # 自动检测文件类型
-            if file_type is None:
-                file_type = path.suffix.lower().lstrip(".")
+            file_type = (file_type or path.suffix).lower().lstrip(".")
+
+            # 读取上限：避免超大文件占用过多内存/阻塞 UI（用于“从文件学习”等场景）
+            max_chars = 200_000
+            max_bytes = 20 * 1024 * 1024
+            max_pdf_pages = 80
+            max_csv_rows = 2000
+
+            def _truncate(text: str) -> str:
+                text = (text or "").strip()
+                if max_chars > 0 and len(text) > max_chars:
+                    return text[:max_chars].strip()
+                return text
+
+            def _read_text_bytes() -> Optional[bytes]:
+                try:
+                    with open(path, "rb") as f:
+                        data = f.read(max_bytes + 1)
+                    if len(data) > max_bytes:
+                        data = data[:max_bytes]
+                    return data
+                except Exception as exc:
+                    logger.error("读取文件失败: %s", exc)
+                    return None
+
+            def _decode_text(data: bytes) -> str:
+                for encoding in ("utf-8", "utf-8-sig", "gbk", "gb2312", "latin-1"):
+                    try:
+                        return data.decode(encoding)
+                    except UnicodeDecodeError:
+                        continue
+                return data.decode("utf-8", errors="replace")
 
             # 读取不同类型的文件
             if file_type in ["txt", "md"]:
-                return path.read_text(encoding="utf-8")
+                data = _read_text_bytes()
+                if data is None:
+                    return None
+                return _truncate(_decode_text(data))
 
             elif file_type == "pdf":
                 # 需要 PyPDF2 或 pdfplumber
@@ -3026,10 +3114,19 @@ class LoreBook:
                     import PyPDF2
                     with open(path, "rb") as f:
                         reader = PyPDF2.PdfReader(f)
-                        text = ""
-                        for page in reader.pages:
-                            text += page.extract_text()
-                        return text
+                        parts: list[str] = []
+                        total = 0
+                        for i, page in enumerate(reader.pages):
+                            if i >= max_pdf_pages:
+                                break
+                            page_text = page.extract_text() or ""
+                            if not page_text:
+                                continue
+                            parts.append(page_text)
+                            total += len(page_text)
+                            if max_chars > 0 and total >= max_chars:
+                                break
+                        return _truncate("\n".join(parts))
                 except ImportError:
                     logger.warning("需要安装 PyPDF2: pip install PyPDF2")
                     return None
@@ -3039,8 +3136,17 @@ class LoreBook:
                 try:
                     import docx
                     doc = docx.Document(path)
-                    text = "\n".join([para.text for para in doc.paragraphs])
-                    return text
+                    parts: list[str] = []
+                    total = 0
+                    for para in doc.paragraphs:
+                        text = (para.text or "").strip()
+                        if not text:
+                            continue
+                        parts.append(text)
+                        total += len(text)
+                        if max_chars > 0 and total >= max_chars:
+                            break
+                    return _truncate("\n".join(parts))
                 except ImportError:
                     logger.warning("需要安装 python-docx: pip install python-docx")
                     return None
@@ -3049,7 +3155,10 @@ class LoreBook:
                 # v2.30.39: 支持 HTML 文件
                 try:
                     from bs4 import BeautifulSoup
-                    html_content = path.read_text(encoding="utf-8")
+                    data = _read_text_bytes()
+                    if data is None:
+                        return None
+                    html_content = _decode_text(data)
                     soup = BeautifulSoup(html_content, "html.parser")
                     # 移除 script 和 style 标签
                     for script in soup(["script", "style"]):
@@ -3057,7 +3166,7 @@ class LoreBook:
                     text = soup.get_text(separator="\n\n")
                     # 清理多余空行
                     lines = [line.strip() for line in text.split("\n") if line.strip()]
-                    return "\n\n".join(lines)
+                    return _truncate("\n\n".join(lines))
                 except ImportError:
                     logger.warning("需要安装 beautifulsoup4: pip install beautifulsoup4")
                     return None
@@ -3065,9 +3174,12 @@ class LoreBook:
             elif file_type == "json":
                 # v2.30.39: 支持 JSON 文件
                 try:
-                    data = json.loads(path.read_text(encoding="utf-8"))
+                    raw = _read_text_bytes()
+                    if raw is None:
+                        return None
+                    data = json.loads(_decode_text(raw))
                     # 将 JSON 转换为可读文本
-                    return json.dumps(data, ensure_ascii=False, indent=2)
+                    return _truncate(json.dumps(data, ensure_ascii=False, indent=2))
                 except Exception as e:
                     logger.error(f"解析 JSON 文件失败: {e}")
                     return None
@@ -3076,14 +3188,27 @@ class LoreBook:
                 # v2.30.39: 支持 CSV 文件
                 try:
                     import csv
-                    text_lines = []
-                    with open(path, "r", encoding="utf-8") as f:
-                        reader = csv.DictReader(f)
-                        for row in reader:
-                            # 将每行转换为文本
-                            line = ", ".join([f"{k}: {v}" for k, v in row.items()])
-                            text_lines.append(line)
-                    return "\n\n".join(text_lines)
+                    from io import StringIO
+
+                    raw = _read_text_bytes()
+                    if raw is None:
+                        return None
+                    content = _decode_text(raw)
+                    reader = csv.DictReader(StringIO(content))
+
+                    text_lines: list[str] = []
+                    total = 0
+                    for i, row in enumerate(reader):
+                        if i >= max_csv_rows:
+                            break
+                        line = ", ".join([f"{k}: {v}" for k, v in row.items()])
+                        if not line.strip():
+                            continue
+                        text_lines.append(line)
+                        total += len(line)
+                        if max_chars > 0 and total >= max_chars:
+                            break
+                    return _truncate("\n\n".join(text_lines))
                 except Exception as e:
                     logger.error(f"解析 CSV 文件失败: {e}")
                     return None

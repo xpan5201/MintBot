@@ -24,7 +24,18 @@ class ConversationExporter:
         Args:
             output_dir: 输出目录，默认为 data/exports
         """
-        self.output_dir = Path(output_dir or "data/exports")
+        resolved_dir: Union[str, Path]
+        if output_dir is None:
+            try:
+                from src.config.settings import settings
+
+                resolved_dir = Path(settings.data_dir) / "exports"
+            except Exception:
+                resolved_dir = "data/exports"
+        else:
+            resolved_dir = output_dir
+
+        self.output_dir = Path(resolved_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"对话导出器初始化完成，输出目录: {self.output_dir}")
 

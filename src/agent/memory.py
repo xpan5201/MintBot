@@ -183,6 +183,8 @@ class LongTermMemory:
         self._batch_buffer: List[Dict[str, Any]] = []
         self._batch_buffer_lock = Lock()  # 保护批量缓冲区的锁
         self._batch_size = 10  # 每10条记忆批量写入一次
+        # 底层向量库（Chroma/SQLite）在并发读写下可能出现锁冲突或不稳定：用锁串行化访问更稳
+        self._vectorstore_lock = Lock()
 
         # 初始化向量数据库 - 使用统一的初始化函数（v2.30.27: 支持本地 embedding 和缓存）
         self.vectorstore = create_chroma_vectorstore(
@@ -243,10 +245,11 @@ class LongTermMemory:
                 try:
                     contents = [item["content"] for item in buffer_to_flush]
                     metadatas = [item["metadata"] for item in buffer_to_flush]
-                    self.vectorstore.add_texts(
-                        texts=contents,
-                        metadatas=metadatas,
-                    )
+                    with self._vectorstore_lock:
+                        self.vectorstore.add_texts(
+                            texts=contents,
+                            metadatas=metadatas,
+                        )
                     logger.info("批量添加了 %d 条记忆", len(buffer_to_flush))
                 except Exception as e:
                     logger.error("批量添加记忆失败: %s", e)
@@ -257,10 +260,11 @@ class LongTermMemory:
             return True
 
         try:
-            self.vectorstore.add_texts(
-                texts=[content],
-                metadatas=[metadata],
-            )
+            with self._vectorstore_lock:
+                self.vectorstore.add_texts(
+                    texts=[content],
+                    metadatas=[metadata],
+                )
 
             # v2.26.0: ChromaDB 0.4.0+ 自动持久化，无需手动调用 persist()
             # ChromaDB 会自动将所有写入操作持久化到磁盘
@@ -304,10 +308,11 @@ class LongTermMemory:
             meta.setdefault("timestamp", timestamp)
 
         try:
-            self.vectorstore.add_texts(
-                texts=texts,
-                metadatas=metadata_list,
-            )
+            with self._vectorstore_lock:
+                self.vectorstore.add_texts(
+                    texts=texts,
+                    metadatas=metadata_list,
+                )
             logger.info("批量添加了 %d 条记忆", len(texts))
             return len(texts)
         except Exception as e:
@@ -337,10 +342,11 @@ class LongTermMemory:
             contents = [item["content"] for item in buffer_to_flush]
             metadatas = [item["metadata"] for item in buffer_to_flush]
 
-            self.vectorstore.add_texts(
-                texts=contents,
-                metadatas=metadatas,
-            )
+            with self._vectorstore_lock:
+                self.vectorstore.add_texts(
+                    texts=contents,
+                    metadatas=metadatas,
+                )
 
             # v2.26.0: ChromaDB 0.4.0+ 自动持久化，无需手动调用 persist()
             # ChromaDB 会自动将所有写入操作持久化到磁盘
@@ -382,11 +388,12 @@ class LongTermMemory:
             # v3.3: 增加检索数量，后续重排序
             search_k = min(k * 3, 20)  # 检索3倍数量，最多20条
 
-            results = self.vectorstore.similarity_search_with_score(
-                query=query,
-                k=search_k,
-                filter=filter_dict,
-            )
+            with self._vectorstore_lock:
+                results = self.vectorstore.similarity_search_with_score(
+                    query=query,
+                    k=search_k,
+                    filter=filter_dict,
+                )
 
             now = datetime.now()
             memories = []
@@ -650,6 +657,7 @@ class MemoryManager:
                 stored = self.long_term.add_memory(
                     content=interaction,
                     metadata=metadata,
+                    batch=True,
                 )
                 if stored and deduplicator and content_hash:
                     deduplicator.seen_hashes.add(content_hash)
@@ -669,6 +677,7 @@ class MemoryManager:
                         "type": "conversation",
                         "importance": importance,
                     },
+                    batch=True,
                 )
 
         # v3.3: 自动巩固（每N次交互，可选）

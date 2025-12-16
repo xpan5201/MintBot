@@ -12,6 +12,8 @@ v2.27.0 优化:
 
 import json
 import sqlite3
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -41,7 +43,17 @@ class UserDataManager:
             db_path: 数据库文件路径（默认: data/user_data.db）
             use_pool: 是否使用连接池（默认False，可选启用以提升性能30-50%）
         """
-        self.db_path = Path(db_path)
+        db_path_obj = Path(db_path)
+        # 若用户修改了 settings.data_dir，则默认 user_data.db 应跟随 data_dir
+        if db_path_obj == Path("data/user_data.db"):
+            try:
+                from src.config.settings import settings
+
+                db_path_obj = Path(settings.data_dir) / "user_data.db"
+            except Exception:
+                pass
+
+        self.db_path = db_path_obj
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.timeout = 10.0
 
@@ -55,32 +67,75 @@ class UserDataManager:
                     timeout=self.timeout,
                     check_same_thread=False,
                 )
-                logger.info(f"用户数据管理器使用连接池模式: {db_path}")
+                logger.info("用户数据管理器使用连接池模式: %s", self.db_path)
             except Exception as e:
                 logger.error(f"连接池初始化失败，切换到传统模式: {e}")
                 self.use_pool = False
                 self._pool = None
         else:
             self._pool = None
-            logger.info(f"用户数据管理器使用传统模式: {db_path}")
+            logger.info("用户数据管理器使用传统模式: %s", self.db_path)
 
         # v2.27.0: 缓存机制
         self._cache: Dict[str, Any] = {}
         self._cache_ttl: Dict[str, datetime] = {}
         self._cache_enabled = True
+        self._cache_lock = threading.RLock()
 
         self._init_database()
 
+    def _configure_connection(self, conn: sqlite3.Connection, *, pooled: bool) -> None:
+        """Apply connection-level SQLite PRAGMAs.
+
+        `user_data.db` is separate from `users.db`, so any FOREIGN KEY that references the
+        users table cannot be enforced. The connection pool enables `foreign_keys` by
+        default; we explicitly disable it here to avoid runtime errors.
+        """
+        pragmas: list[tuple[str, str]] = [("foreign_keys", "OFF")]
+
+        # Connection pools already apply most performance PRAGMAs; keep them intact and
+        # only add what they don't configure.
+        if pooled:
+            pragmas.append(("mmap_size", "268435456"))
+        else:
+            pragmas.extend(
+                [
+                    ("journal_mode", "WAL"),
+                    ("synchronous", "NORMAL"),
+                    ("cache_size", "-10000"),
+                    ("mmap_size", "268435456"),
+                    ("temp_store", "MEMORY"),
+                ]
+            )
+
+        for key, value in pragmas:
+            try:
+                conn.execute(f"PRAGMA {key} = {value}")
+            except Exception:
+                continue
+
+    @contextmanager
     def _get_connection(self):
         """获取数据库连接 (v2.27.0: 支持连接池)
 
-        Returns:
-            数据库连接对象或上下文管理器
+        注意：sqlite3.Connection 的上下文管理器仅提交/回滚，不会自动 close。
+        这里统一封装为“会自动关闭”的上下文管理器，避免 Windows 下数据库文件句柄泄漏。
         """
         if self.use_pool and self._pool:
-            return self._pool.get_connection()
-        else:
-            return sqlite3.connect(self.db_path, timeout=self.timeout)
+            with self._pool.get_connection() as conn:
+                self._configure_connection(conn, pooled=True)
+                yield conn
+            return
+
+        conn = sqlite3.connect(str(self.db_path), timeout=self.timeout)
+        try:
+            self._configure_connection(conn, pooled=False)
+            yield conn
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _is_cache_valid(self, cache_key: str) -> bool:
         """检查缓存是否有效
@@ -91,13 +146,13 @@ class UserDataManager:
         Returns:
             缓存是否有效
         """
-        if not self._cache_enabled or cache_key not in self._cache:
+        if not self._cache_enabled:
             return False
 
-        if cache_key not in self._cache_ttl:
-            return False
-
-        return datetime.now() < self._cache_ttl[cache_key]
+        with self._cache_lock:
+            if cache_key not in self._cache or cache_key not in self._cache_ttl:
+                return False
+            return datetime.now() < self._cache_ttl[cache_key]
 
     def _set_cache(self, cache_key: str, value: Any, ttl_seconds: int = 300) -> None:
         """设置缓存
@@ -107,7 +162,10 @@ class UserDataManager:
             value: 缓存值
             ttl_seconds: 过期时间（秒），默认5分钟
         """
-        if self._cache_enabled:
+        if not self._cache_enabled:
+            return
+
+        with self._cache_lock:
             self._cache[cache_key] = value
             self._cache_ttl[cache_key] = datetime.now() + timedelta(seconds=ttl_seconds)
 
@@ -117,20 +175,24 @@ class UserDataManager:
         Args:
             pattern: 缓存键模式，如果为None则清空所有缓存
         """
-        if pattern is None:
-            self._cache.clear()
-            self._cache_ttl.clear()
-        else:
-            keys_to_remove = [k for k in self._cache.keys() if pattern in k]
-            for key in keys_to_remove:
-                self._cache.pop(key, None)
-                self._cache_ttl.pop(key, None)
+        with self._cache_lock:
+            if pattern is None:
+                self._cache.clear()
+                self._cache_ttl.clear()
+            else:
+                keys_to_remove = [k for k in self._cache.keys() if pattern in k]
+                for key in keys_to_remove:
+                    self._cache.pop(key, None)
+                    self._cache_ttl.pop(key, None)
 
     def _init_database(self) -> None:
         """初始化数据库表 (v2.28.0: 增强性能优化)"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
+
+                # user_data.db 与 users.db 分离，无法跨库外键；禁用外键以避免运行时报错。
+                cursor.execute("PRAGMA foreign_keys = OFF")
 
                 # v2.28.0: SQLite性能优化配置
                 # 启用 WAL 模式 - 提升并发性能
@@ -159,7 +221,6 @@ class UserDataManager:
                         status TEXT DEFAULT '在线',
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (user_id) REFERENCES users (id),
                         UNIQUE(user_id, name)
                     )
                 """
@@ -174,8 +235,7 @@ class UserDataManager:
                         contact_name TEXT NOT NULL,
                         role TEXT NOT NULL,
                         content TEXT NOT NULL,
-                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (user_id) REFERENCES users (id)
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """
                 )
@@ -188,8 +248,7 @@ class UserDataManager:
                         user_id INTEGER NOT NULL UNIQUE,
                         settings_json TEXT NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (user_id) REFERENCES users (id)
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """
                 )
@@ -205,12 +264,22 @@ class UserDataManager:
                         file_name TEXT NOT NULL,
                         file_type TEXT NOT NULL,
                         file_size INTEGER DEFAULT 0,
+                        caption TEXT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (user_id) REFERENCES users (id),
                         UNIQUE(user_id, sticker_id)
                     )
                 """
                 )
+
+                # v2.46.x: 旧数据库兼容 - 为自定义表情包补充 caption 字段（用于视觉模型生成的说明标签）
+                try:
+                    cursor.execute("PRAGMA table_info(custom_stickers)")
+                    columns = {row[1] for row in cursor.fetchall() if row and len(row) > 1}
+                    if "caption" not in columns:
+                        cursor.execute("ALTER TABLE custom_stickers ADD COLUMN caption TEXT")
+                        logger.info("custom_stickers 表已补充 caption 字段")
+                except Exception as schema_exc:
+                    logger.warning("检查/迁移 custom_stickers.caption 字段失败: %s", schema_exc)
 
                 # 创建索引 (v2.30.12: 优化索引策略，提升查询性能)
                 cursor.execute(
@@ -218,11 +287,24 @@ class UserDataManager:
                     CREATE INDEX IF NOT EXISTS idx_contacts_user_id ON contacts(user_id)
                 """
                 )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_contacts_user_updated
+                    ON contacts(user_id, updated_at DESC)
+                """
+                )
                 # v2.30.12: 优化 - 使用复合索引覆盖查询条件
                 cursor.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_chat_history_query
                     ON chat_history(user_id, contact_name, timestamp DESC)
+                """
+                )
+                # v2.49.x: 针对“向上翻历史”的 keyset pagination 优化（避免大 OFFSET 退化）
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_chat_history_user_contact_id
+                    ON chat_history(user_id, contact_name, id DESC)
                 """
                 )
                 # v2.30.12: 保留单列索引用于其他查询
@@ -234,6 +316,12 @@ class UserDataManager:
                 cursor.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_custom_stickers_user_id ON custom_stickers(user_id)
+                """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_custom_stickers_user_created
+                    ON custom_stickers(user_id, created_at DESC)
                 """
                 )
 
@@ -293,6 +381,53 @@ class UserDataManager:
             handle_exception(e, logger, "添加联系人失败")
             return False
 
+    def add_contacts_batch(self, user_id: int, contacts: List[Dict[str, Any]]) -> int:
+        """批量添加联系人（导入/同步场景使用），自动忽略重复项。"""
+        if not contacts:
+            return 0
+
+        values: list[tuple[int, str, str, str]] = []
+        for contact in contacts:
+            try:
+                name = str(contact.get("name") or "").strip()
+            except Exception:
+                name = ""
+            if not name:
+                continue
+            avatar = str(contact.get("avatar") or "👤")
+            status = str(contact.get("status") or "在线")
+            values.append((user_id, name, avatar, status))
+
+        if not values:
+            return 0
+
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                before = conn.total_changes
+                cursor.executemany(
+                    """
+                    INSERT OR IGNORE INTO contacts (user_id, name, avatar, status)
+                    VALUES (?, ?, ?, ?)
+                """,
+                    values,
+                )
+                conn.commit()
+                inserted = int(conn.total_changes - before)
+
+            if inserted:
+                self._invalidate_cache(f"contacts_{user_id}")
+            return inserted
+        except sqlite3.Error as e:
+            raise DatabaseError(
+                "批量添加联系人失败",
+                operation="add_contacts_batch",
+                context={"user_id": user_id, "count": len(values), "error": str(e)},
+            )
+        except Exception as e:
+            handle_exception(e, logger, "批量添加联系人失败")
+            return 0
+
     def get_contacts(self, user_id: int) -> List[Dict[str, Any]]:
         """获取用户的所有联系人 (v2.27.0: 使用连接池和缓存)
 
@@ -306,7 +441,12 @@ class UserDataManager:
         cache_key = f"contacts_{user_id}"
         if self._is_cache_valid(cache_key):
             logger.debug(f"从缓存获取联系人列表: user_id={user_id}")
-            return self._cache[cache_key]
+            with self._cache_lock:
+                cached = self._cache.get(cache_key, [])
+            if isinstance(cached, list):
+                # 返回拷贝，避免外部修改污染缓存
+                return [dict(item) for item in cached]
+            return []
 
         try:
             with self._get_connection() as conn:
@@ -339,7 +479,8 @@ class UserDataManager:
 
                 # 设置缓存（10分钟）
                 self._set_cache(cache_key, contacts, ttl_seconds=600)
-                return contacts
+                # 返回拷贝，避免外部修改污染缓存
+                return [dict(item) for item in contacts]
         except sqlite3.Error as e:
             raise DatabaseError(
                 "获取联系人失败",
@@ -361,35 +502,45 @@ class UserDataManager:
         Returns:
             是否更新成功
         """
+        contact_rows = 0
+        history_rows = 0
         try:
-            conn = sqlite3.connect(self.db_path, timeout=self.timeout)
-            cursor = conn.cursor()
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
 
-            cursor.execute(
-                """
-                UPDATE contacts
-                SET name = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = ? AND name = ?
-            """,
-                (new_name, user_id, old_name),
-            )
+                cursor.execute(
+                    """
+                    UPDATE contacts
+                    SET name = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND name = ?
+                """,
+                    (new_name, user_id, old_name),
+                )
+                contact_rows = int(getattr(cursor, "rowcount", 0) or 0)
 
-            # 同时更新聊天历史中的联系人名称
-            cursor.execute(
-                """
-                UPDATE chat_history
-                SET contact_name = ?
-                WHERE user_id = ? AND contact_name = ?
-            """,
-                (new_name, user_id, old_name),
-            )
+                # 同时更新聊天历史中的联系人名称
+                cursor.execute(
+                    """
+                    UPDATE chat_history
+                    SET contact_name = ?
+                    WHERE user_id = ? AND contact_name = ?
+                """,
+                    (new_name, user_id, old_name),
+                )
+                history_rows = int(getattr(cursor, "rowcount", 0) or 0)
 
-            conn.commit()
-            affected_rows = cursor.rowcount
-            conn.close()
+                conn.commit()
 
-            if affected_rows > 0:
-                logger.info(f"用户 {user_id} 重命名联系人: {old_name} -> {new_name}")
+            if contact_rows > 0:
+                self._invalidate_cache(f"contacts_{user_id}")
+                logger.info(
+                    "用户 %s 重命名联系人: %s -> %s (contacts=%s, history=%s)",
+                    user_id,
+                    old_name,
+                    new_name,
+                    contact_rows,
+                    history_rows,
+                )
                 return True
             return False
         except Exception as e:
@@ -407,22 +558,22 @@ class UserDataManager:
             是否删除成功
         """
         try:
-            conn = sqlite3.connect(self.db_path, timeout=self.timeout)
-            cursor = conn.cursor()
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
 
-            cursor.execute(
-                """
-                DELETE FROM contacts
-                WHERE user_id = ? AND name = ?
-            """,
-                (user_id, name),
-            )
+                cursor.execute(
+                    """
+                    DELETE FROM contacts
+                    WHERE user_id = ? AND name = ?
+                """,
+                    (user_id, name),
+                )
 
-            conn.commit()
-            affected_rows = cursor.rowcount
-            conn.close()
+                conn.commit()
+                affected_rows = int(getattr(cursor, "rowcount", 0) or 0)
 
             if affected_rows > 0:
+                self._invalidate_cache(f"contacts_{user_id}")
                 logger.info(f"用户 {user_id} 删除联系人: {name}")
                 return True
             return False
@@ -591,6 +742,108 @@ class UserDataManager:
             handle_exception(e, logger, "获取聊天历史失败")
             return []
 
+    def get_chat_history_page(
+        self,
+        user_id: int,
+        contact_name: str,
+        *,
+        limit: int = 100,
+        before_id: int | None = None,
+    ) -> List[Dict[str, Any]]:
+        """按消息 id 进行 keyset pagination 获取聊天历史（推荐）。
+
+        说明：
+        - 传统 OFFSET 在大数据量时会退化为线性扫描，加载越往前越慢。
+        - 该方法使用 `id < before_id` 实现稳定的向前翻页。
+        - 返回顺序为“从旧到新”（便于直接渲染）。
+
+        Args:
+            user_id: 用户 ID
+            contact_name: 联系人名称
+            limit: 返回消息数量
+            before_id: 仅返回 id < before_id 的更早消息；为 None 时返回最新消息页
+
+        Returns:
+            消息列表（从旧到新）
+        """
+        if limit <= 0:
+            return []
+
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+
+                params: list[Any] = [user_id, contact_name]
+                where_before = ""
+                if before_id is not None:
+                    where_before = " AND id < ?"
+                    params.append(before_id)
+
+                cursor.execute(
+                    f"""
+                    SELECT role, content, timestamp, id
+                    FROM chat_history
+                    WHERE user_id = ? AND contact_name = ?{where_before}
+                    ORDER BY id DESC
+                    LIMIT ?
+                """,
+                    (*params, int(limit)),
+                )
+
+                rows = cursor.fetchall()
+                if not rows:
+                    return []
+
+                # rows 按 id DESC，反转为从旧到新
+                messages = [
+                    {"role": role, "content": content, "timestamp": ts, "id": msg_id}
+                    for role, content, ts, msg_id in reversed(rows)
+                ]
+                return messages
+        except sqlite3.Error as e:
+            raise DatabaseError(
+                "获取聊天历史分页失败",
+                operation="get_chat_history_page",
+                context={
+                    "user_id": user_id,
+                    "contact": contact_name,
+                    "limit": limit,
+                    "before_id": before_id,
+                    "error": str(e),
+                },
+            )
+        except Exception as e:
+            handle_exception(e, logger, "获取聊天历史分页失败")
+            return []
+
+    def get_chat_history_all(self, user_id: int, contact_name: str) -> List[Dict[str, Any]]:
+        """获取某联系人完整聊天历史（从旧到新）。"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT role, content, timestamp, id
+                    FROM chat_history
+                    WHERE user_id = ? AND contact_name = ?
+                    ORDER BY id ASC
+                """,
+                    (user_id, contact_name),
+                )
+                return [
+                    {"role": role, "content": content, "timestamp": ts, "id": msg_id}
+                    for role, content, ts, msg_id in cursor.fetchall()
+                ]
+        except sqlite3.Error as e:
+            raise DatabaseError(
+                "获取完整聊天历史失败",
+                operation="get_chat_history_all",
+                context={"user_id": user_id, "contact": contact_name, "error": str(e)},
+            )
+        except Exception as e:
+            handle_exception(e, logger, "获取完整聊天历史失败")
+            return []
+
     def get_chat_history_count(self, user_id: int, contact_name: str) -> int:
         """获取聊天历史总数 (v2.30.12: 新增，用于分页)
 
@@ -641,20 +894,21 @@ class UserDataManager:
             是否清空成功
         """
         try:
-            conn = sqlite3.connect(self.db_path, timeout=self.timeout)
-            cursor = conn.cursor()
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    DELETE FROM chat_history
+                    WHERE user_id = ? AND contact_name = ?
+                """,
+                    (user_id, contact_name),
+                )
+                deleted_rows = int(getattr(cursor, "rowcount", 0) or 0)
+                conn.commit()
 
-            cursor.execute(
-                """
-                DELETE FROM chat_history
-                WHERE user_id = ? AND contact_name = ?
-            """,
-                (user_id, contact_name),
+            logger.info(
+                "用户 %s 清空与 %s 的聊天历史 (deleted=%s)", user_id, contact_name, deleted_rows
             )
-
-            conn.commit()
-            conn.close()
-            logger.info(f"用户 {user_id} 清空与 {contact_name} 的聊天历史")
             return True
         except Exception as e:
             logger.error(f"清空聊天历史失败: {e}")
@@ -727,7 +981,11 @@ class UserDataManager:
         cache_key = f"settings_{user_id}"
         if self._is_cache_valid(cache_key):
             logger.debug(f"从缓存获取用户设置: user_id={user_id}")
-            return self._cache[cache_key]
+            with self._cache_lock:
+                cached = self._cache.get(cache_key)
+            if isinstance(cached, dict):
+                return dict(cached)
+            return None
 
         try:
             with self._get_connection() as conn:
@@ -748,6 +1006,8 @@ class UserDataManager:
                     settings = json.loads(row[0])
                     # 设置缓存（5分钟）
                     self._set_cache(cache_key, settings, ttl_seconds=300)
+                    if isinstance(settings, dict):
+                        return dict(settings)
                     return settings
                 return None
         except sqlite3.Error as e:
@@ -774,6 +1034,14 @@ class UserDataManager:
         """
         try:
             export_path = Path(export_dir)
+            # 默认导出目录跟随 settings.data_dir
+            if export_path == Path("data/exports"):
+                try:
+                    from src.config.settings import settings
+
+                    export_path = Path(settings.data_dir) / "exports"
+                except Exception:
+                    pass
             export_path.mkdir(parents=True, exist_ok=True)
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -792,7 +1060,7 @@ class UserDataManager:
             # 导出每个联系人的聊天历史
             for contact in data["contacts"]:
                 contact_name = contact["name"]
-                data["chat_history"][contact_name] = self.get_chat_history(user_id, contact_name)
+                data["chat_history"][contact_name] = self.get_chat_history_all(user_id, contact_name)
 
             # 写入文件
             with open(filepath, "w", encoding="utf-8") as f:
@@ -819,20 +1087,33 @@ class UserDataManager:
                 data = json.load(f)
 
             # 导入联系人
-            if "contacts" in data:
-                for contact in data["contacts"]:
-                    self.add_contact(
-                        user_id,
-                        contact["name"],
-                        contact.get("avatar", "👤"),
-                        contact.get("status", "在线"),
-                    )
+            contacts = data.get("contacts")
+            if isinstance(contacts, list) and contacts:
+                self.add_contacts_batch(user_id, contacts)
 
             # 导入聊天历史
             if "chat_history" in data:
                 for contact_name, messages in data["chat_history"].items():
+                    if not isinstance(messages, list):
+                        continue
+
+                    batch: list[dict[str, Any]] = []
                     for msg in messages:
-                        self.add_message(user_id, contact_name, msg["role"], msg["content"])
+                        try:
+                            role = msg["role"]
+                            content = msg["content"]
+                        except Exception:
+                            continue
+                        batch.append(
+                            {
+                                "user_id": user_id,
+                                "contact_name": contact_name,
+                                "role": role,
+                                "content": content,
+                            }
+                        )
+                    if batch:
+                        self.add_messages_batch(batch)
 
             # 导入设置
             if "settings" in data and data["settings"]:
@@ -854,6 +1135,7 @@ class UserDataManager:
         file_name: str,
         file_type: str,
         file_size: int = 0,
+        caption: str | None = None,
     ) -> bool:
         """添加自定义表情包 - v2.29.7 修复：改进错误处理
 
@@ -864,44 +1146,50 @@ class UserDataManager:
             file_name: 文件名
             file_type: 文件类型 (gif/png/jpg/jpeg/webp)
             file_size: 文件大小（字节）
+            caption: 表情包说明标签（可选，通常由视觉模型生成）
 
         Returns:
             bool: 是否成功
         """
-        conn = None
         try:
             logger.info(
                 f"开始添加表情包: user_id={user_id}, sticker_id={sticker_id}, file_name={file_name}"
             )
 
             # 验证文件是否存在
-            from pathlib import Path
-
             if not Path(file_path).exists():
                 logger.error(f"文件不存在: {file_path}")
                 return False
 
-            conn = sqlite3.connect(self.db_path, timeout=self.timeout)
-            cursor = conn.cursor()
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
 
-            # 检查是否已存在
-            cursor.execute(
-                "SELECT id FROM custom_stickers WHERE user_id = ? AND sticker_id = ?",
-                (user_id, sticker_id),
-            )
-            if cursor.fetchone():
-                logger.warning(f"表情包已存在: {sticker_id}")
-                return False
+                # 检查是否已存在
+                cursor.execute(
+                    "SELECT id FROM custom_stickers WHERE user_id = ? AND sticker_id = ?",
+                    (user_id, sticker_id),
+                )
+                if cursor.fetchone():
+                    logger.warning(f"表情包已存在: {sticker_id}")
+                    return False
 
-            cursor.execute(
-                """
-                INSERT INTO custom_stickers (user_id, sticker_id, file_path, file_name, file_type, file_size)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """,
-                (user_id, sticker_id, file_path, file_name, file_type, file_size),
-            )
+                cursor.execute(
+                    """
+                    INSERT INTO custom_stickers (
+                        user_id,
+                        sticker_id,
+                        file_path,
+                        file_name,
+                        file_type,
+                        file_size,
+                        caption
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                    (user_id, sticker_id, file_path, file_name, file_type, file_size, caption),
+                )
 
-            conn.commit()
+                conn.commit()
             logger.info(f"用户 {user_id} 添加自定义表情包成功: {file_name} (路径: {file_path})")
 
             # 清除缓存 - v2.29.7 修复：使用正确的方法名
@@ -920,9 +1208,6 @@ class UserDataManager:
                 f"参数: user_id={user_id}, sticker_id={sticker_id}, file_path={file_path}, file_name={file_name}, file_type={file_type}, file_size={file_size}"
             )
             return False
-        finally:
-            if conn:
-                conn.close()
 
     def get_custom_stickers(self, user_id: int) -> List[Dict]:
         """获取用户的自定义表情包列表 - v2.29.9 修复：确保连接正确关闭
@@ -933,47 +1218,87 @@ class UserDataManager:
         Returns:
             List[Dict]: 表情包列表
         """
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path, timeout=self.timeout)
-            cursor = conn.cursor()
+            cache_key = f"custom_stickers_{user_id}"
+            if self._is_cache_valid(cache_key):
+                with self._cache_lock:
+                    cached = self._cache.get(cache_key, [])
+                if isinstance(cached, list):
+                    return [dict(item) for item in cached]
+                return []
 
-            cursor.execute(
-                """
-                SELECT sticker_id, file_path, file_name, file_type, file_size, created_at
-                FROM custom_stickers
-                WHERE user_id = ?
-                ORDER BY created_at DESC
-            """,
-                (user_id,),
-            )
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
 
-            stickers = []
-            for row in cursor.fetchall():
-                try:
-                    stickers.append(
-                        {
-                            "sticker_id": row[0],  # sticker_id - 修复：使用完整键名
-                            "file_path": row[1],  # file_path - 修复：使用完整键名
-                            "file_name": row[2],  # file_name - 修复：使用完整键名
-                            "file_type": row[3],  # file_type - 修复：使用完整键名
-                            "file_size": row[4],  # file_size - 修复：使用完整键名
-                            "created_at": row[5],  # created_at
-                        }
-                    )
-                except Exception as row_error:
-                    logger.error(f"解析表情包数据失败: {row_error}, row={row}")
-                    continue
+                cursor.execute(
+                    """
+                    SELECT sticker_id, file_path, file_name, file_type, file_size, caption, created_at
+                    FROM custom_stickers
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC
+                """,
+                    (user_id,),
+                )
+
+                stickers = []
+                for row in cursor.fetchall():
+                    try:
+                        stickers.append(
+                            {
+                                "sticker_id": row[0],  # sticker_id - 修复：使用完整键名
+                                "file_path": row[1],  # file_path - 修复：使用完整键名
+                                "file_name": row[2],  # file_name - 修复：使用完整键名
+                                "file_type": row[3],  # file_type - 修复：使用完整键名
+                                "file_size": row[4],  # file_size - 修复：使用完整键名
+                                "caption": row[5],  # caption - 视觉模型生成的说明标签
+                                "created_at": row[6],  # created_at
+                            }
+                        )
+                    except Exception as row_error:
+                        logger.error(f"解析表情包数据失败: {row_error}, row={row}")
+                        continue
 
             logger.info(f"成功加载 {len(stickers)} 个自定义表情包")
-            return stickers
+            self._set_cache(cache_key, stickers, ttl_seconds=300)
+            # 返回拷贝，避免外部修改污染缓存
+            return [dict(item) for item in stickers]
         except Exception as e:
             logger.error(f"获取自定义表情包失败: {e}", exc_info=True)
             return []
-        finally:
-            # v2.29.9: 确保连接正确关闭，避免资源泄漏
-            if conn:
-                conn.close()
+
+    def update_custom_sticker_caption(self, user_id: int, sticker_id: str, caption: str | None) -> bool:
+        """更新自定义表情包说明标签（通常由视觉模型生成）。"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE custom_stickers
+                    SET caption = ?
+                    WHERE user_id = ? AND sticker_id = ?
+                """,
+                    (caption, user_id, sticker_id),
+                )
+                conn.commit()
+                updated = int(getattr(cursor, "rowcount", 0) or 0)
+
+            self._invalidate_cache(f"custom_stickers_{user_id}")
+            logger.info(
+                "更新表情包 caption: user_id=%s, sticker_id=%s, updated=%s",
+                user_id,
+                sticker_id,
+                updated,
+            )
+            return updated > 0
+        except Exception as e:
+            logger.error(
+                "更新表情包 caption 失败: user_id=%s, sticker_id=%s, error=%s",
+                user_id,
+                sticker_id,
+                e,
+                exc_info=True,
+            )
+            return False
 
     def delete_custom_sticker(self, user_id: int, sticker_id: str) -> bool:
         """删除自定义表情包 - v2.29.9 修复：确保连接正确关闭
@@ -985,20 +1310,19 @@ class UserDataManager:
         Returns:
             bool: 是否成功
         """
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path, timeout=self.timeout)
-            cursor = conn.cursor()
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
 
-            cursor.execute(
-                """
-                DELETE FROM custom_stickers
-                WHERE user_id = ? AND sticker_id = ?
-            """,
-                (user_id, sticker_id),
-            )
+                cursor.execute(
+                    """
+                    DELETE FROM custom_stickers
+                    WHERE user_id = ? AND sticker_id = ?
+                """,
+                    (user_id, sticker_id),
+                )
 
-            conn.commit()
+                conn.commit()
 
             # 清除缓存 - v2.29.7 修复：使用正确的方法名
             self._invalidate_cache(f"custom_stickers_{user_id}")
@@ -1008,10 +1332,6 @@ class UserDataManager:
         except Exception as e:
             logger.error(f"删除自定义表情包失败: {e}", exc_info=True)
             return False
-        finally:
-            # v2.29.9: 确保连接正确关闭，避免资源泄漏
-            if conn:
-                conn.close()
 
     def get_sticker_count(self, user_id: int) -> int:
         """获取用户的自定义表情包数量 - v2.29.3 修复
@@ -1023,19 +1343,7 @@ class UserDataManager:
             int: 表情包数量
         """
         try:
-            conn = sqlite3.connect(self.db_path, timeout=self.timeout)
-            cursor = conn.cursor()
-
-            cursor.execute(
-                """
-                SELECT COUNT(*) FROM custom_stickers WHERE user_id = ?
-            """,
-                (user_id,),
-            )
-
-            count = cursor.fetchone()[0]
-            conn.close()
-            return count
+            return len(self.get_custom_stickers(user_id))
         except Exception as e:
             logger.error(f"获取表情包数量失败: {e}", exc_info=True)
             return 0

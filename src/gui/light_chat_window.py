@@ -22,17 +22,47 @@ from PyQt6.QtCore import (
     QPropertyAnimation,
     QEasingCurve,
     QTimer,
+    QPoint,
+    QRect,
 )
 from PyQt6.QtGui import QFont, QColor, QPixmap
 from pathlib import Path
 from functools import lru_cache
+from threading import Event
 from typing import Any, Optional, List, TYPE_CHECKING
 import re
 import time
 import asyncio
 import os
+import weakref
 
 STICKER_PATTERN = re.compile(r"\[STICKER:([^\]]+)\]")
+IMAGE_PATTERN = re.compile(r"\[IMAGE:([^\]]+)\]")
+_STICKER_EMOTION_KEYWORDS = {
+    "开心": ["happy", "smile", "laugh", "joy", "开心", "笑", "哈哈", "嘻嘻"],
+    "难过": ["sad", "cry", "tear", "难过", "哭", "伤心", "泪"],
+    "生气": ["angry", "mad", "rage", "生气", "愤怒", "火"],
+    "惊讶": ["surprise", "shock", "wow", "惊讶", "震惊", "哇"],
+    "害羞": ["shy", "blush", "embarrass", "害羞", "脸红", "羞"],
+    "可爱": ["cute", "kawaii", "adorable", "可爱", "萌", "卡哇伊"],
+    "爱心": ["love", "heart", "kiss", "爱", "心", "亲"],
+    "疑问": ["question", "confused", "wonder", "疑问", "困惑", "问"],
+    "赞": ["thumbs", "good", "nice", "赞", "棒", "好"],
+    "无语": ["speechless", "无语", "无奈", "汗"],
+}
+
+
+@lru_cache(maxsize=512)
+def _guess_sticker_emotion(sticker_path: str) -> str:
+    try:
+        sticker_name = Path(sticker_path).stem.lower()
+    except Exception:
+        sticker_name = (sticker_path or "").lower()
+
+    for emotion, keywords in _STICKER_EMOTION_KEYWORDS.items():
+        if any(keyword in sticker_name for keyword in keywords):
+            return emotion
+    return "表情"
 # 流式渲染：固定帧率小步追加（更像 ChatGPT 网页端，且避免一次性塞入大段文本导致“段落跳动”）
 # 兼容：历史环境变量 MINTCHAT_GUI_STREAM_FLUSH_MS 仍可作为渲染间隔的兜底值。
 STREAM_RENDER_INTERVAL_MS = max(
@@ -50,6 +80,9 @@ STREAM_RENDER_TYPEWRITER = os.getenv("MINTCHAT_GUI_STREAM_TYPEWRITER", "1").lowe
     "no",
     "off",
 }
+STREAM_RENDER_TYPEWRITER_MAX_BACKLOG = max(
+    0, int(os.getenv("MINTCHAT_GUI_STREAM_TYPEWRITER_MAX_BACKLOG", "512"))
+)
 STREAM_RENDER_BASE_CHARS = max(1, int(os.getenv("MINTCHAT_GUI_STREAM_RENDER_CHARS", "16")))
 STREAM_RENDER_MAX_CHARS = max(
     STREAM_RENDER_BASE_CHARS, int(os.getenv("MINTCHAT_GUI_STREAM_RENDER_MAX_CHARS", "256"))
@@ -72,6 +105,15 @@ SMOOTH_SCROLL_ENABLED = os.getenv("MINTCHAT_GUI_SMOOTH_SCROLL", "0").lower() not
 }
 FPS_OVERLAY_ENABLED = os.getenv("MINTCHAT_GUI_FPS_OVERLAY", "0").lower() not in {"0", "false", "no", "off"}
 SHADOW_BUDGET = max(0, int(os.getenv("MINTCHAT_GUI_SHADOW_BUDGET", "24")))
+ANIMATED_IMAGE_VISIBLE_ONLY = os.getenv("MINTCHAT_GUI_ANIMATED_IMAGE_VISIBLE_ONLY", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+# 0 表示不限制可见区域内的动图数量；仍可结合 ANIMATED_IMAGE_VISIBLE_ONLY 停止屏幕外动画。
+ANIMATED_IMAGE_BUDGET = max(0, int(os.getenv("MINTCHAT_GUI_ANIMATED_IMAGE_BUDGET", "8")))
+ANIMATED_IMAGE_DEBOUNCE_MS = max(0, int(os.getenv("MINTCHAT_GUI_ANIMATED_IMAGE_DEBOUNCE_MS", "80")))
 GUI_ANIMATIONS_ENABLED = os.getenv(
     "MINTCHAT_GUI_ANIMATIONS",
     os.getenv("MINTCHAT_GUI_ENTRY_ANIMATIONS", "0"),  # 兼容旧变量名
@@ -108,6 +150,7 @@ from .notifications import show_toast, Toast
 from .contacts_panel import ContactsPanel
 from src.utils.logger import get_logger
 from src.auth.user_session import user_session
+from src.auth.session_store import delete_session_token_file, write_session_token_file
 from src.utils.gui_optimizer import throttle, track_object
 from .chat_window_optimizer import ChatWindowOptimizer
 
@@ -202,7 +245,6 @@ class ChatThread(QThread):
     """聊天线程（简化版，直接调用Agent）"""
 
     chunk_received = pyqtSignal(str)
-    finished = pyqtSignal()
     error = pyqtSignal(str)
 
     def __init__(
@@ -220,6 +262,8 @@ class ChatThread(QThread):
         self.image_analysis = image_analysis
         self.timeout = timeout
         self._is_running = True
+        self._cancel_event = Event()
+        self._had_error = False
         self._start_time = None
 
         track_object(self, f"ChatThread-{message[:20]}")
@@ -244,13 +288,16 @@ class ChatThread(QThread):
                 self.message,
                 save_to_long_term=True,
                 image_path=self.image_path,
-                image_analysis=self.image_analysis
+                image_analysis=self.image_analysis,
+                cancel_event=self._cancel_event,
             ):
-                if not self._is_running:
+                if (not self._is_running) or self._cancel_event.is_set() or self.isInterruptionRequested():
                     break
 
                 if time.time() - self._start_time > self.timeout:
                     logger.warning("ChatThread超时 (%s秒)", self.timeout)
+                    self._cancel_event.set()
+                    self._had_error = True
                     self.error.emit(f"请求超时（{self.timeout}秒），请稍后重试")
                     return
 
@@ -285,30 +332,38 @@ class ChatThread(QThread):
                 emitted_chunks,
                 execution_time,
             )
-            self.finished.emit()
+            # QThread 内置 finished 信号会在 run 返回后自动触发
 
         except Exception as e:
             from src.utils.exceptions import handle_exception
             handle_exception(e, logger, "ChatThread运行失败")
-            if self._is_running:
+            if self._is_running and (not self._cancel_event.is_set()):
+                self._had_error = True
                 self.error.emit(str(e))
 
     def stop(self):
         """停止线程"""
         logger.info("正在停止ChatThread...")
         self._is_running = False
-        if self.isRunning():
-            self.wait(2000)
+        self._cancel_event.set()
+        try:
+            self.requestInterruption()
+        except Exception:
+            pass
 
     def cleanup(self):
         """清理资源"""
         logger.info("开始清理 ChatThread 资源...")
         self.stop()
+        if self.isRunning():
+            logger.debug("ChatThread仍在运行，延迟清理引用")
+            return
         self.agent = None
         self.message = None
         self.image_path = None
         self.image_analysis = None
         self._is_running = False
+        self._cancel_event = Event()
         self._start_time = None
         logger.info("ChatThread 资源已清理")
 
@@ -373,12 +428,17 @@ class LightChatWindow(LightFramelessWindow):
         # 表情选择器
         self.emoji_picker = None
 
+        # 动图气泡索引（WeakSet 避免反向引用导致泄漏）：用于滚动时预算控制，避免 findChildren 全树扫描
+        self._animated_image_bubbles: "weakref.WeakSet[LightImageMessageBubble]" = weakref.WeakSet()
+
         # 线程池 - 优化多线程性能
         self.thread_pool = QThreadPool.globalInstance()
         self.thread_pool.setMaxThreadCount(4)  # 最多4个线程
 
         # 当前聊天线程
         self.current_chat_thread = None
+        # 仍在运行/等待回收的 ChatThread 引用，避免 QThread 被 GC 导致崩溃
+        self._live_chat_threads: list[ChatThread] = []
 
         # 当前联系人
         self.current_contact = "小雪糕"  # 默认联系人
@@ -1028,100 +1088,14 @@ class LightChatWindow(LightFramelessWindow):
             self.input_area.setFixedHeight(new_area_height)
 
     def _send_message(self):
-        """发送消息 - v2.30.2 优化：支持多图片和文本一起发送"""
-        # v2.29.11: 提前获取并验证消息
-        message = self.input_text.toPlainText().strip()
-
-        # v2.30.2: 检查是否有消息或图片
-        has_pending_images = len(self.pending_images) > 0
-        if not message and not has_pending_images:
-            return
-
-        # Agent 未就绪时不允许发送：避免清空输入/插入气泡后又失败导致体验问题
-        if self.agent is None or bool(getattr(self, "_agent_initializing", False)):
-            if bool(getattr(self, "_agent_initializing", False)):
-                show_toast(self, "AI 正在初始化，请稍候…", Toast.TYPE_INFO, duration=1500)
-            else:
-                show_toast(self, "AI 未就绪，请检查配置后重试", Toast.TYPE_ERROR, duration=2500)
-            self._set_send_enabled(True)
-            return
-
-        # v2.29.11: 优化线程停止逻辑
-        if self.current_chat_thread is not None and self.current_chat_thread.isRunning():
-            self.current_chat_thread.stop()
-            self.current_chat_thread.wait(1000)  # 等待最多1秒
-
-        # v2.29.11: 批量更新UI，减少重绘
-        self.input_text.setUpdatesEnabled(False)
-        self.input_text.clear()
-        self.input_text.setFixedHeight(self._single_line_height)
-        self.input_text.setUpdatesEnabled(True)
-        self.input_area.setFixedHeight(self._input_area_min_height)
-
-        # v2.30.2: 先显示图片消息（如果有）
-        if has_pending_images:
-            for img_path in self.pending_images:
-                self._add_image_message(img_path, is_user=True)
-
-        # 添加用户消息（原始消息，包含表情包标记）
-        if message:
-            self._add_message(message, is_user=True)
-
-        # v2.30.2: 如果有图片，开始批量识别
-        if has_pending_images:
-            self._process_multiple_images(self.pending_images.copy(), message)
-            # 清空待发送列表和预览区域
-            self.pending_images.clear()
-            # 清空预览区域
-            while self.image_preview_content_layout.count() > 1:  # 保留stretch
-                item = self.image_preview_content_layout.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
-            self.image_preview_container.setVisible(False)
-            return
-
-        # 重置流式渲染状态（上一轮残留会影响逐字显示/动画）
+        """发送消息 - v2.30.7: 统一走增强输入框（支持内联表情包/附件）。"""
         try:
-            self._reset_stream_render_state()
+            # 通过 RichTextInput 的 send_requested 信号复用 EnhancedInputWidget 的采集逻辑
+            if getattr(self, "input_text", None) is not None:
+                self.input_text.send_requested.emit()
+                return
         except Exception:
             pass
-        self._stream_model_done = False
-
-        # 显示打字指示器
-        self._show_typing_indicator()
-
-        # v2.29.11: 提前检查Agent，避免不必要的处理
-        if self.agent is None:
-            self._hide_typing_indicator()
-            self._add_message("抱歉，AI 助手初始化失败，请检查配置。", is_user=False)
-            return
-
-        # 将消息中的表情包标记转换为描述性文本（供AI理解）
-        ai_message = self._convert_stickers_to_description(message)
-
-        # v2.30.0: 获取图片分析结果（如果有）
-        image_analysis = self.current_image_analysis
-        image_path = self.current_image_path
-
-        # 清除图片分析缓存（避免影响下一次对话）
-        self.current_image_analysis = None
-        self.current_image_path = None
-
-        # v2.29.11: 创建并启动聊天线程
-        # v2.30.0: 传递图片分析结果
-        self.current_chat_thread = ChatThread(
-            self.agent,
-            ai_message,
-            image_path=image_path,
-            image_analysis=image_analysis
-        )
-        self.current_chat_thread.chunk_received.connect(self._on_chunk_received)
-        self.current_chat_thread.finished.connect(self._on_chat_finished)
-        self.current_chat_thread.error.connect(self._on_chat_error)
-        self.current_chat_thread.start()
-
-        # 禁用发送按钮
-        self.send_btn.setEnabled(False)
 
     def _add_message(
         self,
@@ -1145,23 +1119,24 @@ class LightChatWindow(LightFramelessWindow):
             logger.warning("尝试添加空消息，已忽略: is_user=%s", is_user)
             return
 
-        # v2.29.10: 使用预编译的正则表达式，提升性能
-        has_stickers = bool(STICKER_PATTERN.search(message))
         enable_entry_animation = bool(with_animation and GUI_ANIMATIONS_ENABLED)
+        message_stripped = message.strip()
 
-        if has_stickers:
-            # 混合消息：需要分段处理
-            self._add_mixed_message(message, is_user, with_animation)
-        elif message.startswith("[STICKER:") and message.endswith("]"):
-            # 纯表情包消息（向后兼容）
-            sticker_path = message[9:-1]
+        # v2.29.10: 使用预编译的正则表达式，提升性能
+        sticker_only = STICKER_PATTERN.fullmatch(message_stripped)
+        image_only = IMAGE_PATTERN.fullmatch(message_stripped)
+        if sticker_only:
+            # 纯表情包消息：避免额外容器 widget，减少布局与重绘成本
+            sticker_path = sticker_only.group(1)
             bubble = LightImageMessageBubble(
                 sticker_path,
                 is_user,
                 is_sticker=True,
                 with_animation=enable_entry_animation,
                 enable_shadow=with_animation,
+                autoplay=not bulk_loading,
             )
+            self._register_animated_image_bubble(bubble)
             self.messages_layout.insertWidget(self.messages_layout.count() - 1, bubble)
 
             if not bulk_loading:
@@ -1169,6 +1144,26 @@ class LightChatWindow(LightFramelessWindow):
                 bubble.show()
                 self.messages_layout.update()
                 self._schedule_messages_geometry_update()
+        elif image_only:
+            image_path = image_only.group(1)
+            bubble = LightImageMessageBubble(
+                image_path,
+                is_user,
+                is_sticker=False,
+                with_animation=enable_entry_animation,
+                enable_shadow=with_animation,
+                autoplay=not bulk_loading,
+            )
+            self._register_animated_image_bubble(bubble)
+            self.messages_layout.insertWidget(self.messages_layout.count() - 1, bubble)
+
+            if not bulk_loading:
+                bubble.show()
+                self.messages_layout.update()
+                self._schedule_messages_geometry_update()
+        elif STICKER_PATTERN.search(message):
+            # 混合消息：需要分段处理
+            self._add_mixed_message(message, is_user, with_animation)
         else:
             # 纯文本消息
             bubble = LightMessageBubble(message, is_user, enable_shadow=with_animation)
@@ -1215,6 +1210,7 @@ class LightChatWindow(LightFramelessWindow):
 
         if not bulk_loading:
             self._enforce_shadow_budget()
+            self._schedule_animated_image_budget()
             # 长对话保护：只在用户位于底部（允许自动滚动）时裁剪旧消息，避免影响用户阅读历史
             self._schedule_trim_rendered_messages(force=False)
 
@@ -1278,6 +1274,167 @@ class LightChatWindow(LightFramelessWindow):
             return
 
         self._disable_shadow_recursive(widget)
+
+    def _register_animated_image_bubble(self, bubble: LightImageMessageBubble) -> None:
+        """登记可播放动图的图片气泡，供滚动预算控制使用。"""
+        try:
+            if bubble is None:
+                return
+            if not bubble.supports_animation():
+                return
+        except Exception:
+            return
+
+        try:
+            animated_set = getattr(self, "_animated_image_bubbles", None)
+            if animated_set is None:
+                self._animated_image_bubbles = weakref.WeakSet()
+                animated_set = self._animated_image_bubbles
+            animated_set.add(bubble)
+        except Exception:
+            pass
+
+    def _schedule_animated_image_budget(self) -> None:
+        """调度动图预算更新（去抖）。"""
+        if not ANIMATED_IMAGE_VISIBLE_ONLY and ANIMATED_IMAGE_BUDGET <= 0:
+            return
+
+        if not hasattr(self, "_animated_image_budget_timer"):
+            self._animated_image_budget_timer = QTimer()
+            self._animated_image_budget_timer.setSingleShot(True)
+            self._animated_image_budget_timer.timeout.connect(self._enforce_animated_image_budget)
+
+        timer = getattr(self, "_animated_image_budget_timer", None)
+        if timer is None or timer.isActive():
+            return
+
+        timer.start(int(ANIMATED_IMAGE_DEBOUNCE_MS))
+
+    def _enforce_animated_image_budget(self) -> None:
+        """限制可见区域动图播放数量，并停止屏幕外动画（长对话性能保护）。"""
+        if not ANIMATED_IMAGE_VISIBLE_ONLY and ANIMATED_IMAGE_BUDGET <= 0:
+            return
+
+        messages_widget = getattr(self, "messages_widget", None)
+        if messages_widget is None:
+            return
+
+        animated_set = getattr(self, "_animated_image_bubbles", None)
+        if animated_set is not None:
+            try:
+                animated = [b for b in list(animated_set) if b is not None]
+            except Exception:
+                animated = []
+        else:
+            animated = []
+
+        # 兼容兜底：如果索引未初始化，退回全树扫描（相对更慢，但保证功能可用）
+        if not animated:
+            try:
+                bubbles = messages_widget.findChildren(LightImageMessageBubble)
+            except Exception:
+                bubbles = []
+            for bubble in bubbles:
+                try:
+                    if bubble.supports_animation():
+                        animated.append(bubble)
+                except Exception:
+                    continue
+
+        if not animated:
+            return
+
+        scroll_area = getattr(self, "scroll_area", None)
+        viewport = scroll_area.viewport() if scroll_area is not None else None
+        if viewport is None:
+            return
+
+        try:
+            vp_rect = viewport.rect()
+            tl = viewport.mapTo(messages_widget, vp_rect.topLeft())
+            br = viewport.mapTo(messages_widget, vp_rect.bottomRight())
+            visible_rect = QRect(tl, br).normalized()
+        except Exception:
+            visible_rect = None
+
+        visible_items: list[tuple[LightImageMessageBubble, Optional[QRect]]] = []
+        offscreen: list[LightImageMessageBubble] = []
+
+        if visible_rect is not None:
+            for bubble in animated:
+                try:
+                    pos = bubble.mapTo(messages_widget, QPoint(0, 0))
+                    rect = QRect(pos, bubble.size())
+                except Exception:
+                    continue
+
+                if rect.intersects(visible_rect):
+                    visible_items.append((bubble, rect))
+                else:
+                    offscreen.append(bubble)
+        else:
+            visible_items = [(bubble, None) for bubble in animated]
+
+        if ANIMATED_IMAGE_VISIBLE_ONLY:
+            for bubble in offscreen:
+                try:
+                    bubble.set_animation_enabled(False)
+                except Exception:
+                    pass
+
+        budget = int(ANIMATED_IMAGE_BUDGET)
+        if budget <= 0:
+            # 无数量预算时，仅确保“配置为自动播放”的可见动图恢复播放
+            for bubble, _rect in visible_items:
+                try:
+                    if bubble.wants_autoplay() and not bubble.is_animation_enabled():
+                        bubble.set_animation_enabled(True)
+                except Exception:
+                    pass
+            return
+
+        if visible_rect is None:
+            ref_y = 0
+        else:
+            # 用户在底部时优先保留最新（更靠近底部）的动图播放；否则以视窗中心为参考。
+            if getattr(self, "_auto_scroll_enabled", True):
+                ref_y = visible_rect.bottom()
+            else:
+                ref_y = visible_rect.center().y()
+
+        def _rank(item: tuple[LightImageMessageBubble, Optional[QRect]]) -> tuple[int, int]:
+            bubble, rect = item
+            try:
+                enabled = bubble.is_animation_enabled()
+            except Exception:
+                enabled = False
+            try:
+                autoplay = bubble.wants_autoplay()
+            except Exception:
+                autoplay = False
+
+            # 0: 已在播放（尽量保持稳定），1: 可自动播放（允许启动），2: 其余（不主动启动）
+            tier = 0 if enabled else (1 if autoplay else 2)
+
+            if rect is None:
+                dist = 0
+            else:
+                dist = abs(int(rect.center().y()) - int(ref_y))
+            return tier, dist
+
+        ranked = sorted(visible_items, key=_rank)
+        allowed = {bubble for bubble, _rect in ranked[:budget]}
+
+        for bubble, _rect in visible_items:
+            try:
+                if bubble in allowed:
+                    if bubble.wants_autoplay() and not bubble.is_animation_enabled():
+                        bubble.set_animation_enabled(True)
+                else:
+                    if bubble.is_animation_enabled():
+                        bubble.set_animation_enabled(False)
+            except Exception:
+                continue
 
     def _schedule_trim_rendered_messages(self, *, force: bool = False) -> None:
         """调度裁剪渲染消息（批量执行，避免一次性删除大量 widget 卡顿）。"""
@@ -1395,6 +1552,7 @@ class LightChatWindow(LightFramelessWindow):
         self._schedule_messages_geometry_update()
         if getattr(self, "_auto_scroll_enabled", True):
             self._ensure_scroll_to_bottom()
+        self._schedule_animated_image_budget()
 
         # 如果仍超出预算，继续分批裁剪（下一轮事件循环执行）
         if (self.messages_layout.count() - 1) > max_messages:
@@ -1410,6 +1568,7 @@ class LightChatWindow(LightFramelessWindow):
         """
         from PyQt6.QtWidgets import QWidget, QHBoxLayout
         try:
+            bulk_loading = bool(getattr(self, "_bulk_loading_messages", False))
             # 创建容器
             container = QWidget()
             layout = QHBoxLayout(container)
@@ -1442,7 +1601,9 @@ class LightChatWindow(LightFramelessWindow):
                         is_sticker=True,
                         with_animation=enable_entry_animation,
                         enable_shadow=with_animation,
+                        autoplay=not bulk_loading,
                     )
+                    self._register_animated_image_bubble(sticker_bubble)
                     widgets.append(sticker_bubble)
 
             # v2.29.9: 批量添加组件，减少重绘
@@ -1471,14 +1632,19 @@ class LightChatWindow(LightFramelessWindow):
             image_path: 图片文件路径
             is_user: 是否为用户消息
         """
+        bulk_loading = bool(getattr(self, "_bulk_loading_messages", False))
         enable_entry_animation = bool(GUI_ANIMATIONS_ENABLED)
         bubble = LightImageMessageBubble(
             image_path,
             is_user,
             with_animation=enable_entry_animation,
             enable_shadow=True,
+            autoplay=not bulk_loading,
         )
+        self._register_animated_image_bubble(bubble)
         self.messages_layout.insertWidget(self.messages_layout.count() - 1, bubble)
+        if not bulk_loading:
+            self._schedule_animated_image_budget()
         # 动画会持续触发重绘；默认禁用入场动画时，直接滚动到底部即可
         if enable_entry_animation:
             QTimer.singleShot(200, self._ensure_scroll_to_bottom)
@@ -1622,9 +1788,10 @@ class LightChatWindow(LightFramelessWindow):
 
     def _get_stream_render_budget(self) -> int:
         """根据积压量动态调整每帧输出量：小积压更细腻，大积压自动加速追赶。"""
-        if STREAM_RENDER_TYPEWRITER:
-            return 1
         backlog = int(getattr(self, "_stream_render_remaining", 0))
+        if STREAM_RENDER_TYPEWRITER and not getattr(self, "_stream_model_done", False):
+            if STREAM_RENDER_TYPEWRITER_MAX_BACKLOG <= 0 or backlog <= STREAM_RENDER_TYPEWRITER_MAX_BACKLOG:
+                return 1
         base = int(STREAM_RENDER_BASE_CHARS)
         max_chars = int(STREAM_RENDER_MAX_CHARS)
         # 平滑加速：积压越大，每帧输出越多；积压较小时保持“ChatGPT 风格”的细粒度流式观感。
@@ -1916,12 +2083,76 @@ class LightChatWindow(LightFramelessWindow):
             self.typing_indicator.deleteLater()
             self.typing_indicator = None
 
+    def _register_live_chat_thread(self, thread: Optional["ChatThread"]) -> None:
+        if thread is None:
+            return
+        try:
+            if thread not in self._live_chat_threads:
+                self._live_chat_threads.append(thread)
+        except Exception:
+            self._live_chat_threads.append(thread)
+
+    def _cancel_chat_thread(self, thread: Optional["ChatThread"]) -> None:
+        if thread is None:
+            return
+        self._register_live_chat_thread(thread)
+        try:
+            if thread.isRunning():
+                thread.stop()
+        except Exception as exc:
+            logger.debug("停止 ChatThread 失败: %s", exc)
+
+    def _cleanup_finished_chat_thread(self, thread: Optional["ChatThread"]) -> None:
+        if thread is None:
+            return
+        try:
+            try:
+                thread.chunk_received.disconnect()
+                thread.finished.disconnect()
+                thread.error.disconnect()
+            except TypeError:
+                pass
+        except Exception:
+            pass
+
+        try:
+            thread.cleanup()
+        except Exception:
+            pass
+
+        try:
+            thread.deleteLater()
+        except Exception:
+            pass
+
+        try:
+            if thread in self._live_chat_threads:
+                self._live_chat_threads.remove(thread)
+        except Exception:
+            pass
+
     def _on_chunk_received(self, chunk: str):
         """接收到流式输出块 - v2.48.12 修复：添加 TTS 流式处理"""
+        sender = self.sender()
+        if sender is not None and sender is not self.current_chat_thread:
+            return
         self._handle_stream_chunk(chunk)
 
     def _on_chat_finished(self):
         """聊天完成：模型已结束，逐字渲染继续直到队列耗尽后再收尾。"""
+        thread = self.sender()
+        if thread is None or not isinstance(thread, ChatThread):
+            thread = self.current_chat_thread
+        if thread is None:
+            return
+        if thread is not self.current_chat_thread:
+            self._cleanup_finished_chat_thread(thread)
+            return
+        if bool(getattr(thread, "_had_error", False)):
+            self._cleanup_finished_chat_thread(thread)
+            self.current_chat_thread = None
+            return
+
         self._stream_model_done = True
 
         # v2.48.12: 处理 TTS 剩余文本（模型已结束即可 flush，不必等待 UI 完成逐字渲染）
@@ -1945,24 +2176,10 @@ class LightChatWindow(LightFramelessWindow):
                     logger.debug("TTS 发送剩余文本: %s...", filtered_remaining[:30])
 
         # v2.30.14: 清理聊天线程，防止内存泄漏
-        if self.current_chat_thread is not None:
-            try:
-                # 断开所有信号连接
-                try:
-                    self.current_chat_thread.chunk_received.disconnect()
-                    self.current_chat_thread.finished.disconnect()
-                    self.current_chat_thread.error.disconnect()
-                except TypeError:
-                    # 信号可能已经断开
-                    pass
-
-                # 清理线程资源
-                self.current_chat_thread.cleanup()
-                self.current_chat_thread.deleteLater()
-                self.current_chat_thread = None
-                logger.debug("ChatThread资源已清理")
-            except Exception as e:
-                logger.warning("清理ChatThread失败: %s", e)
+        try:
+            self._cleanup_finished_chat_thread(thread)
+        finally:
+            self.current_chat_thread = None
 
         # 若渲染队列已空（或没有气泡），立即收尾；否则由渲染定时器在耗尽时触发收尾。
         remaining = int(getattr(self, "_stream_render_remaining", 0))
@@ -1976,18 +2193,24 @@ class LightChatWindow(LightFramelessWindow):
 
     def _on_chat_error(self, error: str):
         """聊天错误 - v2.30.14 增强资源清理"""
+        thread = self.sender()
+        if thread is None or not isinstance(thread, ChatThread):
+            thread = self.current_chat_thread
+        if thread is None:
+            return
+        if thread is not self.current_chat_thread:
+            # 旧线程的错误：忽略 UI，只做取消请求，等待 finished 时统一回收
+            self._cancel_chat_thread(thread)
+            return
+
         self._hide_typing_indicator()
         self._add_message(f"错误: {error}", is_user=False)
         self._stream_model_done = False
+        # 标记为非当前线程，避免 finished 回调触发“正常完成”逻辑
+        self.current_chat_thread = None
 
-        # v2.30.14: 清理聊天线程
-        if self.current_chat_thread is not None:
-            try:
-                self.current_chat_thread.cleanup()
-                self.current_chat_thread.deleteLater()
-                self.current_chat_thread = None
-            except Exception as e:
-                logger.warning("清理ChatThread失败: %s", e)
+        # 请求取消：实际回收在 finished 信号中统一进行
+        self._cancel_chat_thread(thread)
 
         # 清理流式气泡
         if self.current_streaming_bubble is not None:
@@ -2017,79 +2240,161 @@ class LightChatWindow(LightFramelessWindow):
             file_paths: 文件路径列表
         """
         try:
-            # 处理表情包
-            for sticker_path in sticker_paths:
-                # 添加表情包消息
-                self._add_image_message(sticker_path, is_user=True)
+            text = text or ""
+            sticker_paths = [p for p in (sticker_paths or []) if p]
+            file_paths = [p for p in (file_paths or []) if p]
 
-                # 统一走批量滚动调度（避免频繁创建 singleShot/lambda）
-                self._ensure_scroll_to_bottom()
+            text_clean = text.strip()
 
-                # 保存到数据库
-                if user_session.is_logged_in():
-                    try:
-                        user_session.add_message(
-                            self.current_contact,
-                            "user",
-                            f"[STICKER:{sticker_path}]"
-                        )
-                    except Exception as e:
-                        logger.error("保存表情包消息失败: %s", e)
+            # v2.46.x: 发送侧防御性日志（不影响行为）。
+            # 若仍出现“一张变两张”，优先看这里的计数与重复项（仅输出文件名，避免泄露路径）。
+            try:
+                logger.debug(
+                    "enhanced_send collected: text_chars=%s, stickers=%s, files=%s",
+                    len(text_clean),
+                    len(sticker_paths),
+                    len(file_paths),
+                )
+                seen: set[str] = set()
+                dup_names: list[str] = []
+                for p in sticker_paths:
+                    key = os.path.normcase(os.path.normpath(str(p)))
+                    if key in seen:
+                        dup_names.append(Path(str(p)).name or str(p))
+                    else:
+                        seen.add(key)
+                if dup_names:
+                    logger.warning("检测到重复表情包路径（可能导致重复发送）: %s", dup_names)
+            except Exception:
+                pass
+            if not (text_clean or sticker_paths or file_paths):
+                return
 
-            # 处理文件（图片）
-            if file_paths:
-                # 如果有多张图片，需要识别
-                if len(file_paths) > 1:
-                    self._process_multiple_images(file_paths, text)
-                    return
+            # Agent 未就绪时不允许发送：避免输入被清空/消息被写入历史后又失败
+            if self.agent is None or bool(getattr(self, "_agent_initializing", False)):
+                if bool(getattr(self, "_agent_initializing", False)):
+                    show_toast(self, "AI 正在初始化，请稍候…", Toast.TYPE_INFO, duration=1500)
                 else:
-                    # 单张图片
-                    image_path = file_paths[0]
-                    self._add_image_message(image_path, is_user=True)
+                    show_toast(self, "AI 未就绪，请检查配置后重试", Toast.TYPE_ERROR, duration=2500)
+                self._set_send_enabled(True)
+                return
 
-                    # 统一走批量滚动调度（避免频繁创建 singleShot/lambda）
+            # 输入框清空由 ChatWindow 决定（EnhancedInputWidget 不再自动 clear）
+            try:
+                self.enhanced_input.clear_all()
+            except Exception:
+                pass
+            # 兼容：旧的 pending_images 列表也需要清空，避免残留导致下次发送重复
+            try:
+                if hasattr(self, "pending_images"):
+                    self.pending_images.clear()
+            except Exception:
+                pass
+
+            # 1) UI/历史：先把用户本次发送的内容写入消息区（表情包/图片用 marker 表示）
+            outgoing_messages: list[str] = []
+            outgoing_messages.extend([f"[STICKER:{p}]" for p in sticker_paths])
+            outgoing_messages.extend([f"[IMAGE:{p}]" for p in file_paths])
+            if text_clean:
+                outgoing_messages.append(text_clean)
+
+            if outgoing_messages:
+                if len(outgoing_messages) == 1:
+                    self._add_message(outgoing_messages[0], is_user=True)
+                    self._ensure_scroll_to_bottom()
+                else:
+                    scrollbar = self.scroll_area.verticalScrollBar()
+                    scroll_widget = self.scroll_area.widget()
+                    old_bulk_loading = getattr(self, "_bulk_loading_messages", False)
+                    old_scrollbar_signals = False
+                    try:
+                        self._bulk_loading_messages = True
+                        try:
+                            old_scrollbar_signals = scrollbar.blockSignals(True)
+                        except Exception:
+                            old_scrollbar_signals = False
+                        self.scroll_area.setUpdatesEnabled(False)
+                        if scroll_widget is not None:
+                            scroll_widget.setUpdatesEnabled(False)
+
+                        for msg in outgoing_messages:
+                            self._add_message(msg, is_user=True)
+                    finally:
+                        if scroll_widget is not None:
+                            scroll_widget.setUpdatesEnabled(True)
+                        self.scroll_area.setUpdatesEnabled(True)
+                        try:
+                            scrollbar.blockSignals(old_scrollbar_signals)
+                        except Exception:
+                            pass
+                        self._bulk_loading_messages = old_bulk_loading
+
+                    self.messages_layout.update()
+                    self._schedule_messages_geometry_update()
+                    self._enforce_shadow_budget()
+                    self._schedule_animated_image_budget()
+                    self._schedule_trim_rendered_messages(force=False)
                     self._ensure_scroll_to_bottom()
 
-                    # 保存到数据库
-                    if user_session.is_logged_in():
-                        try:
-                            user_session.add_message(
-                                self.current_contact,
-                                "user",
-                                f"[IMAGE:{image_path}]"
-                            )
-                        except Exception as e:
-                            logger.error("保存图片消息失败: %s", e)
+            # 2) 供 AI 理解：把“表情包信息”拼到用户文本后（并在启动线程前转成描述文本）
+            ai_message_raw = text_clean
+            if sticker_paths:
+                stickers_raw = " ".join(f"[STICKER:{p}]" for p in sticker_paths)
+                ai_message_raw = f"{ai_message_raw}\n{stickers_raw}" if ai_message_raw else stickers_raw
 
-                    # 识别图片
-                    self._recognize_and_send_image(image_path, text)
+            # 3) 图片识别：该路径由图片识别流程接管（识别完成后再启动 ChatThread）
+            if file_paths:
+                if len(file_paths) > 1:
+                    self._process_multiple_images(file_paths, ai_message_raw)
                     return
 
-            # 处理纯文本
-            if text.strip():
-                # v2.30.8: 先移除旧的打字指示器（如果存在）
-                if hasattr(self, "typing_indicator") and self.typing_indicator is not None:
-                    self._hide_typing_indicator()
+                self._recognize_and_send_image(file_paths[0], ai_message_raw)
+                return
 
-                # v2.30.13: 修复重复保存问题 - _add_message已经会保存到数据库，不需要再次保存
-                # 添加用户消息（save_to_db=True会自动保存到数据库）
-                self._add_message(text, is_user=True)
+            if not ai_message_raw:
+                return
 
-                # 显示打字指示器
-                self._show_typing_indicator()
+            # 停止当前正在运行的聊天线程
+            if self.current_chat_thread is not None and self.current_chat_thread.isRunning():
+                self._cancel_chat_thread(self.current_chat_thread)
 
-                # v2.30.9: 优化滚动逻辑 - 合并为单次滚动（走批量调度）
-                self._ensure_scroll_to_bottom()
+            # 移除旧的打字指示器（如果存在）
+            if hasattr(self, "typing_indicator") and self.typing_indicator is not None:
+                self._hide_typing_indicator()
 
-                # 创建并启动聊天线程
-                self.current_chat_thread = ChatThread(self.agent, text)
-                self.current_chat_thread.chunk_received.connect(self._on_chunk_received)
-                self.current_chat_thread.finished.connect(self._on_chat_finished)
-                self.current_chat_thread.error.connect(self._on_chat_error)
-                self.current_chat_thread.start()
+            # 重置流式渲染状态（上一轮残留会影响逐字显示/动画）
+            try:
+                self._reset_stream_render_state()
+            except Exception:
+                pass
+            self._stream_model_done = False
 
-                # 禁用发送按钮
-                self.send_btn.setEnabled(False)
+            # 显示打字指示器
+            self._show_typing_indicator()
+
+            ai_message = self._convert_stickers_to_description(ai_message_raw)
+
+            # v2.30.0: 获取图片分析结果（如果有）
+            image_analysis = self.current_image_analysis
+            image_path = self.current_image_path
+            self.current_image_analysis = None
+            self.current_image_path = None
+
+            # 创建并启动聊天线程（传递图片上下文，若有）
+            self.current_chat_thread = ChatThread(
+                self.agent,
+                ai_message,
+                image_path=image_path,
+                image_analysis=image_analysis,
+            )
+            self._register_live_chat_thread(self.current_chat_thread)
+            self.current_chat_thread.chunk_received.connect(self._on_chunk_received)
+            self.current_chat_thread.finished.connect(self._on_chat_finished)
+            self.current_chat_thread.error.connect(self._on_chat_error)
+            self.current_chat_thread.start()
+
+            # 禁用发送按钮
+            self.send_btn.setEnabled(False)
 
         except Exception as e:
             logger.error("发送消息失败: %s", e, exc_info=True)
@@ -2124,28 +2429,7 @@ class LightChatWindow(LightFramelessWindow):
         Returns:
             情绪描述，如 "开心"、"难过" 等
         """
-        sticker_name = Path(sticker_path).stem.lower()
-
-        # 情绪关键词映射
-        emotion_keywords = {
-            "开心": ["happy", "smile", "laugh", "joy", "开心", "笑", "哈哈", "嘻嘻"],
-            "难过": ["sad", "cry", "tear", "难过", "哭", "伤心", "泪"],
-            "生气": ["angry", "mad", "rage", "生气", "愤怒", "火"],
-            "惊讶": ["surprise", "shock", "wow", "惊讶", "震惊", "哇"],
-            "害羞": ["shy", "blush", "embarrass", "害羞", "脸红", "羞"],
-            "可爱": ["cute", "kawaii", "adorable", "可爱", "萌", "卡哇伊"],
-            "爱心": ["love", "heart", "kiss", "爱", "心", "亲"],
-            "疑问": ["question", "confused", "wonder", "疑问", "困惑", "问"],
-            "赞": ["thumbs", "good", "nice", "赞", "棒", "好"],
-            "无语": ["speechless", "无语", "无奈", "汗"],
-        }
-
-        # 匹配情绪
-        for emotion, keywords in emotion_keywords.items():
-            if any(keyword in sticker_name for keyword in keywords):
-                return emotion
-
-        return "表情"
+        return _guess_sticker_emotion(sticker_path)
 
     def _convert_stickers_to_description(self, message: str) -> str:
         """将消息中的表情包标记转换为描述性文本 - v2.29.10 优化：使用预编译正则表达式
@@ -2156,28 +2440,46 @@ class LightChatWindow(LightFramelessWindow):
         Returns:
             转换后的消息，表情包标记被替换为描述性文本
         """
-        # v2.29.10: 使用预编译的正则表达式，提升性能
-        matches = STICKER_PATTERN.findall(message)
+        count = 0
 
-        if not matches:
-            return message
+        caption_map: dict[str, str] = {}
+        if user_session.is_logged_in():
+            try:
+                user_id = user_session.get_user_id()
+                stickers = user_session.data_manager.get_custom_stickers(user_id) if user_id else []
+                for sticker in stickers:
+                    try:
+                        file_path = str(sticker.get("file_path") or "").strip()
+                        caption = str(sticker.get("caption") or "").strip()
+                    except Exception:
+                        continue
+                    if not (file_path and caption):
+                        continue
+                    key = os.path.normcase(os.path.normpath(file_path))
+                    caption_map[key] = caption
+            except Exception:
+                caption_map = {}
 
-        # 替换每个表情包标记
-        result = message
-        for sticker_path in matches:
+        def _repl(match: re.Match) -> str:
+            nonlocal count
+            sticker_path = match.group(1)
+            count += 1
+            caption = ""
+            try:
+                caption = caption_map.get(os.path.normcase(os.path.normpath(sticker_path)), "") or ""
+            except Exception:
+                caption = ""
+            if caption:
+                return f"[表情包{count}:{caption}]"
+
             emotion = self._analyze_sticker_emotion(sticker_path)
-
-            # 生成描述
             if emotion != "表情":
-                description = f"[一个{emotion}的表情包]"
-            else:
-                description = "[一个表情包]"
+                return f"[表情包{count}:{emotion}]"
+            return f"[表情包{count}]"
 
-            # 替换标记
-            result = result.replace(f"[STICKER:{sticker_path}]", description)
-            logger.debug("表情包转换: %s -> %s", sticker_path, description)
-
-        logger.debug("消息表情包标记已转换: count=%s", len(matches))
+        result = STICKER_PATTERN.sub(_repl, message)
+        if count:
+            logger.debug("消息表情包标记已转换: count=%s", count)
         return result
 
     def _on_sticker_selected(self, sticker_path: str):
@@ -2189,6 +2491,23 @@ class LightChatWindow(LightFramelessWindow):
         3. 更直观的视觉效果
         """
         try:
+            if not sticker_path:
+                return
+
+            # v2.46.x: 去抖 - 避免一次点击/焦点抖动导致重复触发，从而出现“一张变两张”。
+            try:
+                now = time.time()
+                norm = os.path.normcase(os.path.normpath(str(sticker_path)))
+                last_path = getattr(self, "_last_sticker_selected_path", None)
+                last_at = float(getattr(self, "_last_sticker_selected_at", 0.0) or 0.0)
+                if last_path == norm and (now - last_at) < 0.25:
+                    logger.debug("忽略重复表情包选择（debounce）: %s", Path(str(sticker_path)).name)
+                    return
+                self._last_sticker_selected_path = norm
+                self._last_sticker_selected_at = now
+            except Exception:
+                pass
+
             logger.debug("选中表情包: %s", sticker_path)
 
             # v2.30.7: 使用增强输入框插入表情包（内联显示）
@@ -2422,19 +2741,32 @@ class LightChatWindow(LightFramelessWindow):
             # 开始批量识别
             self._batch_recognize_images(image_paths, selected_mode, user_message)
         else:
-            # 用户取消，显示提示
-            self._show_typing_indicator()
-            self._hide_typing_indicator()
-            self._add_message("已取消图片识别。", is_user=False)
+            # 用户取消：不在聊天区插入过程消息（按需求仅终端日志/Toast）
+            try:
+                show_toast(self, "已取消图片识别", Toast.TYPE_INFO, duration=1500)
+            except Exception:
+                pass
 
     def _batch_recognize_images(self, image_paths: list, mode: str, user_message: str = ""):
         """批量识别图片 (v2.30.2 新增)"""
         from PyQt6.QtCore import QThread, pyqtSignal
         from src.multimodal.vision import get_vision_processor_instance
 
-        # 显示处理中的消息
-        processing_msg = f"🔍 正在识别 {len(image_paths)} 张图片，请稍候..."
-        self._add_message(processing_msg, is_user=False, with_animation=True)
+        # 不在聊天区插入“正在识别/识别完成”等过程消息（按需求仅终端日志）
+        logger.info("开始批量识别图片: count=%s, mode=%s", len(image_paths), mode)
+        try:
+            # 清理可能残留的图片上下文，避免污染本轮识别
+            self.current_image_analysis = None
+            self.current_image_path = None
+        except Exception:
+            pass
+        try:
+            self._reset_stream_render_state()
+        except Exception:
+            pass
+        self._stream_model_done = False
+        self._show_typing_indicator()
+        self.send_btn.setEnabled(False)
 
         # 创建批量识别线程
         class BatchImageRecognitionThread(QThread):
@@ -2506,8 +2838,10 @@ class LightChatWindow(LightFramelessWindow):
                 self._is_running = False
 
         # 创建并启动线程
+        from src.llm.factory import get_vision_llm
+        vision_llm = get_vision_llm()
         self.batch_recognition_thread = BatchImageRecognitionThread(
-            image_paths, mode, self.agent.llm if self.agent else None
+            image_paths, mode, vision_llm
         )
         self.batch_recognition_thread.progress.connect(
             lambda idx, total, result: logger.debug("图片识别进度: %s/%s", idx, total)
@@ -2516,30 +2850,28 @@ class LightChatWindow(LightFramelessWindow):
             lambda results: self._on_batch_recognition_finished(results, user_message)
         )
         self.batch_recognition_thread.error.connect(
-            lambda error: self._add_message(f"❌ 批量识别失败: {error}", is_user=False)
+            lambda error: self._on_batch_recognition_error(error, image_paths=image_paths, mode=mode, user_message=user_message)
         )
         self.batch_recognition_thread.start()
 
+    def _on_batch_recognition_error(self, error: str, *, image_paths: list, mode: str, user_message: str = "") -> None:
+        """批量识别失败：不展示过程消息，仅给出最终回复/提示。"""
+        logger.error("批量识别失败: %s", error)
+        try:
+            self._hide_typing_indicator()
+        except Exception:
+            pass
+        # 以“助手回复”的形式给出失败说明（避免在 GUI 上展示识别过程）
+        self._add_message(f"抱歉主人，图片识别失败了：{error} 喵~", is_user=False)
+        self._set_send_enabled(True)
+
     def _on_batch_recognition_finished(self, results: list, user_message: str = ""):
         """批量识别完成回调 (v2.30.2 新增)"""
-        # 构建识别结果消息
-        result_msg = f"✅ {len(results)} 张图片识别完成！\n\n"
-
-        for i, result in enumerate(results, 1):
-            result_msg += f"📷 图片 {i}:\n"
-
-            if result.get("description"):
-                result_msg += f"  📝 {result['description']}\n"
-
-            if result.get("text") and "没有" not in result["text"] and "失败" not in result["text"]:
-                result_msg += f"  📄 文字: {result['text']}\n"
-
-            result_msg += "\n"
-
-        # 显示识别结果
-        self._add_message(result_msg, is_user=False, with_animation=True)
+        # 不在聊天区插入识别结果过程消息；仅用于终端日志
+        logger.info("批量识别完成: count=%s", len(results))
 
         # 合并所有图片分析结果
+        first_image_path = results[0].get('image_path') if results else None
         combined_analysis = {
             "mode": results[0].get("mode", "auto"),
             "description": "\n\n".join([f"图片{i+1}: {r.get('description', '')}" for i, r in enumerate(results) if r.get('description')]),
@@ -2547,10 +2879,16 @@ class LightChatWindow(LightFramelessWindow):
             "success": all(r.get("success", False) for r in results),
             "image_count": len(results)
         }
-
-        # 保存合并后的分析结果
-        self.current_image_analysis = combined_analysis
-        self.current_image_path = results[0].get('image_path') if results else None
+        try:
+            logger.debug(
+                "批量识别汇总: mode=%s, success=%s, desc_chars=%s, text_chars=%s",
+                combined_analysis.get("mode"),
+                combined_analysis.get("success"),
+                len(combined_analysis.get("description") or ""),
+                len(combined_analysis.get("text") or ""),
+            )
+        except Exception:
+            pass
 
         # 如果有用户消息，自动发送给AI
         if user_message or combined_analysis.get("description") or combined_analysis.get("text"):
@@ -2560,16 +2898,28 @@ class LightChatWindow(LightFramelessWindow):
             else:
                 ai_message = "请帮我分析这些图片。"
 
-            # 显示打字指示器
+            # 停止当前正在运行的聊天线程
+            if self.current_chat_thread is not None and self.current_chat_thread.isRunning():
+                self._cancel_chat_thread(self.current_chat_thread)
+
+            # 重置流式渲染状态（上一轮残留会影响逐字显示/动画）
+            try:
+                self._reset_stream_render_state()
+            except Exception:
+                pass
+            self._stream_model_done = False
+
+            # 打字指示器：识别阶段已显示，继续沿用
             self._show_typing_indicator()
 
             # 创建并启动聊天线程
             self.current_chat_thread = ChatThread(
                 self.agent,
-                ai_message,
-                image_path=self.current_image_path,
+                self._convert_stickers_to_description(ai_message),
+                image_path=first_image_path,
                 image_analysis=combined_analysis
             )
+            self._register_live_chat_thread(self.current_chat_thread)
             self.current_chat_thread.chunk_received.connect(self._on_chunk_received)
             self.current_chat_thread.finished.connect(self._on_chat_finished)
             self.current_chat_thread.error.connect(self._on_chat_error)
@@ -2578,7 +2928,122 @@ class LightChatWindow(LightFramelessWindow):
             # 禁用发送按钮
             self.send_btn.setEnabled(False)
 
-        logger.info("批量识别完成: %s 张图片", len(results))
+    def _recognize_and_send_image(self, image_path: str, user_message: str = ""):
+        """识别单张图片并在需要时自动发送给 AI（增强输入框用）。"""
+        user_message = (user_message or "").strip()
+
+        if self.agent is None or bool(getattr(self, "_agent_initializing", False)):
+            if bool(getattr(self, "_agent_initializing", False)):
+                show_toast(self, "AI 正在初始化，请稍候…", Toast.TYPE_INFO, duration=1500)
+            else:
+                show_toast(self, "AI 未就绪，请检查配置后重试", Toast.TYPE_ERROR, duration=2500)
+            self._set_send_enabled(True)
+            return
+
+        # 不在聊天区插入识别过程消息；仅终端日志 + 打字指示器
+        logger.info("开始识别图片: %s", image_path)
+        try:
+            self.current_image_analysis = None
+            self.current_image_path = None
+        except Exception:
+            pass
+        try:
+            self._reset_stream_render_state()
+        except Exception:
+            pass
+        self._stream_model_done = False
+        self._show_typing_indicator()
+        self.send_btn.setEnabled(False)
+
+        from PyQt6.QtCore import QThread, pyqtSignal
+        from src.multimodal.vision import get_vision_processor_instance
+
+        class _SingleImageRecognitionThread(QThread):
+            finished = pyqtSignal(dict)
+            error = pyqtSignal(str)
+
+            def __init__(self, path: str, llm, mode: str = "auto"):
+                super().__init__()
+                self.path = path
+                self.llm = llm
+                self.mode = mode
+
+            def run(self):
+                try:
+                    result = get_vision_processor_instance().smart_analyze(
+                        self.path,
+                        mode=self.mode,
+                        llm=self.llm,
+                    )
+                    self.finished.emit(result)
+                except Exception as e:
+                    self.error.emit(str(e))
+
+        # 创建并启动线程
+        from src.llm.factory import get_vision_llm
+        vision_llm = get_vision_llm()
+        self.image_recognition_thread = _SingleImageRecognitionThread(
+            image_path, vision_llm, mode="auto"
+        )
+        self.image_recognition_thread.finished.connect(
+            lambda result: self._on_single_image_recognition_finished(result, image_path, user_message)
+        )
+        self.image_recognition_thread.error.connect(
+            lambda error: self._on_single_image_recognition_error(error, image_path=image_path)
+        )
+        self.image_recognition_thread.start()
+
+    def _on_single_image_recognition_error(self, error: str, *, image_path: str) -> None:
+        logger.error("图片识别失败: %s (%s)", error, image_path)
+        try:
+            self._hide_typing_indicator()
+        except Exception:
+            pass
+        self._add_message(f"抱歉主人，图片识别失败了：{error} 喵~", is_user=False)
+        self._set_send_enabled(True)
+
+    def _on_single_image_recognition_finished(self, result: dict, image_path: str, user_message: str = ""):
+        """单张图片识别完成回调（增强输入框用）。"""
+        logger.info("图片识别完成: %s, mode=%s, success=%s", image_path, result.get("mode"), result.get("success"))
+        try:
+            logger.debug(
+                "图片识别结果: desc_chars=%s, text_chars=%s",
+                len(result.get("description") or ""),
+                len(result.get("text") or ""),
+            )
+        except Exception:
+            pass
+
+        # 如果有用户消息，自动发送给AI
+        if user_message or result.get("description") or result.get("text"):
+            ai_message = user_message if user_message else "请帮我分析这张图片。"
+
+            # 停止当前正在运行的聊天线程
+            if self.current_chat_thread is not None and self.current_chat_thread.isRunning():
+                self._cancel_chat_thread(self.current_chat_thread)
+
+            # 重置流式渲染状态（上一轮残留会影响逐字显示/动画）
+            try:
+                self._reset_stream_render_state()
+            except Exception:
+                pass
+            self._stream_model_done = False
+
+            # 显示打字指示器
+            self._show_typing_indicator()
+
+            self.current_chat_thread = ChatThread(
+                self.agent,
+                self._convert_stickers_to_description(ai_message),
+                image_path=image_path,
+                image_analysis=result,
+            )
+            self._register_live_chat_thread(self.current_chat_thread)
+            self.current_chat_thread.chunk_received.connect(self._on_chunk_received)
+            self.current_chat_thread.finished.connect(self._on_chat_finished)
+            self.current_chat_thread.error.connect(self._on_chat_error)
+            self.current_chat_thread.start()
+            self.send_btn.setEnabled(False)
 
     def _handle_image_upload(self, image_path: str):
         """处理图片上传和识别 (v2.30.0 新增，v2.30.2 已弃用，保留用于兼容)"""
@@ -2688,8 +3153,14 @@ class LightChatWindow(LightFramelessWindow):
         from src.multimodal.vision import get_vision_processor_instance
 
         # 显示处理中的消息
-        processing_msg = "🔍 正在识别图片，请稍候..."
-        self._add_message(processing_msg, is_user=False, with_animation=True)
+        logger.info("开始图片识别(手动模式): %s, mode=%s", image_path, mode)
+        try:
+            self._reset_stream_render_state()
+        except Exception:
+            pass
+        self._stream_model_done = False
+        self._show_typing_indicator()
+        self.send_btn.setEnabled(False)
 
         # 创建识别线程
         class ImageRecognitionThread(QThread):
@@ -2716,38 +3187,52 @@ class LightChatWindow(LightFramelessWindow):
                     self.error.emit(str(e))
 
         # 创建并启动线程
+        from src.llm.factory import get_vision_llm
+        vision_llm = get_vision_llm()
         self.image_recognition_thread = ImageRecognitionThread(
-            image_path, mode, self.agent.llm if self.agent else None
+            image_path, mode, vision_llm
         )
         self.image_recognition_thread.finished.connect(
             lambda result: self._on_image_recognition_finished(result, image_path)
         )
         self.image_recognition_thread.error.connect(
-            lambda error: self._add_message(f"❌ 图片识别失败: {error}", is_user=False)
+            lambda error: self._on_single_image_recognition_error(error, image_path=image_path)
         )
         self.image_recognition_thread.start()
 
     def _on_image_recognition_finished(self, result: dict, image_path: str):
         """图片识别完成回调 (v2.30.0 新增)"""
-        # 构建识别结果消息
-        result_msg = "✅ 图片识别完成！\n\n"
+        logger.info("图片识别完成(手动模式): %s, mode=%s, success=%s", image_path, result.get("mode"), result.get("success"))
+        # 直接触发一次 AI 回复：不在聊天区展示识别过程/识别结果明细
+        ai_message = "请帮我分析这张图片。"
 
-        if result.get("description"):
-            result_msg += f"📝 图片描述：\n{result['description']}\n\n"
+        # 停止当前正在运行的聊天线程
+        if self.current_chat_thread is not None and self.current_chat_thread.isRunning():
+            self._cancel_chat_thread(self.current_chat_thread)
 
-        if result.get("text") and "没有" not in result["text"] and "失败" not in result["text"]:
-            result_msg += f"📄 提取文字：\n{result['text']}\n\n"
+        # 重置流式渲染状态（上一轮残留会影响逐字显示/动画）
+        try:
+            self._reset_stream_render_state()
+        except Exception:
+            pass
+        self._stream_model_done = False
 
-        result_msg += "💬 请问您想了解什么呢？"
+        # 显示打字指示器
+        self._show_typing_indicator()
 
-        # 显示识别结果
-        self._add_message(result_msg, is_user=False, with_animation=True)
-
-        # 保存图片分析结果，供后续对话使用
-        self.current_image_analysis = result
-        self.current_image_path = image_path
-
-        logger.info("图片识别完成: %s, 模式: %s", image_path, result.get("mode"))
+        # 创建并启动聊天线程（传递图片上下文）
+        self.current_chat_thread = ChatThread(
+            self.agent,
+            self._convert_stickers_to_description(ai_message),
+            image_path=image_path,
+            image_analysis=result,
+        )
+        self._register_live_chat_thread(self.current_chat_thread)
+        self.current_chat_thread.chunk_received.connect(self._on_chunk_received)
+        self.current_chat_thread.finished.connect(self._on_chat_finished)
+        self.current_chat_thread.error.connect(self._on_chat_error)
+        self.current_chat_thread.start()
+        self.send_btn.setEnabled(False)
 
     def _on_chat_clicked(self):
         """聊天按钮点击 - 返回聊天界面"""
@@ -2789,8 +3274,7 @@ class LightChatWindow(LightFramelessWindow):
         # 停止当前正在运行的聊天线程
         if self.current_chat_thread is not None and self.current_chat_thread.isRunning():
             logger.info("停止当前聊天线程...")
-            self.current_chat_thread.stop()
-            self.current_chat_thread.wait(1000)  # 等待最多1秒
+            self._cancel_chat_thread(self.current_chat_thread)
             self.current_chat_thread = None
 
         # 清理打字指示器
@@ -2859,10 +3343,14 @@ class LightChatWindow(LightFramelessWindow):
                 self._loaded_message_count = {}  # {contact_name: count}
             if not hasattr(self, '_total_message_count'):
                 self._total_message_count = {}  # {contact_name: total}
+            if not hasattr(self, "_oldest_message_id"):
+                # {contact_name: oldest_loaded_msg_id}; 用于 keyset pagination，避免大 OFFSET 退化
+                self._oldest_message_id = {}
 
             # 重置当前联系人的缓存
             self._message_cache[contact_name] = {}
             self._loaded_message_count[contact_name] = 0
+            self._oldest_message_id[contact_name] = None
 
             # v2.30.12: 获取消息总数（用于判断是否还有更多消息）
             total_count = user_session.get_chat_history_count(contact_name)
@@ -2870,7 +3358,8 @@ class LightChatWindow(LightFramelessWindow):
             logger.debug("消息总数: %s", total_count)
 
             # 从数据库加载最近的聊天历史（性能优化：限制数量）
-            messages = user_session.get_chat_history(contact_name, limit=limit, offset=0)
+            # v2.49.x: 使用 keyset pagination（按 id），避免 OFFSET 在大历史下越来越慢
+            messages = user_session.get_chat_history_page(contact_name, limit=limit, before_id=None)
 
             # v2.21.3 优化：禁用滚动区域更新，批量加载消息（包含无历史消息的欢迎提示）
             self._bulk_loading_messages = True
@@ -2902,6 +3391,9 @@ class LightChatWindow(LightFramelessWindow):
                         msg_id = msg.get("id")
                         if msg_id:
                             contact_cache[msg_id] = msg
+                    # 记录最早消息 id，用于后续向上翻页
+                    oldest = messages[0].get("id") if messages else None
+                    self._oldest_message_id[contact_name] = oldest
 
                     for msg in messages:
                         is_user = msg.get("role") == "user"
@@ -2975,12 +3467,27 @@ class LightChatWindow(LightFramelessWindow):
             remaining = total_count - loaded_count
             load_count = min(limit, remaining)
 
-            logger.debug("加载更多历史消息: offset=%s, limit=%s", loaded_count, load_count)
+            before_id = None
+            try:
+                before_id = getattr(self, "_oldest_message_id", {}).get(contact_name)
+            except Exception:
+                before_id = None
+
+            logger.debug(
+                "加载更多历史消息: loaded=%s, limit=%s, before_id=%s",
+                loaded_count,
+                load_count,
+                before_id,
+            )
 
             # 从数据库加载更多消息
-            messages = user_session.get_chat_history(
-                contact_name, limit=load_count, offset=loaded_count
-            )
+            if before_id:
+                messages = user_session.get_chat_history_page(
+                    contact_name, limit=load_count, before_id=before_id
+                )
+            else:
+                # 兜底：首次加载异常/旧数据结构时退回 OFFSET
+                messages = user_session.get_chat_history(contact_name, limit=load_count, offset=loaded_count)
 
             if not messages:
                 logger.warning("没有加载到更多消息")
@@ -2992,6 +3499,13 @@ class LightChatWindow(LightFramelessWindow):
                 msg_id = msg.get('id')
                 if msg_id and msg_id not in contact_cache:
                     contact_cache[msg_id] = msg
+            # 更新“最早消息 id”，用于下一次 keyset 翻页
+            new_oldest = messages[0].get("id") if messages else None
+            if new_oldest:
+                try:
+                    self._oldest_message_id[contact_name] = new_oldest
+                except Exception:
+                    pass
 
             # 记录当前滚动位置
             scrollbar = self.scroll_area.verticalScrollBar()
@@ -3061,13 +3575,90 @@ class LightChatWindow(LightFramelessWindow):
             is_user: 是否为用户消息
             with_animation: 是否显示动画
         """
-        # v2.30.13: 修复导入错误 - 使用LightMessageBubble而不是AnimatedMessageBubble
+        bulk_loading = bool(getattr(self, "_bulk_loading_messages", False))
+        enable_entry_animation = bool(with_animation and GUI_ANIMATIONS_ENABLED)
+
+        message_stripped = message.strip()
+        sticker_only = STICKER_PATTERN.fullmatch(message_stripped)
+        image_only = IMAGE_PATTERN.fullmatch(message_stripped)
+        if sticker_only:
+            sticker_path = sticker_only.group(1)
+            bubble = LightImageMessageBubble(
+                sticker_path,
+                is_user,
+                is_sticker=True,
+                with_animation=enable_entry_animation,
+                enable_shadow=with_animation,
+                autoplay=not bulk_loading,
+            )
+            self._register_animated_image_bubble(bubble)
+            self.messages_layout.insertWidget(0, bubble)
+            if not bulk_loading:
+                self._schedule_animated_image_budget()
+            return
+
+        if image_only:
+            image_path = image_only.group(1)
+            bubble = LightImageMessageBubble(
+                image_path,
+                is_user,
+                is_sticker=False,
+                with_animation=enable_entry_animation,
+                enable_shadow=with_animation,
+                autoplay=not bulk_loading,
+            )
+            self._register_animated_image_bubble(bubble)
+            self.messages_layout.insertWidget(0, bubble)
+            if not bulk_loading:
+                self._schedule_animated_image_budget()
+            return
+
+        if STICKER_PATTERN.search(message):
+            from PyQt6.QtWidgets import QWidget, QHBoxLayout
+
+            container = QWidget()
+            layout = QHBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(8)
+
+            parts = STICKER_PATTERN.split(message)
+            widgets = []
+            for i, part in enumerate(parts):
+                if not part:
+                    continue
+                if i % 2 == 0:
+                    if part.strip():
+                        text_bubble = LightMessageBubble(part, is_user, enable_shadow=with_animation)
+                        if enable_entry_animation:
+                            text_bubble.show_with_animation()
+                        widgets.append(text_bubble)
+                else:
+                    sticker_bubble = LightImageMessageBubble(
+                        part,
+                        is_user,
+                        is_sticker=True,
+                        with_animation=enable_entry_animation,
+                        enable_shadow=with_animation,
+                        autoplay=not bulk_loading,
+                    )
+                    self._register_animated_image_bubble(sticker_bubble)
+                    widgets.append(sticker_bubble)
+
+            container.setUpdatesEnabled(False)
+            for widget in widgets:
+                layout.addWidget(widget)
+            layout.addStretch()
+            container.setUpdatesEnabled(True)
+
+            self.messages_layout.insertWidget(0, container)
+            if not bulk_loading:
+                self._schedule_animated_image_budget()
+            return
+
+        # 纯文本消息
         bubble = LightMessageBubble(message, is_user, enable_shadow=with_animation)
-
-        # 在顶部插入（索引0）
         self.messages_layout.insertWidget(0, bubble)
-
-        if with_animation and GUI_ANIMATIONS_ENABLED:
+        if enable_entry_animation:
             bubble.show_with_animation()
 
     def _restore_scroll_position(self, old_value: int, old_max: int):
@@ -3105,6 +3696,8 @@ class LightChatWindow(LightFramelessWindow):
         except Exception:
             self._auto_scroll_enabled = True
 
+        self._schedule_animated_image_budget()
+
         # 如果正在加载，跳过
         if self._is_loading_more:
             return
@@ -3130,6 +3723,7 @@ class LightChatWindow(LightFramelessWindow):
 
         典型场景：流式输出导致气泡持续增高/换行；新消息插入；窗口尺寸变化。
         """
+        self._schedule_animated_image_budget()
         if not getattr(self, "_auto_scroll_enabled", True):
             return
 
@@ -3215,13 +3809,17 @@ class LightChatWindow(LightFramelessWindow):
 
         if reply == QMessageBox.StandardButton.Yes:
             # 清除会话文件
-            session_file = Path("data/session.txt")
-            if session_file.exists():
-                try:
-                    session_file.unlink()
-                    logger.info("会话已清除")
-                except Exception as e:
-                    logger.info("清除会话失败: %s", e)
+            try:
+                from src.config.settings import settings
+
+                session_file = Path(settings.data_dir) / "session.txt"
+            except Exception:
+                session_file = Path("data/session.txt")
+            try:
+                delete_session_token_file(session_file)
+                logger.info("会话已清除")
+            except Exception as e:
+                logger.info("清除会话失败: %s", e)
 
             # 清除用户会话
             user_session.logout()
@@ -3259,7 +3857,14 @@ class LightChatWindow(LightFramelessWindow):
         self.close()
 
         # 创建并显示登录窗口
-        self.auth_manager = AuthManager(illustration_path="data/images/login_illustration.png")
+        try:
+            from src.config.settings import settings
+
+            illustration_path = str(Path(settings.data_dir) / "images" / "login_illustration.png")
+        except Exception:
+            illustration_path = "data/images/login_illustration.png"
+
+        self.auth_manager = AuthManager(illustration_path=illustration_path)
 
         # 登录成功后的处理
         def on_login_success(user):
@@ -3270,20 +3875,26 @@ class LightChatWindow(LightFramelessWindow):
             try:
                 session_token = user.get("session_token")
                 remember_me = user.get("remember_me", False)
-                session_file = Path("data/session.txt")
+                try:
+                    from src.config.settings import settings
+
+                    session_file = Path(settings.data_dir) / "session.txt"
+                except Exception:
+                    session_file = Path("data/session.txt")
 
                 if session_token and remember_me:
-                    session_file.parent.mkdir(parents=True, exist_ok=True)
-                    session_file.write_text(session_token)
-                    logger.info("会话已保存到: %s", session_file)
+                    if write_session_token_file(session_file, session_token):
+                        logger.info("会话已保存到: %s", session_file)
                 else:
-                    if session_file.exists():
-                        session_file.unlink()
-                        logger.info("已清除保存的会话")
+                    delete_session_token_file(session_file)
+                    logger.info("已清除保存的会话")
 
                 # 设置用户会话（关键修复：退出登录后再次登录时必须设置）
-                user_session.login(user, session_token)
-                logger.info("用户会话已设置: %s (ID: %s)", user.get("username"), user.get("id"))
+                if session_token:
+                    user_session.login(user, session_token)
+                    logger.info("用户会话已设置: %s (ID: %s)", user.get("username"), user.get("id"))
+                else:
+                    logger.warning("登录成功但缺少会话 token，跳过 user_session.login")
             except Exception as e:
                 from src.utils.exceptions import handle_exception
 
@@ -3456,6 +4067,27 @@ class LightChatWindow(LightFramelessWindow):
                     logger.info("聊天线程已清理")
                 except Exception as e:
                     logger.error("清理聊天线程失败: %s", e)
+
+            # 2.1 清理仍在回收中的 ChatThread（例如：取消后尚未结束）
+            if getattr(self, "_live_chat_threads", None):
+                for thread in list(self._live_chat_threads):
+                    try:
+                        if thread is None or thread is self.current_chat_thread:
+                            continue
+                        if thread.isRunning():
+                            thread.stop()
+                            if not thread.wait(2000):
+                                thread.terminate()
+                                thread.wait(500)
+                        if hasattr(thread, "cleanup"):
+                            thread.cleanup()
+                        thread.deleteLater()
+                    except Exception:
+                        pass
+                try:
+                    self._live_chat_threads.clear()
+                except Exception:
+                    pass
 
             # 2.2. 停止后台初始化线程（若仍在运行）
             if getattr(self, "_agent_init_thread", None) is not None:

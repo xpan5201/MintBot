@@ -25,6 +25,24 @@ class TestVisionProcessor:
         expected_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp"]
         assert processor.SUPPORTED_FORMATS == expected_formats
 
+    def test_smart_analyze_auto_falls_back_when_pytesseract_missing(self, sample_image_path, monkeypatch):
+        """auto 模式下无 pytesseract 时应回退到 describe（避免只返回 OCR 缺依赖提示）。"""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "pytesseract":
+                raise ImportError("pytesseract not installed")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        processor = VisionProcessor()
+        result = processor.smart_analyze(str(sample_image_path), mode="auto", llm=None)
+        assert result.get("mode") == "describe"
+        assert "这是一张" in (result.get("description") or "")
+
     def test_validate_image_format_valid(self, sample_image_path):
         """测试有效图片格式验证"""
         processor = VisionProcessor()

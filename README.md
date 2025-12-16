@@ -483,6 +483,10 @@ print()
 - 模型选择（支持 OpenAI、Anthropic、Google、DeepSeek、SiliconFlow 等）
 - 模型参数（temperature、max_tokens 等）
 
+### 视觉模型（VISION_LLM）配置
+- 可选：用于图片描述与 OCR（与主 LLM 解耦）
+- 当主 LLM 为纯文本模型时，建议启用并配置支持多模态的视觉模型
+
 ### Agent 配置
 - 角色名称和用户名称
 - 记忆系统（长期记忆、核心记忆、知识库）

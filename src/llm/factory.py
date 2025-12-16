@@ -17,6 +17,8 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 _WARNED_EMPTY_KEY = False
+_WARNED_EMPTY_VISION_KEY = False
+_WARNED_VISION_FALLBACK_MODEL = False
 
 
 def reset_llm_cache() -> None:
@@ -60,6 +62,57 @@ def get_llm(
             logger.warning(
                 "LLM API Key 为空，若使用云端模型请在 config.yaml 配置 settings.llm.key"
             )
+
+    return _build_openai_llm(
+        resolved_model,
+        resolved_temperature,
+        resolved_max_tokens,
+        resolved_api,
+        resolved_key,
+        extra_json,
+    )
+
+
+def get_vision_llm() -> Optional[Any]:
+    """
+    获取（并缓存）视觉 LLM 实例。
+
+    说明：
+    - 视觉 LLM 独立于主 LLM（主 LLM 可能是纯文本模型）。
+    - 当 settings.vision_llm.enabled=False 或未配置时，返回 None，上层应回退到 OCR/基础信息。
+    """
+    cfg = getattr(settings, "vision_llm", None)
+    if cfg is None or not bool(getattr(cfg, "enabled", False)):
+        return None
+
+    try:
+        resolved_cfg = cfg.resolve(settings.llm)
+    except Exception:
+        # 极端情况下（旧配置/旧对象），回退为主 LLM 配置
+        resolved_cfg = settings.llm
+
+    resolved_model = str(resolved_cfg.model or "").strip()
+    resolved_temperature = float(resolved_cfg.temperature)
+    resolved_max_tokens = int(resolved_cfg.max_tokens)
+    resolved_api = str(resolved_cfg.api or "").strip()
+    resolved_key = str(resolved_cfg.key or "").strip()
+
+    global _WARNED_EMPTY_VISION_KEY, _WARNED_VISION_FALLBACK_MODEL
+    if not resolved_model:
+        if not _WARNED_VISION_FALLBACK_MODEL:
+            _WARNED_VISION_FALLBACK_MODEL = True
+            logger.warning("VISION_LLM 已启用但模型名为空，将回退为 settings.llm.model")
+        resolved_model = str(settings.llm.model or "").strip()
+
+    if not resolved_key and not _WARNED_EMPTY_VISION_KEY:
+        _WARNED_EMPTY_VISION_KEY = True
+        logger.warning(
+            "VISION_LLM 已启用但 API Key 为空；若使用云端视觉模型，请在 config.yaml 配置 VISION_LLM.key "
+            "（或通过环境变量提供）。"
+        )
+
+    merged_extra: Dict[str, Any] = dict(getattr(resolved_cfg, "extra_config", {}) or {})
+    extra_json = json.dumps(merged_extra, ensure_ascii=False, sort_keys=True)
 
     return _build_openai_llm(
         resolved_model,

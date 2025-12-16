@@ -46,6 +46,15 @@ class ExportTemplateDialog(QDialog):
         self._init_ui()
         logger.info("导出模板管理对话框已初始化")
 
+    def _get_config_file(self) -> Path:
+        """获取导出模板配置文件路径（跟随 settings.data_dir）。"""
+        try:
+            from src.config.settings import settings
+
+            return Path(settings.data_dir) / "export_templates.json"
+        except Exception:
+            return Path("data/export_templates.json")
+
     def _init_ui(self):
         """初始化UI"""
         layout = QVBoxLayout(self)
@@ -140,14 +149,30 @@ class ExportTemplateDialog(QDialog):
 
     def _load_templates(self) -> List[str]:
         """加载模板列表"""
+        config_file = self._get_config_file()
         try:
-            config_file = Path("data/export_templates.json")
             if config_file.exists():
-                with open(config_file, 'r', encoding='utf-8') as f:
+                with open(config_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    return data.get('templates', self.DEFAULT_TEMPLATES.copy())
+                templates = data.get("templates", None) if isinstance(data, dict) else None
+                if isinstance(templates, list):
+                    filtered = [str(item) for item in templates if str(item).strip()]
+                    if filtered:
+                        return filtered
         except Exception as e:
             logger.error(f"加载模板失败: {e}")
+        return self.DEFAULT_TEMPLATES.copy()
+
+    def _save_templates(self) -> None:
+        """保存模板列表到配置文件。"""
+        config_file = self._get_config_file()
+        try:
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            payload: Dict[str, List[str]] = {"templates": [str(t) for t in self.templates if str(t).strip()]}
+            with open(config_file, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"保存模板失败: {e}")
 
     def _load_template_list(self):
         """加载模板到列表"""
@@ -223,4 +248,3 @@ class ExportTemplateDialog(QDialog):
         else:
             self.template_selected.emit(self.current_template)
         self.accept()
-

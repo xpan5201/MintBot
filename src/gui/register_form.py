@@ -7,12 +7,17 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
 from PyQt6.QtCore import Qt, pyqtSignal
 
+from typing import TYPE_CHECKING, Optional
+
 from .auth_window import MD3TextField, MD3Button, MD3TextButton
 from .material_design_enhanced import MD3_ENHANCED_COLORS
 from .notifications import show_toast, Toast
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from src.auth.auth_service import AuthService
 
 
 class RegisterForm(QWidget):
@@ -24,7 +29,15 @@ class RegisterForm(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._auth_service: Optional["AuthService"] = None
         self.setup_ui()
+
+    def _get_auth_service(self) -> "AuthService":
+        if self._auth_service is None:
+            from src.auth.auth_service import AuthService
+
+            self._auth_service = AuthService()
+        return self._auth_service
 
     def setup_ui(self):
         """设置 UI - 优化布局和间距"""
@@ -201,8 +214,7 @@ class RegisterForm(QWidget):
             self.register_btn.set_loading(True)
 
             # 执行注册
-            from src.auth.auth_service import AuthService
-            auth_service = AuthService()
+            auth_service = self._get_auth_service()
             success, message = auth_service.register(username, email, password, confirm_password)
 
             # 恢复按钮状态

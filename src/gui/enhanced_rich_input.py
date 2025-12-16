@@ -10,18 +10,63 @@ from PyQt6.QtWidgets import (
     QWidget, QTextEdit, QVBoxLayout, QHBoxLayout, 
     QLabel, QPushButton, QScrollArea
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QUrl
 from PyQt6.QtGui import (
     QTextCursor, QTextDocument, QTextImageFormat,
-    QImage, QPixmap, QPainter, QTextCharFormat
+    QImage, QPixmap, QPainter, QTextCharFormat, QImageReader
 )
 from pathlib import Path
+from functools import lru_cache
 from src.utils.logger import get_logger
 
 from src.gui.material_design_light import MD3_LIGHT_COLORS
 from src.gui.material_design_enhanced import MD3_ENHANCED_COLORS
 
 logger = get_logger(__name__)
+
+
+_INLINE_STICKER_SIZE = 80
+_ATTACHMENT_THUMBNAIL_SIZE = (90, 70)
+_SUPPORTED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+
+
+@lru_cache(maxsize=128)
+def _load_inline_sticker_image(path: str, size: int, mtime_ns: int) -> QImage:
+    """加载并缩放用于输入框内联显示的表情包（缓存）。"""
+    _ = mtime_ns  # 仅用于缓存键，文件变更时自动失效
+    image = QImage(path)
+    if image.isNull():
+        return QImage()
+    return image.scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+@lru_cache(maxsize=256)
+def _load_attachment_thumbnail_pixmap(
+    path: str,
+    max_width: int,
+    max_height: int,
+    mtime_ns: int,
+) -> QPixmap:
+    """加载并缩放附件缩略图（缓存，避免反复解码大图）。"""
+    _ = mtime_ns  # 仅用于缓存键，文件变更时自动失效
+    try:
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        size = reader.size()
+        if size.isValid():
+            target = QSize(max_width, max_height)
+            reader.setScaledSize(size.scaled(target, Qt.AspectRatioMode.KeepAspectRatio))
+        image = reader.read()
+        if image.isNull():
+            return QPixmap()
+        return QPixmap.fromImage(image)
+    except Exception:
+        return QPixmap()
 
 
 class RichTextInput(QTextEdit):
@@ -108,6 +153,10 @@ class RichTextInput(QTextEdit):
         # 连接信号
         self.textChanged.connect(lambda: self._height_adjust_timer.start())
         self.textChanged.connect(self.content_changed.emit)
+
+        # 资源跟踪：QTextDocument 会缓存 addResource() 的图片；长时间使用可能导致内存增长。
+        # 这里记录插入过的资源 key，便于在 clear_content() 时显式释放图片数据。
+        self._image_resource_keys: set[str] = set()
     
     def keyPressEvent(self, event):
         """处理按键事件"""
@@ -117,9 +166,8 @@ class RichTextInput(QTextEdit):
                 # Shift+Enter: 插入换行
                 super().keyPressEvent(event)
             else:
-                # Enter: 发送消息
-                if self.toPlainText().strip() or self.has_images():
-                    self.send_requested.emit()
+                # Enter: 发送消息（是否允许发送由上层根据文本/表情包/附件决定）
+                self.send_requested.emit()
                 return
         
         super().keyPressEvent(event)
@@ -158,35 +206,38 @@ class RichTextInput(QTextEdit):
             if not path.exists():
                 logger.error(f"表情包文件不存在: {sticker_path}")
                 return
-            
+
+            try:
+                mtime_ns = path.stat().st_mtime_ns
+            except OSError:
+                mtime_ns = 0
+             
             # 加载图片
-            image = QImage(str(path))
-            if image.isNull():
+            scaled_image = _load_inline_sticker_image(str(path), _INLINE_STICKER_SIZE, mtime_ns)
+            if scaled_image.isNull():
                 logger.error(f"无法加载表情包: {sticker_path}")
                 return
-            
-            # 缩放到合适大小（表情包显示为80x80）
-            scaled_image = image.scaled(
-                80, 80,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            
+             
             # 添加到文档资源
             doc = self.document()
-            image_name = f"sticker_{id(sticker_path)}"
-            doc.addResource(QTextDocument.ResourceType.ImageResource, image_name, scaled_image)
-            
+            resource_url = QUrl.fromLocalFile(str(path))
+            resource_url.setQuery(f"inline=1&size={_INLINE_STICKER_SIZE}&mtime={mtime_ns}")
+            resource_key = resource_url.toString()
+            if resource_key not in self._image_resource_keys:
+                doc.addResource(QTextDocument.ResourceType.ImageResource, resource_url, scaled_image)
+                self._image_resource_keys.add(resource_key)
+             
             # 插入图片
             cursor = self.textCursor()
             image_format = QTextImageFormat()
-            image_format.setName(image_name)
-            image_format.setWidth(80)
-            image_format.setHeight(80)
+            image_format.setName(resource_url.toString())
+            image_format.setWidth(_INLINE_STICKER_SIZE)
+            image_format.setHeight(_INLINE_STICKER_SIZE)
             image_format.setProperty(1000, sticker_path)  # 保存原始路径
-
+ 
             cursor.insertImage(image_format)
-            cursor.insertText(" ")  # 添加空格，方便继续输入
+            # v2.46.x: 确保后续文本不继承图片格式，避免 get_sticker_paths() 误判为重复表情包
+            cursor.insertText(" ", QTextCharFormat())  # 添加空格，方便继续输入
 
             self.setFocus()
             logger.info(f"表情包已插入: {sticker_path}")
@@ -210,10 +261,15 @@ class RichTextInput(QTextEdit):
 
     def get_sticker_paths(self) -> list:
         """获取所有表情包路径"""
-        paths = []
+        paths: list[str] = []
         doc = self.document()
         cursor = QTextCursor(doc)
         cursor.movePosition(QTextCursor.MoveOperation.Start)
+
+        # v2.46.x: 防止图片格式“泄漏”到后续字符导致同一表情包被重复读取。
+        # 仅在“连续的 imageFormat 且 path 相同”时去重，仍保留用户主动插入两次同一表情包的语义。
+        prev_was_image = False
+        prev_path = None
 
         while not cursor.atEnd():
             char_format = cursor.charFormat()
@@ -221,7 +277,16 @@ class RichTextInput(QTextEdit):
                 image_format = char_format.toImageFormat()
                 path = image_format.property(1000)
                 if path:
+                    try:
+                        path = str(path)
+                    except Exception:
+                        path = None
+                if path and not (prev_was_image and prev_path == path):
                     paths.append(path)
+                    prev_path = path
+                prev_was_image = True if path else False
+            else:
+                prev_was_image = False
             cursor.movePosition(QTextCursor.MoveOperation.NextCharacter)
 
         return paths
@@ -235,6 +300,22 @@ class RichTextInput(QTextEdit):
 
     def clear_content(self):
         """清空内容"""
+        # 释放已插入过的图片资源（避免 QTextDocument 资源缓存无限增长）
+        try:
+            doc = self.document()
+            for resource_key in list(self._image_resource_keys):
+                try:
+                    doc.addResource(
+                        QTextDocument.ResourceType.ImageResource,
+                        QUrl(resource_key),
+                        QImage(),
+                    )
+                except Exception:
+                    pass
+            self._image_resource_keys.clear()
+        except Exception:
+            pass
+
         self.clear()
         self.setFixedHeight(self._single_line_height)
 
@@ -375,19 +456,24 @@ class EnhancedInputWidget(QWidget):
         file_container_layout = QVBoxLayout(file_container)
         file_container_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 加载并显示缩略图
         file_label = QLabel()
-        pixmap = QPixmap(file_path)
-        if not pixmap.isNull():
-            scaled_pixmap = pixmap.scaled(
-                90, 70,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            file_label.setPixmap(scaled_pixmap)
-            file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        suffix = Path(file_path).suffix.lower()
+        if suffix in _SUPPORTED_IMAGE_EXTS:
+            try:
+                mtime_ns = Path(file_path).stat().st_mtime_ns
+            except OSError:
+                mtime_ns = 0
+            w, h = _ATTACHMENT_THUMBNAIL_SIZE
+            pixmap = _load_attachment_thumbnail_pixmap(file_path, w, h, mtime_ns)
+            if not pixmap.isNull():
+                file_label.setPixmap(pixmap)
+                file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            else:
+                file_name = Path(file_path).name
+                file_label.setText(file_name[:10] + "..." if len(file_name) > 10 else file_name)
+                file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                file_label.setWordWrap(True)
         else:
-            # 非图片文件，显示文件名
             file_name = Path(file_path).name
             file_label.setText(file_name[:10] + "..." if len(file_name) > 10 else file_name)
             file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -459,11 +545,14 @@ class EnhancedInputWidget(QWidget):
         # 获取文件路径
         file_paths = self.pending_files.copy()
 
+        # 没有任何内容时不发送（避免空触发）
+        if not (text.strip() or sticker_paths or file_paths):
+            return
+
         # 发送信号
         self.send_requested.emit(text, sticker_paths, file_paths)
 
-        # 清空内容
-        self.clear_all()
+        # 清空由上层决定（例如 Agent 未就绪时应保留输入内容）
 
     def clear_all(self):
         """清空所有内容"""
@@ -494,4 +583,3 @@ class EnhancedInputWidget(QWidget):
         return bool(self.get_text().strip() or
                    self.input_text.has_images() or
                    self.pending_files)
-

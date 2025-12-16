@@ -12,13 +12,14 @@ from .database import UserDatabase
 class AuthService:
     """用户认证服务类"""
 
-    def __init__(self, db_path: str = "data/users.db"):
+    def __init__(self, db_path: str = "data/users.db", use_prepared: bool = True):
         """初始化认证服务
 
         Args:
             db_path: 数据库文件路径
+            use_prepared: 是否使用预编译语句（提升30-50%性能）
         """
-        self.db = UserDatabase(db_path)
+        self.db = UserDatabase(db_path, use_prepared=use_prepared)
         self.current_user = None
         self.current_session = None
 
@@ -135,7 +136,7 @@ class AuthService:
         """用户登录
 
         Args:
-            username: 用户名
+            username: 用户名或邮箱
             password: 密码
             remember_me: 是否记住登录状态
 
@@ -143,7 +144,7 @@ class AuthService:
             (是否成功, 消息)
         """
         if not username:
-            return False, "请输入用户名"
+            return False, "请输入用户名或邮箱"
 
         if not password:
             return False, "请输入密码"
@@ -215,12 +216,14 @@ class AuthService:
 
         return True, "密码修改成功！"
 
-    def reset_password(self, username: str, new_password: str,
-                      confirm_password: str) -> Tuple[bool, str]:
-        """重置密码（通过用户名，不需要旧密码）
+    def reset_password(
+        self, username: str, email: str, new_password: str, confirm_password: str
+    ) -> Tuple[bool, str]:
+        """重置密码（通过用户名+邮箱匹配，不需要旧密码）
 
         Args:
             username: 用户名
+            email: 邮箱（必须与用户名匹配）
             new_password: 新密码
             confirm_password: 确认新密码
 
@@ -229,6 +232,11 @@ class AuthService:
         """
         if not username:
             return False, "请输入用户名"
+
+        # 验证邮箱
+        valid, msg = self.validate_email(email)
+        if not valid:
+            return False, msg
 
         # 验证新密码
         valid, msg = self.validate_password(new_password)
@@ -240,10 +248,10 @@ class AuthService:
             return False, "两次输入的新密码不一致"
 
         # 重置密码
-        success = self.db.reset_password(username, new_password)
+        success = self.db.reset_password(username, email, new_password)
 
         if not success:
-            return False, "用户名不存在"
+            return False, "用户名或邮箱不匹配"
 
         return True, "密码重置成功！"
 

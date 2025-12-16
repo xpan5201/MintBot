@@ -4,12 +4,18 @@
 维护当前登录用户的会话状态和数据
 """
 
-from typing import Any, Dict, Optional
+import threading
+from typing import TYPE_CHECKING, Any, Dict, Optional
+
+from pathlib import Path
 
 from src.auth.user_data_manager import UserDataManager
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from src.auth.database import UserDatabase
 
 
 class UserSession:
@@ -26,11 +32,21 @@ class UserSession:
     def __init__(self):
         """初始化用户会话"""
         if not self._initialized:
+            self._state_lock = threading.RLock()
             self.current_user: Optional[Dict[str, Any]] = None
             self.session_token: Optional[str] = None
-            self.data_manager = UserDataManager()
+            # 对话热路径：默认启用连接池 + WAL，提高频繁读写吞吐并减少锁等待
+            self.data_manager = UserDataManager(use_pool=True)
+            self._auth_db: Optional["UserDatabase"] = None
             self._initialized = True
             logger.info("用户会话管理器初始化完成")
+
+    def _get_auth_db(self) -> "UserDatabase":
+        if self._auth_db is None:
+            from src.auth.database import UserDatabase
+
+            self._auth_db = UserDatabase()
+        return self._auth_db
 
     def login(self, user: Dict[str, Any], session_token: str):
         """用户登录
@@ -39,16 +55,31 @@ class UserSession:
             user: 用户信息字典
             session_token: 会话令牌
         """
-        self.current_user = user
-        self.session_token = session_token
-        logger.info(f"用户 {user['username']} (ID: {user['id']}) 已登录")
+        with self._state_lock:
+            self.current_user = user
+            self.session_token = session_token
+            username = user.get("username")
+            user_id = user.get("id")
+        logger.info("用户 %s (ID: %s) 已登录", username, user_id)
 
     def logout(self):
         """用户登出"""
-        if self.current_user:
-            logger.info(f"用户 {self.current_user['username']} 已登出")
-        self.current_user = None
-        self.session_token = None
+        token: Optional[str]
+        username: Optional[str]
+        with self._state_lock:
+            token = self.session_token
+            username = self.current_user.get("username") if self.current_user else None
+            self.current_user = None
+            self.session_token = None
+
+        if token:
+            try:
+                self._get_auth_db().invalidate_session(token)
+            except Exception as e:
+                logger.debug("会话失效失败: %s", e)
+
+        if username:
+            logger.info("用户 %s 已登出", username)
 
     def is_logged_in(self) -> bool:
         """检查是否已登录
@@ -56,7 +87,8 @@ class UserSession:
         Returns:
             是否已登录
         """
-        return self.current_user is not None
+        with self._state_lock:
+            return self.current_user is not None
 
     def get_user_id(self) -> Optional[int]:
         """获取当前用户 ID
@@ -64,9 +96,10 @@ class UserSession:
         Returns:
             用户 ID，未登录返回 None
         """
-        if self.current_user:
-            return self.current_user['id']
-        return None
+        with self._state_lock:
+            if self.current_user:
+                return self.current_user.get("id")
+            return None
 
     def get_username(self) -> Optional[str]:
         """获取当前用户名
@@ -74,9 +107,10 @@ class UserSession:
         Returns:
             用户名，未登录返回 None
         """
-        if self.current_user:
-            return self.current_user['username']
-        return None
+        with self._state_lock:
+            if self.current_user:
+                return self.current_user.get("username")
+            return None
 
     def get_user_info(self) -> Optional[Dict[str, Any]]:
         """获取当前用户信息
@@ -84,7 +118,8 @@ class UserSession:
         Returns:
             用户信息字典，未登录返回 None
         """
-        return self.current_user
+        with self._state_lock:
+            return dict(self.current_user) if isinstance(self.current_user, dict) else None
 
     # ==================== 数据管理快捷方法 ====================
 
@@ -182,6 +217,26 @@ class UserSession:
             return []
         return self.data_manager.get_chat_history(user_id, contact_name, limit, offset)
 
+    def get_chat_history_page(
+        self, contact_name: str, *, limit: int = 100, before_id: int | None = None
+    ):
+        """按消息 id 进行 keyset pagination 获取聊天历史（推荐）。"""
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法获取聊天历史")
+            return []
+        return self.data_manager.get_chat_history_page(
+            user_id, contact_name, limit=limit, before_id=before_id
+        )
+
+    def get_chat_history_all(self, contact_name: str):
+        """获取某联系人完整聊天历史（从旧到新）。"""
+        user_id = self.get_user_id()
+        if user_id is None:
+            logger.warning("未登录，无法获取聊天历史")
+            return []
+        return self.data_manager.get_chat_history_all(user_id, contact_name)
+
     def get_chat_history_count(self, contact_name: str) -> int:
         """获取聊天历史总数 (v2.30.12: 新增)
 
@@ -252,6 +307,13 @@ class UserSession:
         if user_id is None:
             logger.warning("未登录，无法导出数据")
             return None
+        if export_dir == "data/exports":
+            try:
+                from src.config.settings import settings
+
+                export_dir = str(Path(settings.data_dir) / "exports")
+            except Exception:
+                pass
         return self.data_manager.export_user_data(user_id, export_dir)
 
     def import_data(self, filepath: str) -> bool:
@@ -285,12 +347,12 @@ class UserSession:
             logger.warning("未登录，无法更新用户头像")
             return False
 
-        from src.auth.database import UserDatabase
-        db = UserDatabase()
-        success = db.update_user_avatar(user_id, avatar)
+        success = self._get_auth_db().update_user_avatar(user_id, avatar)
 
-        if success and self.current_user:
-            self.current_user['user_avatar'] = avatar
+        if success:
+            with self._state_lock:
+                if self.current_user is not None:
+                    self.current_user["user_avatar"] = avatar
             logger.info(f"用户 {user_id} 的头像已更新")
 
         return success
@@ -309,12 +371,12 @@ class UserSession:
             logger.warning("未登录，无法更新AI助手头像")
             return False
 
-        from src.auth.database import UserDatabase
-        db = UserDatabase()
-        success = db.update_ai_avatar(user_id, avatar)
+        success = self._get_auth_db().update_ai_avatar(user_id, avatar)
 
-        if success and self.current_user:
-            self.current_user['ai_avatar'] = avatar
+        if success:
+            with self._state_lock:
+                if self.current_user is not None:
+                    self.current_user["ai_avatar"] = avatar
             logger.info(f"用户 {user_id} 的AI助手头像已更新")
 
         return success
@@ -325,21 +387,21 @@ class UserSession:
         Returns:
             用户头像（emoji 或图片路径），未登录返回默认值
         """
-        if self.current_user and 'user_avatar' in self.current_user:
-            return self.current_user['user_avatar']
+        with self._state_lock:
+            if self.current_user and "user_avatar" in self.current_user:
+                return self.current_user["user_avatar"]
 
         user_id = self.get_user_id()
         if user_id is None:
             return '👤'
 
-        from src.auth.database import UserDatabase
-        db = UserDatabase()
-        avatars = db.get_user_avatars(user_id)
+        avatars = self._get_auth_db().get_user_avatars(user_id)
 
         if avatars:
-            if self.current_user:
-                self.current_user['user_avatar'] = avatars['user_avatar']
-                self.current_user['ai_avatar'] = avatars['ai_avatar']
+            with self._state_lock:
+                if self.current_user:
+                    self.current_user["user_avatar"] = avatars["user_avatar"]
+                    self.current_user["ai_avatar"] = avatars["ai_avatar"]
             return avatars['user_avatar']
 
         return '👤'
@@ -350,21 +412,21 @@ class UserSession:
         Returns:
             AI助手头像（emoji 或图片路径），未登录返回默认值
         """
-        if self.current_user and 'ai_avatar' in self.current_user:
-            return self.current_user['ai_avatar']
+        with self._state_lock:
+            if self.current_user and "ai_avatar" in self.current_user:
+                return self.current_user["ai_avatar"]
 
         user_id = self.get_user_id()
         if user_id is None:
             return '🐱'
 
-        from src.auth.database import UserDatabase
-        db = UserDatabase()
-        avatars = db.get_user_avatars(user_id)
+        avatars = self._get_auth_db().get_user_avatars(user_id)
 
         if avatars:
-            if self.current_user:
-                self.current_user['user_avatar'] = avatars['user_avatar']
-                self.current_user['ai_avatar'] = avatars['ai_avatar']
+            with self._state_lock:
+                if self.current_user:
+                    self.current_user["user_avatar"] = avatars["user_avatar"]
+                    self.current_user["ai_avatar"] = avatars["ai_avatar"]
             return avatars['ai_avatar']
 
         return '🐱'
@@ -372,4 +434,3 @@ class UserSession:
 
 # 创建全局单例实例
 user_session = UserSession()
-

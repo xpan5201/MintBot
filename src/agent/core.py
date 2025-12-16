@@ -19,7 +19,7 @@ from pathlib import Path
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from typing import (
     Any,
@@ -119,7 +119,55 @@ _TOOL_CODEBLOCK_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
-_MULTI_SPACE_RE = re.compile(r"[ \t]{2,}")
+_IDENT_TOKEN_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
+_DEFAULT_EMPTY_REPLY = "抱歉主人，我好像没有理解您的意思喵~"
+
+
+def _extract_leading_json_fragment(text: str) -> Optional[str]:
+    """
+    从字符串开头提取一个完整的 JSON object/array 片段（仅当 text[0] 是 '{' 或 '['）。
+
+    说明：
+    - 部分 OpenAI 兼容网关 / LangChain 1.0.x 组合会把 structured output 片段（工具选择/分流标签）
+      直接拼接到自然语言回复之前，导致 UI/TTS 污染。
+    - 这里用于“前缀剥离”，只在开头是 JSON 时工作，避免误伤正常文本。
+    """
+    if not text or text[0] not in "{[":
+        return None
+
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+
+    for idx, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            continue
+
+        if ch in "{[":
+            stack.append(ch)
+            continue
+        if ch in "]}":
+            if not stack:
+                return None
+            opener = stack.pop()
+            if (opener == "{" and ch != "}") or (opener == "[" and ch != "]"):
+                return None
+            if not stack:
+                return text[: idx + 1]
+
+    return None
 
 
 @dataclass(frozen=True)
@@ -217,6 +265,117 @@ class StreamEmitBuffer:
         return buffered
 
 
+class StreamStructuredPrefixStripper:
+    """
+    针对流式输出开头的 structured output / 工具信息残留做“前缀剥离”。
+
+    一些 OpenAI 兼容网关 + LangChain 1.0.x 组合会把工具选择/结构化片段（JSON）
+    当作普通消息流事件吐出，从而被 UI 直接拼接到回复开头（例如：["general_chat"]}...）。
+
+    该类会在流式开头阶段缓冲增量，直到：
+    - 识别到可丢弃的 JSON 前缀片段并剥离；或
+    - 确认输出并非上述前缀（例如用户真的需要返回 JSON），再开始透传。
+    """
+
+    def __init__(self, *, max_fragments: int = 3, max_buffer_chars: int = 4096) -> None:
+        self._max_fragments = max(0, int(max_fragments))
+        self._max_buffer_chars = max(0, int(max_buffer_chars))
+        self._buffer: str = ""
+        self._done = False
+
+    def process(self, delta: str) -> str:
+        if not delta:
+            return ""
+        if self._done:
+            return delta
+        self._buffer += delta
+        return self._try_release(force=False)
+
+    def flush(self) -> str:
+        if self._done:
+            return ""
+        return self._try_release(force=True)
+
+    def _try_release(self, *, force: bool) -> str:
+        text = self._buffer
+        if not text:
+            return ""
+
+        if text[0] not in "{[":
+            self._done = True
+            self._buffer = ""
+            return text
+
+        cleaned = text
+        for _ in range(self._max_fragments):
+            if not cleaned or cleaned[0] not in "{[":
+                break
+
+            fragment = _extract_leading_json_fragment(cleaned)
+            if fragment is None:
+                if force or (self._max_buffer_chars and len(cleaned) > self._max_buffer_chars):
+                    self._done = True
+                    self._buffer = ""
+                    return cleaned
+                self._buffer = cleaned
+                return ""
+
+            rest = cleaned[len(fragment) :]
+            rest_lstrip = rest.lstrip()
+            has_trailing_brace = rest_lstrip.startswith("}")
+            rest_after_braces = rest_lstrip.lstrip("}").lstrip()
+
+            if not self._should_drop_fragment(fragment, has_trailing_brace, rest_after_braces):
+                self._done = True
+                self._buffer = ""
+                return cleaned
+
+            cleaned = rest_after_braces
+
+        self._buffer = cleaned
+        if not cleaned:
+            return ""
+
+        if cleaned[0] in "{[":
+            fragment = _extract_leading_json_fragment(cleaned)
+            if fragment is None and not force and (
+                not self._max_buffer_chars or len(cleaned) <= self._max_buffer_chars
+            ):
+                return ""
+
+        self._done = True
+        self._buffer = ""
+        return cleaned
+
+    @staticmethod
+    def _should_drop_fragment(fragment: str, has_trailing_brace: bool, rest_after_braces: str) -> bool:
+        parsed: Any = None
+        if len(fragment) <= 50_000:
+            try:
+                parsed = json.loads(fragment)
+            except Exception:
+                parsed = None
+
+        if isinstance(parsed, dict):
+            keys = {str(k).lower() for k in parsed.keys()}
+            if "tools" in keys or "tool_calls" in keys or parsed.get("type") == "tool_calls":
+                return True
+            return False
+
+        if isinstance(parsed, list) and parsed and all(isinstance(item, str) for item in parsed):
+            normalized = [item.strip() for item in parsed]
+            if not normalized:
+                return False
+            if not all(_IDENT_TOKEN_RE.fullmatch(item) for item in normalized):
+                return False
+            if not any("_" in item for item in normalized):
+                return False
+            if has_trailing_brace or rest_after_braces[:1] in "[{":
+                return True
+
+        return False
+
+
 @dataclass(slots=True)
 class AgentConversationBundle:
     """封装一次对话请求需要的上下文，方便在不同模式间复用。"""
@@ -225,6 +384,8 @@ class AgentConversationBundle:
     save_message: str
     original_message: str
     processed_message: str
+    image_analysis: Optional[dict] = None
+    image_path: Optional[str] = None
 
 
 class PermissionScopedToolMiddleware(BaseAgentMiddleware):
@@ -760,14 +921,45 @@ class MintChatAgent:
         Returns:
             str: 提取的回复内容
         """
+        def _content_to_text(value: Any) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, str):
+                return value
+            if isinstance(value, list):
+                parts: list[str] = []
+                for block in value:
+                    if isinstance(block, dict):
+                        parts.append(str(block.get("text") or block.get("content") or ""))
+                    else:
+                        parts.append(str(getattr(block, "text", "") or getattr(block, "content", "")))
+                return "".join(parts)
+            return str(value)
+
         if isinstance(response, dict) and "messages" in response:
             messages = response.get("messages") or []
             if isinstance(messages, list):
                 for msg in reversed(messages):
-                    if getattr(msg, "type", None) == "ai":
+                    if isinstance(msg, dict):
+                        role = msg.get("role") or msg.get("type")
+                        if isinstance(role, str) and role:
+                            role_lower = role.lower()
+                            if role_lower in {"assistant", "ai"} or role in {"AIMessageChunk", "AIMessage"}:
+                                content = msg.get("content") or msg.get("text") or ""
+                                return self._filter_tool_info(_content_to_text(content))
+                        continue
+
+                    msg_type = getattr(msg, "type", None)
+                    role = getattr(msg, "role", None)
+                    if role in {"assistant", "ai"} or msg_type in {
+                        "ai",
+                        "assistant",
+                        "AIMessageChunk",
+                        "AIMessage",
+                    }:
                         content = getattr(msg, "content", "")
-                        return self._filter_tool_info(str(content))
-            return "抱歉主人，我好像没有理解您的意思喵~"
+                        return self._filter_tool_info(_content_to_text(content))
+            return _DEFAULT_EMPTY_REPLY
         result = str(response)
         # 过滤工具信息
         return self._filter_tool_info(result)
@@ -978,6 +1170,10 @@ class MintChatAgent:
         try:
             response = self._invoke_with_failover(bundle)
             reply = self._extract_reply_from_response(response)
+            if not reply.strip() or reply.strip() == _DEFAULT_EMPTY_REPLY:
+                rescued = self._rescue_empty_reply(bundle, raw_reply=reply, source="chat")
+                if rescued:
+                    reply = rescued
             self._post_reply_actions(bundle.save_message, reply, save_to_long_term, stream=False)
 
             logger.info("生成回复完成")
@@ -1295,6 +1491,31 @@ class MintChatAgent:
                     # 取消成功或任务已完成，忽略异常
                     pass
 
+    async def _ainvoke_agent_with_timeout(self, messages: List[Dict[str, str]]) -> Any:
+        """
+        异步环境下调用 Agent.invoke，并复用总超时保护。
+
+        说明：该方法用于异步流式对话中的“空回复兜底重试”等低频路径。
+        """
+        def task():
+            return self.agent.invoke({"messages": messages})
+
+        future = self._llm_executor.submit(task)
+        try:
+            return await asyncio.wait_for(
+                asyncio.wrap_future(future),
+                timeout=self._llm_timeouts.total,
+            )
+        except asyncio.TimeoutError as exc:
+            logger.error(
+                "LLM 调用在 %.1fs 内无响应，已触发超时保护(异步)",
+                self._llm_timeouts.total,
+            )
+            raise AgentTimeoutError("LLM 调用超时") from exc
+        finally:
+            if not future.done():
+                future.cancel()
+
     def _invoke_with_failover(self, bundle: AgentConversationBundle) -> Any:
         """
         对同步 LLM 调用增加快速压缩重试以提升成功率。
@@ -1320,6 +1541,166 @@ class MintChatAgent:
                 return self._invoke_agent_with_timeout(fallback_messages)
             except AgentTimeoutError as secondary_exc:
                 raise AgentTimeoutError("LLM 压缩上下文快速重试仍然超时") from secondary_exc
+
+    def _build_image_analysis_fallback_reply(self, bundle: "AgentConversationBundle") -> Optional[str]:
+        """
+        当主模型输出为空/仅 tool 信息时，如果本轮带有图片分析结果，直接用图片分析构造兜底回复，避免二次调用 LLM。
+        """
+        image_analysis = getattr(bundle, "image_analysis", None) or {}
+        image_path = getattr(bundle, "image_path", None)
+
+        if not isinstance(image_analysis, dict):
+            image_analysis = {}
+
+        description = (image_analysis.get("description") or "").strip()
+        text = (image_analysis.get("text") or "").strip()
+
+        if not (description or text or image_path):
+            return None
+
+        def _clip(value: str, max_chars: int) -> str:
+            value = (value or "").strip()
+            if not value:
+                return ""
+            if len(value) <= max_chars:
+                return value
+            return value[:max_chars].rstrip() + "…"
+
+        lines: list[str] = []
+        if description:
+            lines.append(f"我看到的画面大概是：{_clip(description, 1200)}")
+        if text:
+            lines.append(f"图片里识别到的文字：{_clip(text, 800)}")
+
+        if image_path:
+            try:
+                image_name = Path(image_path).name or image_path
+            except Exception:
+                image_name = image_path
+            lines.append(f"(图片：{image_name})")
+
+        original_question = (getattr(bundle, "original_message", "") or "").strip()
+        generic_questions = {
+            "请帮我分析这张图片。",
+            "请帮我分析这张图片",
+            "请帮我分析图片。",
+            "请帮我分析图片",
+            "请帮我分析一下图片。",
+            "请帮我分析一下图片",
+            "请帮我分析这些图片。",
+            "请帮我分析这些图片",
+            "分析图片",
+            "分析一下图片",
+            "请分析图片",
+        }
+
+        prefix = ""
+        if original_question and original_question not in generic_questions:
+            prefix = f"主人你问：{_clip(original_question, 120)}\n\n"
+
+        return prefix + "\n".join(lines) + "\n\n主人想让我重点看哪个方面呢？喵~"
+
+    def _rescue_empty_reply(
+        self,
+        bundle: "AgentConversationBundle",
+        *,
+        raw_reply: str,
+        source: str,
+    ) -> Optional[str]:
+        """
+        当模型返回“空回复/无法提取回复”时，进行一次低频兜底重试。
+
+        场景：
+        - 流式仅吐出 tool/system 事件，最终未产生可展示文本
+        - LangChain 返回结构变化，导致消息提取失败（已大幅兼容，但仍可能偶发）
+        """
+        image_fallback = self._build_image_analysis_fallback_reply(bundle)
+        if image_fallback:
+            logger.info("空回复使用图片分析兜底 (source=%s)", source)
+            return image_fallback
+
+        if not getattr(self, "_fast_retry_enabled", False):
+            return None
+
+        try:
+            emitted = len(raw_reply)
+        except Exception:
+            emitted = -1
+
+        logger.warning("检测到空回复，尝试兜底重试 (source=%s, emitted=%s)", source, emitted)
+
+        try:
+            response = self._invoke_agent_with_timeout(bundle.messages)
+            reply = self._extract_reply_from_response(response)
+            if reply and reply.strip() and reply.strip() != _DEFAULT_EMPTY_REPLY:
+                logger.info("空回复兜底重试成功 (source=%s)", source)
+                return reply
+        except Exception as exc:
+            logger.warning("空回复兜底重试失败 (source=%s): %s", source, exc)
+
+        # 次级兜底：压缩上下文后再试一次（仍受 fast_retry 开关控制）
+        try:
+            fallback_messages = self._prepare_messages_sync(
+                bundle.processed_message,
+                compression="on",
+                use_cache=True,
+            )
+            response = self._invoke_agent_with_timeout(fallback_messages)
+            reply = self._extract_reply_from_response(response)
+            if reply and reply.strip() and reply.strip() != _DEFAULT_EMPTY_REPLY:
+                logger.info("空回复压缩兜底重试成功 (source=%s)", source)
+                return reply
+        except Exception as exc:
+            logger.warning("空回复压缩兜底重试失败 (source=%s): %s", source, exc)
+
+        return None
+
+    async def _arescue_empty_reply(
+        self,
+        bundle: "AgentConversationBundle",
+        *,
+        raw_reply: str,
+        source: str,
+    ) -> Optional[str]:
+        image_fallback = self._build_image_analysis_fallback_reply(bundle)
+        if image_fallback:
+            logger.info("空回复使用图片分析兜底 (source=%s)", source)
+            return image_fallback
+
+        if not getattr(self, "_fast_retry_enabled", False):
+            return None
+
+        try:
+            emitted = len(raw_reply)
+        except Exception:
+            emitted = -1
+
+        logger.warning("检测到空回复，尝试兜底重试 (source=%s, emitted=%s)", source, emitted)
+
+        try:
+            response = await self._ainvoke_agent_with_timeout(bundle.messages)
+            reply = self._extract_reply_from_response(response)
+            if reply and reply.strip() and reply.strip() != _DEFAULT_EMPTY_REPLY:
+                logger.info("空回复兜底重试成功 (source=%s)", source)
+                return reply
+        except Exception as exc:
+            logger.warning("空回复兜底重试失败 (source=%s): %s", source, exc)
+
+        try:
+            fallback_messages = await self._prepare_messages_async(
+                bundle.processed_message,
+                compression="on",
+                use_cache=True,
+            )
+            response = await self._ainvoke_agent_with_timeout(fallback_messages)
+            reply = self._extract_reply_from_response(response)
+            if reply and reply.strip() and reply.strip() != _DEFAULT_EMPTY_REPLY:
+                logger.info("空回复压缩兜底重试成功 (source=%s)", source)
+                return reply
+        except Exception as exc:
+            logger.warning("空回复压缩兜底重试失败 (source=%s): %s", source, exc)
+
+        return None
 
     def _submit_background_task(
         self,
@@ -1542,6 +1923,8 @@ class MintChatAgent:
             save_message=original_message,
             original_message=original_message,
             processed_message=enriched_message,
+            image_analysis=image_analysis,
+            image_path=image_path,
         )
 
     def _build_agent_bundle(
@@ -1571,7 +1954,12 @@ class MintChatAgent:
             )
         )
 
-    def _stream_llm_response(self, messages: list) -> Iterator[str]:
+    def _stream_llm_response(
+        self,
+        messages: list,
+        *,
+        cancel_event: Optional[Event] = None,
+    ) -> Iterator[str]:
         """
         v3.3.4: 通过后台线程 + 轻量看门狗驱动 LangChain agent.stream，避免界面被阻塞。
 
@@ -1623,16 +2011,37 @@ class MintChatAgent:
                     stream_mode="messages",
                 )
                 for chunk, _metadata in stream_holder["iterator"]:
-                    if stop_event.is_set():
+                    if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
                         break
-                    chunk_queue.put(("data", chunk))
+                    while True:
+                        if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
+                            break
+                        try:
+                            chunk_queue.put(("data", chunk), timeout=0.1)
+                            break
+                        except Full:
+                            continue
             except Exception as exc:  # pragma: no cover - 调试信息
-                chunk_queue.put(("error", exc))
+                while True:
+                    if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
+                        break
+                    try:
+                        chunk_queue.put(("error", exc), timeout=0.1)
+                        break
+                    except Full:
+                        continue
             finally:
                 try:
                     _close_stream()
                 finally:
-                    chunk_queue.put(("end", None))
+                    while True:
+                        if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
+                            break
+                        try:
+                            chunk_queue.put(("end", None), timeout=0.1)
+                            break
+                        except Full:
+                            continue
 
         worker = self._stream_executor.submit(producer)
 
@@ -1640,6 +2049,7 @@ class MintChatAgent:
         first_latency_logged = False
         timeout_streak = 0
         accumulator = StreamDeltaAccumulator()
+        prefix_stripper = StreamStructuredPrefixStripper()
         coalescer = StreamEmitBuffer(min_chars=self._stream_min_chars)
         stream_start = time.perf_counter()
         chunk_count = 0
@@ -1654,16 +2064,25 @@ class MintChatAgent:
             delta = accumulator.consume(normalized)
             if not delta:
                 return None
+            delta = prefix_stripper.process(delta)
+            if not delta:
+                return None
             return coalescer.push(delta)
 
         try:
             while True:
+                if cancel_event and cancel_event.is_set():
+                    stop_event.set()
+                    _close_stream()
+                    break
                 try:
                     wait_timeout = watchdog.next_wait()
                 except AgentTimeoutError as exc:
                     stop_event.set()
                     _close_stream()
                     raise
+                if cancel_event is not None:
+                    wait_timeout = min(wait_timeout, 0.25)
 
                 try:
                     kind, payload = chunk_queue.get(timeout=wait_timeout)
@@ -1704,6 +2123,13 @@ class MintChatAgent:
                 elif kind == "end":
                     break
         finally:
+            pending = prefix_stripper.flush()
+            if pending:
+                buffered = coalescer.push(pending)
+                if buffered:
+                    chunk_count += 1
+                    total_chars += len(buffered)
+                    yield buffered
             tail = coalescer.flush()
             if tail:
                 chunk_count += 1
@@ -1722,7 +2148,12 @@ class MintChatAgent:
                 elapsed,
             )
 
-    async def _astream_llm_response(self, messages: list) -> AsyncIterator[str]:
+    async def _astream_llm_response(
+        self,
+        messages: list,
+        *,
+        cancel_event: Optional[Event] = None,
+    ) -> AsyncIterator[str]:
         """
         v3.3.4: 异步流式拉取 LLM 输出，复用统一的看门狗策略。
 
@@ -1750,6 +2181,7 @@ class MintChatAgent:
             watchdog = LLMStreamWatchdog(self._llm_timeouts)
             first_latency_logged = False
             accumulator = StreamDeltaAccumulator()
+            prefix_stripper = StreamStructuredPrefixStripper()
             coalescer = StreamEmitBuffer(min_chars=self._stream_min_chars)
             stream_start = time.perf_counter()
             chunk_count = 0
@@ -1764,6 +2196,9 @@ class MintChatAgent:
                 delta = accumulator.consume(normalized)
                 if not delta:
                     return None
+                delta = prefix_stripper.process(delta)
+                if not delta:
+                    return None
                 return coalescer.push(delta)
 
             try:
@@ -1773,6 +2208,11 @@ class MintChatAgent:
                     except AgentTimeoutError as exc:
                         await _safe_aclose()
                         raise
+                    if cancel_event is not None:
+                        wait_timeout = min(wait_timeout, 0.25)
+                    if cancel_event and cancel_event.is_set():
+                        await _safe_aclose()
+                        break
 
                     try:
                         chunk, _metadata = await asyncio.wait_for(
@@ -1783,6 +2223,9 @@ class MintChatAgent:
                         break
                     except asyncio.TimeoutError as exc:
                         # 未在当前窗口内获取数据，若总耗时未超限则继续等待
+                        if cancel_event and cancel_event.is_set():
+                            await _safe_aclose()
+                            break
                         if watchdog.remaining_total() > 0:
                             continue
                         await _safe_aclose()
@@ -1809,6 +2252,14 @@ class MintChatAgent:
             await _safe_aclose()
             raise
         finally:
+            if "prefix_stripper" in locals():
+                pending = prefix_stripper.flush()
+                if pending and "coalescer" in locals():
+                    buffered = coalescer.push(pending)
+                    if buffered:
+                        chunk_count += 1
+                        total_chars += len(buffered)
+                        yield buffered
             if 'coalescer' in locals():
                 tail = coalescer.flush()
                 if tail:
@@ -1835,6 +2286,40 @@ class MintChatAgent:
 
         if isinstance(chunk, str):
             return chunk
+
+        # stream_mode="messages" 可能包含 tool/system/human 等消息；这里只保留 assistant 输出，避免工具结果污染 UI/TTS。
+        # 注意：LangChain 的 AIMessageChunk.type 可能为 "AIMessageChunk"（而非 "ai"）。
+        if isinstance(chunk, dict):
+            role = chunk.get("role") or chunk.get("type")
+            if isinstance(role, str) and role:
+                role_lower = role.lower()
+                if role_lower in {"tool", "system", "human", "user"}:
+                    return ""
+                if role_lower in {"assistant", "ai"} or role == "AIMessageChunk":
+                    content = chunk.get("content") or chunk.get("text") or ""
+                    if isinstance(content, str):
+                        return content
+                    if isinstance(content, list):
+                        parts: list[str] = []
+                        for block in content:
+                            if isinstance(block, dict):
+                                parts.append(str(block.get("text") or block.get("content") or ""))
+                            else:
+                                parts.append(str(getattr(block, "text", "") or getattr(block, "content", "")))
+                        return "".join(parts)
+                    return str(content)
+
+        role = getattr(chunk, "role", None)
+        if isinstance(role, str) and role:
+            role_lower = role.lower()
+            if role_lower in {"tool", "system", "human", "user"}:
+                return ""
+
+        msg_type = getattr(chunk, "type", None)
+        if isinstance(msg_type, str) and msg_type:
+            allowed = {"ai", "assistant", "AIMessageChunk", "AIMessage"}
+            if msg_type not in allowed:
+                return ""
 
         content = getattr(chunk, "content", None)
         if isinstance(content, str):
@@ -2020,6 +2505,7 @@ class MintChatAgent:
         save_to_long_term: bool = False,
         image_path: Optional[str] = None,
         image_analysis: Optional[dict] = None,
+        cancel_event: Optional[Event] = None,
     ) -> Iterator[str]:
         """
         流式对话（生成器）(v2.30.34 重构优化)
@@ -2042,7 +2528,7 @@ class MintChatAgent:
                     image_analysis=image_analysis,
                     image_path=image_path,
                     compression="auto",
-                    use_cache=False,
+                    use_cache=True,
                 )
             except ValueError:
                 logger.warning("收到空消息")
@@ -2055,12 +2541,18 @@ class MintChatAgent:
 
             reply_parts: list[str] = []
             try:
-                for chunk in self._stream_llm_response(bundle.messages):
+                for chunk in self._stream_llm_response(bundle.messages, cancel_event=cancel_event):
+                    if cancel_event and cancel_event.is_set():
+                        logger.info("流式对话已取消（停止输出与保存）")
+                        return
                     reply_parts.append(chunk)
                     yield chunk
             except AgentTimeoutError as timeout_exc:
                 # v3.3.4: 流式输出超时保护
                 error_msg = str(timeout_exc) or repr(timeout_exc) or "LLM 流式输出超时"
+                if cancel_event and cancel_event.is_set():
+                    logger.info("流式对话已取消（忽略超时）: %s", error_msg)
+                    return
                 if reply_parts:
                     logger.warning("LLM 流式输出中断（已输出部分内容）: %s", error_msg)
                 else:
@@ -2074,11 +2566,23 @@ class MintChatAgent:
                 logger.error(f"LLM调用失败: {error_msg}")
                 raise
 
-            full_reply = "".join(reply_parts)
+            if cancel_event and cancel_event.is_set():
+                logger.info("流式对话已取消（忽略后处理）")
+                return
+
+            raw_reply = "".join(reply_parts)
+            full_reply = self._filter_tool_info(raw_reply)
             if not full_reply:
-                default_reply = "抱歉主人，我好像没有理解您的意思喵~"
-                full_reply = default_reply
-                yield default_reply
+                rescued = self._rescue_empty_reply(bundle, raw_reply=raw_reply, source="stream")
+                if rescued:
+                    full_reply = rescued
+                    yield rescued
+                elif raw_reply.strip():
+                    # 如果已经输出了内容但过滤后为空（极少数场景），避免再追加兜底回复导致对话体验割裂。
+                    full_reply = raw_reply.strip()
+                else:
+                    full_reply = _DEFAULT_EMPTY_REPLY
+                    yield _DEFAULT_EMPTY_REPLY
 
             self._post_reply_actions(bundle.save_message, full_reply, save_to_long_term, stream=True)
             logger.info("流式回复完成")
@@ -2088,6 +2592,9 @@ class MintChatAgent:
             from src.utils.exceptions import handle_exception
             error_msg = str(e) or repr(e) or f"{type(e).__name__}: 流式对话处理失败"
             handle_exception(e, logger, "流式对话处理失败")
+            if cancel_event and cancel_event.is_set():
+                logger.info("流式对话已取消（忽略异常）: %s", error_msg)
+                return
             yield f"抱歉主人，我遇到了一些问题：{error_msg} 喵~"
 
     async def chat_stream_async(
@@ -2096,6 +2603,7 @@ class MintChatAgent:
         save_to_long_term: bool = False,
         image_path: Optional[str] = None,
         image_analysis: Optional[dict] = None,
+        cancel_event: Optional[Event] = None,
     ) -> AsyncIterator[str]:
         """
         异步流式对话 - 更高性能
@@ -2116,7 +2624,7 @@ class MintChatAgent:
                     image_analysis=image_analysis,
                     image_path=image_path,
                     compression="auto",
-                    use_cache=False,
+                    use_cache=True,
                 )
             except ValueError:
                 logger.warning("收到空消息")
@@ -2129,12 +2637,18 @@ class MintChatAgent:
 
             reply_parts: list[str] = []
             try:
-                async for chunk in self._astream_llm_response(bundle.messages):
+                async for chunk in self._astream_llm_response(bundle.messages, cancel_event=cancel_event):
+                    if cancel_event and cancel_event.is_set():
+                        logger.info("异步流式对话已取消（停止输出与保存）")
+                        return
                     reply_parts.append(chunk)
                     yield chunk
             except AgentTimeoutError as stream_timeout:
                 # v3.3.4: 改进错误信息处理
                 error_msg = str(stream_timeout) or repr(stream_timeout) or "异步流式输出超时"
+                if cancel_event and cancel_event.is_set():
+                    logger.info("异步流式对话已取消（忽略超时）: %s", error_msg)
+                    return
                 logger.error(f"异步流式输出超时: {error_msg}")
                 fallback = "抱歉主人，模型暂时没有新输出，我们稍后再继续聊好嘛？喵~"
                 if not reply_parts:
@@ -2146,11 +2660,22 @@ class MintChatAgent:
                 error_msg = str(stream_error) or repr(stream_error) or f"{type(stream_error).__name__}: 异步流式输出错误"
                 handle_exception(stream_error, logger, "异步流式输出错误")
 
-            full_reply = "".join(reply_parts)
+            if cancel_event and cancel_event.is_set():
+                logger.info("异步流式对话已取消（忽略后处理）")
+                return
+
+            raw_reply = "".join(reply_parts)
+            full_reply = self._filter_tool_info(raw_reply)
             if not full_reply:
-                default_reply = "抱歉主人，我好像没有理解您的意思喵~"
-                full_reply = default_reply
-                yield default_reply
+                rescued = await self._arescue_empty_reply(bundle, raw_reply=raw_reply, source="astream")
+                if rescued:
+                    full_reply = rescued
+                    yield rescued
+                elif raw_reply.strip():
+                    full_reply = raw_reply.strip()
+                else:
+                    full_reply = _DEFAULT_EMPTY_REPLY
+                    yield _DEFAULT_EMPTY_REPLY
 
             self._post_reply_actions(bundle.save_message, full_reply, save_to_long_term, stream=True)
 
@@ -2159,12 +2684,18 @@ class MintChatAgent:
         except AgentTimeoutError as timeout_exc:
             # v3.3.4: 改进错误信息处理
             error_msg = str(timeout_exc) or repr(timeout_exc) or "异步流式对话超时"
+            if cancel_event and cancel_event.is_set():
+                logger.info("异步流式对话已取消（忽略超时）: %s", error_msg)
+                return
             logger.error(f"异步流式对话超时: {error_msg}")
             yield "抱歉主人，模型暂时没有新输出，我们稍后再继续聊好嘛？喵~"
         except Exception as e:
             # v3.3.4: 改进错误信息处理，避免空错误信息
             error_msg = str(e) or repr(e) or f"{type(e).__name__}: 异步流式对话处理失败"
             logger.error(f"异步流式对话处理失败: {error_msg}")
+            if cancel_event and cancel_event.is_set():
+                logger.info("异步流式对话已取消（忽略异常）: %s", error_msg)
+                return
             yield f"抱歉主人，我遇到了一些问题：{error_msg} 喵~"
 
     def get_greeting(self) -> str:
@@ -2670,6 +3201,55 @@ class MintChatAgent:
         if not raw:
             return ""
 
+        # 部分 OpenAI 兼容网关 / LangChain 1.0.x 组合会把 structured output 片段
+        # （例如工具选择/分流标签的 JSON）直接拼接到自然语言回复之前，形如：
+        #   ["general_chat"]}["emotion_analysis", ...]}当然是真的...
+        # 这里优先剥离这类“前缀 JSON 片段”，避免污染最终回复。
+        cleaned_raw = raw
+        for _ in range(3):  # 限制循环次数，避免异常输入导致长时间处理
+            if not cleaned_raw or cleaned_raw[0] not in "{[":
+                break
+
+            fragment = _extract_leading_json_fragment(cleaned_raw)
+            if not fragment:
+                break
+
+            rest = cleaned_raw[len(fragment) :]
+            rest_lstrip = rest.lstrip()
+            has_trailing_brace = rest_lstrip.startswith("}")
+            rest_after_braces = rest_lstrip.lstrip("}").lstrip()
+
+            drop_fragment = False
+            parsed: Any = None
+            if len(fragment) <= 50_000:
+                try:
+                    parsed = json.loads(fragment)
+                except Exception:
+                    parsed = None
+
+            if isinstance(parsed, dict):
+                keys = {str(k).lower() for k in parsed.keys()}
+                if "tools" in keys or "tool_calls" in keys or parsed.get("type") == "tool_calls":
+                    drop_fragment = True
+            elif isinstance(parsed, list) and parsed and all(isinstance(item, str) for item in parsed):
+                # list[str] 作为“内部标签/模块名”通常为 snake_case；若后面紧跟多段 JSON/孤立 '}'，
+                # 基本可以判定为工具/结构化输出残留。
+                normalized = [item.strip() for item in parsed]
+                if normalized and all(_IDENT_TOKEN_RE.fullmatch(item) for item in normalized) and any(
+                    "_" in item for item in normalized
+                ):
+                    if has_trailing_brace or rest_after_braces[:1] in "[{":
+                        drop_fragment = True
+
+            if not drop_fragment:
+                break
+
+            cleaned_raw = rest_after_braces
+
+        raw = cleaned_raw.strip()
+        if not raw:
+            return ""
+
         # 尝试解析 JSON，如果是工具选择结构则直接丢弃
         if raw.startswith("{") or raw.startswith("["):
             # 性能优化：仅在“看起来是完整 JSON 且包含工具相关键”时才尝试解析，
@@ -2713,12 +3293,16 @@ class MintChatAgent:
 
     @staticmethod
     def _normalize_output_text(text: str) -> str:
-        """轻量清理输出文本，去除多余空白与重复换行。"""
+        """
+        轻量清理输出文本（主要用于流式片段）。
+
+        目标：
+        - 统一换行符与过多空行，提升 UI/TTS 的稳定性
+        - 不对每个流式 chunk 进行 strip/压缩空格，避免破坏代码缩进与词间空格
+        """
         if not text or not isinstance(text, str):
             return ""
-        text = text.strip()
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
         # 合并连续空行为最多一个
         text = _MULTI_NEWLINE_RE.sub("\n\n", text)
-        # 统一多空格为单空格（不影响换行）
-        text = _MULTI_SPACE_RE.sub(" ", text)
         return text

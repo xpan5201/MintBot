@@ -187,31 +187,8 @@ def create_chroma_vectorstore(
         if use_local_embedding and SENTENCE_TRANSFORMERS_AVAILABLE:
             # 使用本地 embedding 模型
             logger.info("使用本地 embedding 模型: %s", model)
-
-<<<<<<< HEAD
             local_model = _resolve_local_model(model)
             embedding_function = _get_local_embedding_function(local_model, bool(enable_cache))
-=======
-            # 本地模型映射（API 模型名 -> 本地模型名）
-            local_model_map = {
-                "BAAI/bge-large-zh-v1.5": "BAAI/bge-large-zh-v1.5",
-                "BAAI/bge-m3": "BAAI/bge-m3",
-                "Qwen/Qwen3-Embedding-8B": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",  # 替代
-                "text-embedding-ada-002": "sentence-transformers/all-MiniLM-L6-v2",  # 替代
-            }
-
-            local_model = local_model_map.get(
-                model,
-                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"  # 默认
-            )
-
-            embedding_function = LocalEmbeddings(
-                model_name=local_model,
-                cache_dir="data/cache/embeddings",
-                device=None,  # 自动检测最优设备（GPU/CPU）
-                enable_cache=enable_cache,
-            )
->>>>>>> 866b2aa79970aa1bc7427113d905e91b189aa5e5
         else:
             # 使用 API embedding
             logger.info("使用 API embedding 模型: %s", model)

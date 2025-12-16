@@ -53,6 +53,7 @@ from PyQt6.QtGui import QFont, QColor, QPixmap, QMovie, QIcon
 from pathlib import Path
 from typing import Optional, List, Dict
 import json
+from functools import lru_cache
 
 from .material_design_light import MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION
 from .material_design_enhanced import (
@@ -64,6 +65,26 @@ from .material_design_enhanced import (
     get_typography_css,
     get_elevation_shadow,
 )
+
+
+_STICKER_BUTTON_SIZE = 70
+_STICKER_ICON_SIZE = 62
+_STICKER_ANIM_EXTS = {".gif", ".webp"}
+
+
+@lru_cache(maxsize=256)
+def _load_sticker_preview_pixmap(path: str, size: int, mtime_ns: int) -> QPixmap:
+    """加载表情包预览图（LRU缓存，含 mtime 失效键）。"""
+    _ = mtime_ns  # 仅用于缓存键，文件变更时自动失效
+    pixmap = QPixmap(path)
+    if pixmap.isNull():
+        return pixmap
+    return pixmap.scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
 
 
 # 表情分类
@@ -405,9 +426,11 @@ class CustomStickerButton(QPushButton):
         self.sticker_id = sticker_id
         self._scale = 1.0
         self.movie = None
+        self._is_animated = False
+        self._preview_icon: Optional[QIcon] = None
 
         # 设置样式 - v2.29.1 优化：更大的按钮，更美观的样式
-        self.setFixedSize(70, 70)  # 从56增加到70
+        self.setFixedSize(_STICKER_BUTTON_SIZE, _STICKER_BUTTON_SIZE)  # 从56增加到70
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet(
             f"""
@@ -435,7 +458,7 @@ class CustomStickerButton(QPushButton):
         self.setup_animations()
 
     def load_sticker(self):
-        """加载表情包图片 - v2.29.1 优化版"""
+        """加载表情包预览图（默认静态），动画在悬停时按需启用。"""
         try:
             path = Path(self.sticker_path)
             if not path.exists():
@@ -452,37 +475,29 @@ class CustomStickerButton(QPushButton):
                 )
                 return
 
-            # 检查是否为动画格式
-            if path.suffix.lower() in [".gif", ".webp"]:
-                # 使用 QMovie 播放动画 - v2.29.1 优化：更大的图标
-                self.movie = QMovie(str(path))
-                self.movie.setScaledSize(QSize(62, 62))  # 从52增加到62
-                self.movie.frameChanged.connect(self.update_frame)
-                self.movie.start()
+            self._is_animated = path.suffix.lower() in _STICKER_ANIM_EXTS
+            try:
+                mtime_ns = path.stat().st_mtime_ns
+            except OSError:
+                mtime_ns = 0
+
+            pixmap = _load_sticker_preview_pixmap(str(path), _STICKER_ICON_SIZE, mtime_ns)
+            if not pixmap.isNull():
+                self._preview_icon = QIcon(pixmap)
+                self.setIcon(self._preview_icon)
+                self.setIconSize(QSize(_STICKER_ICON_SIZE, _STICKER_ICON_SIZE))
             else:
-                # 静态图片 - v2.29.1 优化：更大的图标
-                pixmap = QPixmap(str(path))
-                if not pixmap.isNull():
-                    scaled_pixmap = pixmap.scaled(
-                        62,
-                        62,  # 从52增加到62
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                    self.setIcon(QIcon(scaled_pixmap))
-                    self.setIconSize(QSize(62, 62))
-                else:
-                    # 加载失败，显示占位图标
-                    self.setText("🖼️")
-                    self.setStyleSheet(
-                        self.styleSheet()
-                        + f"""
-                        QPushButton {{
-                            font-size: 32px;
-                            color: {MD3_ENHANCED_COLORS['on_surface_variant']};
-                        }}
-                    """
-                    )
+                # 加载失败，显示占位图标
+                self.setText("🖼️")
+                self.setStyleSheet(
+                    self.styleSheet()
+                    + f"""
+                    QPushButton {{
+                        font-size: 32px;
+                        color: {MD3_ENHANCED_COLORS['on_surface_variant']};
+                    }}
+                """
+                )
         except Exception as e:
             from src.utils.logger import get_logger
 
@@ -499,14 +514,50 @@ class CustomStickerButton(QPushButton):
                     color: {MD3_ENHANCED_COLORS['error']};
                 }}
             """
-            )
+                )
 
     def update_frame(self):
         """更新动画帧"""
         if self.movie:
             pixmap = self.movie.currentPixmap()
-            self.setIcon(QIcon(pixmap))
-            self.setIconSize(QSize(62, 62))
+            if not pixmap.isNull():
+                self.setIcon(QIcon(pixmap))
+                self.setIconSize(QSize(_STICKER_ICON_SIZE, _STICKER_ICON_SIZE))
+
+    def _ensure_movie(self) -> None:
+        if self.movie is not None:
+            return
+        path = Path(self.sticker_path)
+        if not path.exists():
+            return
+        if path.suffix.lower() not in _STICKER_ANIM_EXTS:
+            return
+        self.movie = QMovie(str(path))
+        # 性能/内存：避免缓存所有帧（长时间悬停或大量动图时更稳）
+        try:
+            self.movie.setCacheMode(QMovie.CacheMode.CacheNone)
+        except Exception:
+            pass
+        self.movie.setScaledSize(QSize(_STICKER_ICON_SIZE, _STICKER_ICON_SIZE))
+        self.movie.frameChanged.connect(self.update_frame)
+
+    def _start_animation(self) -> None:
+        if not self._is_animated:
+            return
+        self._ensure_movie()
+        if self.movie is None:
+            return
+        if self.movie.state() != QMovie.MovieState.Running:
+            self.movie.start()
+
+    def _stop_animation(self) -> None:
+        if self.movie is None:
+            return
+        if self.movie.state() == QMovie.MovieState.Running:
+            self.movie.stop()
+        if self._preview_icon is not None:
+            self.setIcon(self._preview_icon)
+            self.setIconSize(QSize(_STICKER_ICON_SIZE, _STICKER_ICON_SIZE))
 
     def setup_animations(self):
         """设置动画 - v2.29.1 优化"""
@@ -529,6 +580,8 @@ class CustomStickerButton(QPushButton):
         self.scale_animation.setStartValue(self.scale)
         self.scale_animation.setEndValue(1.1)  # 轻微放大
         self.scale_animation.start()
+        # 性能优化：仅在悬停时播放动图，避免大量 QMovie 常驻占用 CPU
+        self._start_animation()
 
     def leaveEvent(self, event):
         """鼠标离开 - 恢复"""
@@ -536,6 +589,7 @@ class CustomStickerButton(QPushButton):
         self.scale_animation.setStartValue(self.scale)
         self.scale_animation.setEndValue(1.0)
         self.scale_animation.start()
+        self._stop_animation()
 
     def contextMenuEvent(self, event):
         """右键菜单 - 删除表情包"""
@@ -574,7 +628,6 @@ class CustomStickerButton(QPushButton):
             self.movie.stop()
             self.movie.deleteLater()
             self.movie = None
-            self.movie = None
 
 
 class EmojiPicker(QWidget):
@@ -602,6 +655,8 @@ class EmojiPicker(QWidget):
         self.favorite_emojis = set()  # 收藏的表情
         self.custom_stickers = []  # 自定义表情包
         self.search_results = []  # 搜索结果
+        self._sticker_caption_threads = []  # 后台生成表情包说明标签的线程引用（避免被 GC）
+        self._sticker_caption_in_progress = set()  # sticker_id 去重，避免重复生成 caption
 
         # 加载用户数据
         self.load_user_data()
@@ -626,7 +681,9 @@ class EmojiPicker(QWidget):
 
         try:
             from src.auth.user_session import user_session
-            from src.auth.user_data_manager import UserDataManager
+
+            # 确保不会重复追加
+            self.custom_stickers = []
 
             # 加载最近使用
             settings = user_session.get_settings()
@@ -639,7 +696,7 @@ class EmojiPicker(QWidget):
 
             logger = get_logger(__name__)
 
-            data_manager = UserDataManager()
+            data_manager = user_session.data_manager
             stickers = data_manager.get_custom_stickers(self.user_id)
 
             logger.info(f"从数据库加载到 {len(stickers)} 个表情包")
@@ -654,6 +711,9 @@ class EmojiPicker(QWidget):
                                 "id": sticker["sticker_id"],
                                 "path": file_path,
                                 "name": sticker["file_name"],
+                                "type": sticker.get("file_type"),
+                                "size": sticker.get("file_size"),
+                                "caption": sticker.get("caption"),
                             }
                         )
                         logger.debug(f"加载表情包: {sticker['file_name']}")
@@ -1116,13 +1176,22 @@ class EmojiPicker(QWidget):
             max_cols = 6  # 减少列数，让表情包更大
 
             for sticker in self.custom_stickers:
-                btn = CustomStickerButton(sticker["path"], sticker["id"])
+                btn = CustomStickerButton(sticker["path"], sticker["id"], parent=grid_widget)
                 btn.clicked.connect(lambda checked, s=sticker: self.on_sticker_clicked(s))
                 btn.delete_requested.connect(self.on_sticker_delete_requested)
 
                 # 添加工具提示
+                size_kb = None
+                try:
+                    size_value = sticker.get("size")
+                    if size_value is not None:
+                        size_kb = float(size_value) / 1024
+                except Exception:
+                    size_kb = None
                 btn.setToolTip(
-                    f"{sticker.get('name', '未命名')}\n大小: {sticker.get('size', 0) / 1024:.2f}KB"
+                    f"{sticker.get('name', '未命名')}\n大小: {size_kb:.2f}KB"
+                    if size_kb is not None
+                    else f"{sticker.get('name', '未命名')}\n大小: 未知"
                 )
 
                 grid_layout.addWidget(btn, row, col)
@@ -1199,13 +1268,26 @@ class EmojiPicker(QWidget):
 
     def on_sticker_clicked(self, sticker: Dict):
         """自定义表情包点击"""
+        try:
+            sticker_id = str(sticker.get("id") or "").strip()
+            sticker_path = str(sticker.get("path") or "").strip()
+            caption = str(sticker.get("caption") or "").strip()
+            fallback_name = str(sticker.get("name") or "").strip()
+            if self.user_id and sticker_id and sticker_path and not caption:
+                self._schedule_sticker_caption_generation(
+                    sticker_id=sticker_id,
+                    sticker_path=sticker_path,
+                    fallback_name=fallback_name,
+                )
+        except Exception:
+            pass
         self.sticker_selected.emit(sticker["path"])
         self.hide()
 
     def on_sticker_delete_requested(self, sticker_id: str):
         """删除自定义表情包 - v2.29.7 修复：添加导入"""
         from PyQt6.QtWidgets import QMessageBox
-        from src.auth.user_data_manager import UserDataManager
+        from src.auth.user_session import user_session
         from src.utils.logger import get_logger
 
         logger = get_logger(__name__)
@@ -1219,8 +1301,18 @@ class EmojiPicker(QWidget):
 
         if reply == QMessageBox.StandardButton.Yes:
             try:
+                # 先从内存列表中拿到文件路径（删除 DB 后仍可删除文件）
+                file_path_to_delete = None
+                try:
+                    for s in self.custom_stickers:
+                        if s.get("id") == sticker_id:
+                            file_path_to_delete = s.get("path")
+                            break
+                except Exception:
+                    file_path_to_delete = None
+
                 # 从数据库删除
-                data_manager = UserDataManager()
+                data_manager = user_session.data_manager
                 data_manager.delete_custom_sticker(self.user_id, sticker_id)
                 logger.info(f"已从数据库删除表情包: {sticker_id}")
 
@@ -1229,13 +1321,37 @@ class EmojiPicker(QWidget):
                 logger.info(f"已从列表中移除表情包: {sticker_id}")
 
                 # 删除文件
-                sticker_path = Path(f"data/users/{self.user_id}/stickers/{sticker_id}")
-                for ext in [".gif", ".png", ".jpg", ".jpeg", ".webp"]:
-                    file = sticker_path.with_suffix(ext)
-                    if file.exists():
-                        file.unlink()
-                        logger.info(f"已删除文件: {file}")
-                        break
+                deleted = False
+                if file_path_to_delete:
+                    try:
+                        file = Path(str(file_path_to_delete))
+                        if file.exists():
+                            file.unlink()
+                            deleted = True
+                            logger.info(f"已删除文件: {file}")
+                    except Exception:
+                        deleted = False
+
+                # 兜底：历史数据可能缺 path，按 sticker_id 扫描常见扩展名
+                if not deleted:
+                    try:
+                        from src.config.settings import settings
+
+                        sticker_path = (
+                            Path(settings.data_dir)
+                            / "users"
+                            / str(self.user_id)
+                            / "stickers"
+                            / str(sticker_id)
+                        )
+                    except Exception:
+                        sticker_path = Path(f"data/users/{self.user_id}/stickers/{sticker_id}")
+                    for ext in [".gif", ".png", ".jpg", ".jpeg", ".webp"]:
+                        file = sticker_path.with_suffix(ext)
+                        if file.exists():
+                            file.unlink()
+                            logger.info(f"已删除文件: {file}")
+                            break
 
                 logger.info(f"表情包删除成功: {sticker_id}")
 
@@ -1384,8 +1500,7 @@ class EmojiPicker(QWidget):
             logger.info(f"选择的文件: {file_path}")
 
             # 恢复EmojiPicker显示
-            if was_visible and file_path:
-                # 只有在选择了文件时才恢复显示
+            if was_visible:
                 self.show()
                 self.raise_()
                 self.activateWindow()
@@ -1418,7 +1533,12 @@ class EmojiPicker(QWidget):
             logger.info(f"文件验证通过: {source.name}, 大小: {file_size / 1024:.2f}KB")
 
             # 创建用户表情包目录
-            stickers_dir = Path(f"data/users/{self.user_id}/stickers")
+            try:
+                from src.config.settings import settings
+
+                stickers_dir = Path(settings.data_dir) / "users" / str(self.user_id) / "stickers"
+            except Exception:
+                stickers_dir = Path(f"data/users/{self.user_id}/stickers")
             stickers_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"表情包目录: {stickers_dir}")
 
@@ -1430,9 +1550,9 @@ class EmojiPicker(QWidget):
             shutil.copy2(source, dest)
 
             # 保存到数据库
-            from src.auth.user_data_manager import UserDataManager
+            from src.auth.user_session import user_session
 
-            data_manager = UserDataManager()
+            data_manager = user_session.data_manager
             success = data_manager.add_custom_sticker(
                 user_id=self.user_id,
                 sticker_id=sticker_id,
@@ -1457,6 +1577,7 @@ class EmojiPicker(QWidget):
                     "name": source.stem,
                     "type": source.suffix.lower(),
                     "size": file_size,
+                    "caption": None,
                 }
             )
 
@@ -1468,6 +1589,16 @@ class EmojiPicker(QWidget):
                 if self.tab_widget.tabText(i) == "🖼️ 自定义":
                     self.tab_widget.setCurrentIndex(i)
                     break
+
+            # v2.46.x: 后台调用视觉模型生成表情包说明标签（不阻塞 UI，不在聊天区展示过程）
+            try:
+                self._schedule_sticker_caption_generation(
+                    sticker_id=sticker_id,
+                    sticker_path=str(dest),
+                    fallback_name=source.stem,
+                )
+            except Exception:
+                pass
 
             # 显示成功提示
             QMessageBox.information(
@@ -1491,31 +1622,178 @@ class EmojiPicker(QWidget):
                 f"上传表情包失败：{str(e)}\n\n请检查文件是否有效，或查看日志获取详细信息。",
             )
 
+    def _schedule_sticker_caption_generation(
+        self,
+        *,
+        sticker_id: str,
+        sticker_path: str,
+        fallback_name: str = "",
+    ) -> None:
+        """后台生成表情包说明标签（caption），写入数据库供 LLM 快速理解。"""
+        if not self.user_id:
+            return
+
+        sticker_id = (sticker_id or "").strip()
+        sticker_path = (sticker_path or "").strip()
+        if not (sticker_id and sticker_path):
+            return
+
+        if sticker_id in self._sticker_caption_in_progress:
+            return
+        self._sticker_caption_in_progress.add(sticker_id)
+
+        from PyQt6.QtCore import QThread, pyqtSignal
+        from src.utils.logger import get_logger
+
+        logger = get_logger(__name__)
+
+        class StickerCaptionThread(QThread):
+            caption_ready = pyqtSignal(str, str)  # sticker_id, caption
+            caption_error = pyqtSignal(str, str)  # sticker_id, error
+
+            def __init__(self, *, user_id: int, sticker_id: str, sticker_path: str, fallback_name: str):
+                super().__init__()
+                self._user_id = user_id
+                self._sticker_id = sticker_id
+                self._sticker_path = sticker_path
+                self._fallback_name = (fallback_name or "").strip()
+
+            @staticmethod
+            def _sanitize_caption(text: str) -> str:
+                caption = (text or "").strip()
+                if not caption:
+                    return ""
+                caption = caption.splitlines()[0].strip()
+                caption = caption.strip(" \t\r\n\"'`“”‘’")
+                caption = caption.strip()
+                if len(caption) > 48:
+                    caption = caption[:48].rstrip() + "…"
+                return caption
+
+            def run(self) -> None:
+                try:
+                    from src.llm.factory import get_vision_llm
+                    from src.multimodal.vision import get_vision_processor_instance
+                    from src.auth.user_session import user_session
+
+                    vision_llm = get_vision_llm()
+                    if vision_llm is None:
+                        logger.info("VISION_LLM 未启用，跳过表情包 caption 生成: %s", self._sticker_id)
+                        return
+
+                    processor = get_vision_processor_instance()
+                    prompt = (
+                        "这是一个聊天表情包/贴纸，用于表达情绪或动作。\n"
+                        "请用中文生成一个简短标签（不超过12个字），描述它表达的情绪、动作或含义。\n"
+                        "如果画面包含清晰可读的文字，优先用该文字或其含义。\n"
+                        "只输出标签本身，不要解释，不要加引号，不要换行。"
+                    )
+
+                    # 表情包标签不需要超大分辨率：缩小输入可减少 base64 体积与视觉模型耗时
+                    sticker_max_size = 512
+                    try:
+                        from src.config.settings import settings
+
+                        cfg_max = int(getattr(settings, "max_image_size", 1024) or 1024)
+                        sticker_max_size = min(cfg_max, 512)
+                    except Exception:
+                        sticker_max_size = 512
+
+                    image_data = None
+                    try:
+                        image_data = processor.prepare_image_for_llm(self._sticker_path, max_size=sticker_max_size)
+                    except Exception:
+                        image_data = None
+
+                    raw = processor.analyze_image(
+                        self._sticker_path,
+                        prompt=prompt,
+                        llm=vision_llm,
+                        image_data=image_data,
+                    )
+                    caption = self._sanitize_caption(str(raw))
+                    if not caption and self._fallback_name:
+                        caption = self._sanitize_caption(self._fallback_name)
+
+                    if not caption:
+                        logger.info("表情包 caption 为空，跳过写入: %s", self._sticker_id)
+                        return
+
+                    try:
+                        user_session.data_manager.update_custom_sticker_caption(
+                            self._user_id, self._sticker_id, caption
+                        )
+                    except Exception as update_exc:
+                        logger.warning("写入表情包 caption 失败: %s", update_exc)
+
+                    self.caption_ready.emit(self._sticker_id, caption)
+                except Exception as e:
+                    self.caption_error.emit(self._sticker_id, str(e))
+
+        thread = StickerCaptionThread(
+            user_id=int(self.user_id),
+            sticker_id=sticker_id,
+            sticker_path=sticker_path,
+            fallback_name=fallback_name,
+        )
+
+        def _on_caption_ready(done_id: str, caption: str) -> None:
+            logger.info("表情包 caption 已生成: %s -> %s", done_id, caption)
+            try:
+                for sticker in self.custom_stickers:
+                    if sticker.get("id") == done_id:
+                        sticker["caption"] = caption
+                        break
+            except Exception:
+                pass
+
+        def _on_caption_error(done_id: str, error: str) -> None:
+            logger.warning("表情包 caption 生成失败: %s (%s)", done_id, error)
+
+        thread.caption_ready.connect(_on_caption_ready)
+        thread.caption_error.connect(_on_caption_error)
+
+        def _cleanup() -> None:
+            try:
+                if thread in self._sticker_caption_threads:
+                    self._sticker_caption_threads.remove(thread)
+            finally:
+                try:
+                    self._sticker_caption_in_progress.discard(sticker_id)
+                except Exception:
+                    pass
+
+        thread.finished.connect(_cleanup)
+
+        self._sticker_caption_threads.append(thread)
+        thread.start()
+
     def clear_all_stickers(self):
         """清空所有自定义表情包 - v2.29.1 新增"""
         from PyQt6.QtWidgets import QMessageBox
         from src.utils.logger import get_logger
 
         logger = get_logger(__name__)
+        total = len(self.custom_stickers)
 
         reply = QMessageBox.question(
             self,
             "确认清空",
-            f"确定要删除所有 {len(self.custom_stickers)} 个表情包吗？\n此操作不可恢复！",
+            f"确定要删除所有 {total} 个表情包吗？\n此操作不可恢复！",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                from src.auth.user_data_manager import UserDataManager
+                from src.auth.user_session import user_session
 
                 # 删除所有表情包
                 failed_count = 0
+                data_manager = user_session.data_manager
                 for sticker in self.custom_stickers[:]:  # 使用副本遍历
                     try:
                         # 从数据库删除
-                        data_manager = UserDataManager()
                         data_manager.delete_custom_sticker(self.user_id, sticker["id"])
 
                         # 删除文件
@@ -1541,17 +1819,34 @@ class EmojiPicker(QWidget):
                     QMessageBox.warning(
                         self,
                         "部分失败",
-                        f"成功删除 {len(self.custom_stickers) - failed_count} 个表情包\n失败 {failed_count} 个",
+                        f"成功删除 {max(0, total - failed_count)} 个表情包\n失败 {failed_count} 个",
                     )
 
             except Exception as e:
                 logger.error(f"清空表情包失败: {e}", exc_info=True)
                 QMessageBox.critical(self, "清空失败", f"清空表情包失败：{str(e)}")
 
+    def _dispose_tabs(self) -> None:
+        """删除 tab 页面，避免 QTabWidget.clear() 仅移除不释放导致的内存/动画泄漏。"""
+        if not hasattr(self, "tab_widget") or self.tab_widget is None:
+            return
+
+        while self.tab_widget.count() > 0:
+            page = self.tab_widget.widget(0)
+            self.tab_widget.removeTab(0)
+            if page is None:
+                continue
+            for btn in page.findChildren(CustomStickerButton):
+                try:
+                    btn.cleanup()
+                except Exception:
+                    pass
+            page.deleteLater()
+
     def refresh_ui(self):
         """刷新界面 - v2.29.1 优化版"""
         # 清空标签页
-        self.tab_widget.clear()
+        self._dispose_tabs()
 
         # 重新添加标签页
         if self.recent_emojis:
@@ -1643,19 +1938,9 @@ class EmojiPicker(QWidget):
         if hasattr(self, "opacity_animation"):
             self.opacity_animation.stop()
 
-        # 清理自定义表情包的动画
-        for i in range(self.tab_widget.count()):
-            widget = self.tab_widget.widget(i)
-            if widget:
-                scroll_area = widget
-                if isinstance(scroll_area, QScrollArea):
-                    grid_widget = scroll_area.widget()
-                    if grid_widget:
-                        layout = grid_widget.layout()
-                        if layout:
-                            for j in range(layout.count()):
-                                item = layout.itemAt(j)
-                                if item and item.widget():
-                                    btn = item.widget()
-                                    if isinstance(btn, CustomStickerButton):
-                                        btn.cleanup()
+        # 清理自定义表情包动画（避免 QMovie 常驻占用 CPU）
+        for btn in self.findChildren(CustomStickerButton):
+            try:
+                btn.cleanup()
+            except Exception:
+                pass

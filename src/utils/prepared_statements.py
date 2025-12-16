@@ -5,7 +5,7 @@
 """
 
 import sqlite3
-from typing import Dict, Optional, Tuple, Any
+from typing import Any, Dict, Optional, Tuple
 from pathlib import Path
 import threading
 
@@ -26,7 +26,7 @@ class PreparedStatementManager:
         """
         self.db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
-        self._statements: Dict[str, sqlite3.Cursor] = {}
+        self._statements: Dict[str, tuple[str, sqlite3.Cursor]] = {}
         self._lock = threading.Lock()
         
         # 初始化连接
@@ -44,10 +44,20 @@ class PreparedStatementManager:
                 timeout=10.0
             )
             # 优化设置
-            self._conn.execute("PRAGMA journal_mode = WAL")
-            self._conn.execute("PRAGMA synchronous = NORMAL")
-            self._conn.execute("PRAGMA cache_size = -64000")
-            self._conn.execute("PRAGMA temp_store = MEMORY")
+            pragmas = [
+                ("journal_mode", "WAL"),
+                ("synchronous", "NORMAL"),
+                ("cache_size", "-64000"),
+                ("temp_store", "MEMORY"),
+                ("foreign_keys", "ON"),
+                ("busy_timeout", "5000"),
+                ("mmap_size", "268435456"),
+            ]
+            for key, value in pragmas:
+                try:
+                    self._conn.execute(f"PRAGMA {key} = {value}")
+                except Exception:
+                    continue
             logger.info(f"预编译语句管理器已连接到: {self.db_path}")
         except Exception as e:
             logger.error(f"初始化数据库连接失败: {e}")
@@ -76,8 +86,8 @@ class PreparedStatementManager:
             
             # 插入语句
             "insert_user": """
-                INSERT INTO users (username, email, password_hash, salt, user_avatar, ai_avatar)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO users (username, email, password_hash, salt)
+                VALUES (?, ?, ?, ?)
             """,
             "insert_session": """
                 INSERT INTO sessions (user_id, session_token, expires_at, is_active)
@@ -91,6 +101,7 @@ class PreparedStatementManager:
             # 更新语句
             "update_last_login": "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?",
             "invalidate_session": "UPDATE sessions SET is_active = 0 WHERE session_token = ?",
+            "deactivate_user_sessions": "UPDATE sessions SET is_active = 0 WHERE user_id = ? AND is_active = 1",
             "delete_user_data": "DELETE FROM user_data WHERE user_id = ? AND key = ?",
         }
         
@@ -177,11 +188,36 @@ def get_prepared_statement_manager(db_path: Path) -> PreparedStatementManager:
     Returns:
         PreparedStatementManager: 预编译语句管理器
     """
-    db_key = str(db_path)
-    
+    db_key = str(db_path.resolve())
+
     with _manager_lock:
         if db_key not in _prepared_statement_managers:
-            _prepared_statement_managers[db_key] = PreparedStatementManager(db_path)
-        
+            _prepared_statement_managers[db_key] = PreparedStatementManager(Path(db_key))
+
         return _prepared_statement_managers[db_key]
 
+
+def close_prepared_statement_manager(db_path: Path | str) -> None:
+    """Close and remove a prepared statement manager for a specific database."""
+    db_key = str(Path(db_path).resolve())
+    mgr: Optional[PreparedStatementManager]
+    with _manager_lock:
+        mgr = _prepared_statement_managers.pop(db_key, None)
+    if mgr is not None:
+        try:
+            mgr.close()
+        except Exception:
+            pass
+
+
+def close_all_prepared_statement_managers() -> None:
+    """Close and remove all prepared statement managers (useful for tests)."""
+    with _manager_lock:
+        managers = list(_prepared_statement_managers.values())
+        _prepared_statement_managers.clear()
+
+    for mgr in managers:
+        try:
+            mgr.close()
+        except Exception:
+            pass

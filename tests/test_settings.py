@@ -20,6 +20,26 @@ class TestSettings:
         assert settings is not None
         assert settings.llm.model == "test-model"
         assert settings.llm.temperature == 0.7
+        assert hasattr(settings, "vision_llm")
+
+    def test_load_vision_llm_config(self, sample_config_dict, temp_dir):
+        """确保可从 VISION_LLM 读取独立的视觉模型配置（兼容 enable/enabled）。"""
+        config = sample_config_dict.copy()
+        config["VISION_LLM"] = {
+            "enable": True,
+            "api": "https://api.vision.test/v1",
+            "key": "vision-api-key",
+            "model": "vision-model",
+        }
+
+        config_path = temp_dir / "vision_config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f)
+
+        settings = Settings.from_yaml(str(config_path))
+        assert settings.vision_llm.enabled is True
+        assert settings.vision_llm.model == "vision-model"
+        assert settings.vision_llm.api == "https://api.vision.test/v1"
 
     def test_config_validation(self, sample_config_dict, temp_dir):
         """测试配置验证"""

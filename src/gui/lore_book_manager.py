@@ -10,9 +10,9 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QComboBox, QLineEdit,
     QTextEdit, QDialog, QDialogButtonBox, QHeaderView,
     QMessageBox, QFileDialog, QGroupBox, QFormLayout,
-    QScrollArea, QSplitter, QTabWidget
+    QScrollArea, QSplitter, QTabWidget, QProgressDialog
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QThread
 from PyQt6.QtGui import QFont, QColor
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -23,6 +23,27 @@ from src.utils.logger import get_logger
 from .material_design_light import MD3_LIGHT_COLORS
 
 logger = get_logger(__name__)
+
+
+class LearnFileThread(QThread):
+    """后台从文件学习知识，避免阻塞 UI。"""
+
+    learned = pyqtSignal(list)  # learned_ids
+    error = pyqtSignal(str)
+
+    def __init__(self, lore_book, filepath: str):
+        super().__init__()
+        self.lore_book = lore_book
+        self.filepath = filepath
+
+    def run(self) -> None:
+        try:
+            if self.lore_book is None:
+                raise RuntimeError("知识库未初始化")
+            learned_ids = self.lore_book.learn_from_file(self.filepath)
+            self.learned.emit(learned_ids or [])
+        except Exception as exc:
+            self.error.emit(str(exc))
 
 
 class LoreDetailDialog(QDialog):
@@ -357,6 +378,8 @@ class LoreBookManagerWidget(QWidget):
         self.agent = agent
         self.lore_book = agent.lore_book if agent else None
         self.current_lores = []
+        self._learn_file_thread: Optional[LearnFileThread] = None
+        self._learn_progress: Optional[QProgressDialog] = None
         self.setup_ui()
         self.load_lores()
 
@@ -404,10 +427,10 @@ class LoreBookManagerWidget(QWidget):
         toolbar_layout.addWidget(export_btn)
 
         # 学习文件按钮
-        learn_btn = QPushButton("📖 学习文件")
-        learn_btn.clicked.connect(self._on_learn_file_clicked)
-        self._style_button(learn_btn, "tertiary")
-        toolbar_layout.addWidget(learn_btn)
+        self.learn_file_btn = QPushButton("📖 学习文件")
+        self.learn_file_btn.clicked.connect(self._on_learn_file_clicked)
+        self._style_button(self.learn_file_btn, "tertiary")
+        toolbar_layout.addWidget(self.learn_file_btn)
 
         toolbar_layout.addStretch()
 
@@ -848,6 +871,10 @@ class LoreBookManagerWidget(QWidget):
 
     def _on_learn_file_clicked(self):
         """从文件学习知识"""
+        if self._learn_file_thread is not None and self._learn_file_thread.isRunning():
+            QMessageBox.information(self, "提示", "正在学习文件中，请稍候…")
+            return
+
         filepath, _ = QFileDialog.getOpenFileName(
             self,
             "选择学习文件",
@@ -858,13 +885,62 @@ class LoreBookManagerWidget(QWidget):
         if not filepath:
             return
 
+        if self.lore_book is None:
+            QMessageBox.critical(self, "错误", "知识库未初始化")
+            return
+
+        self._learn_progress = QProgressDialog("正在学习文件，请稍候…", None, 0, 0, self)
+        self._learn_progress.setWindowTitle("学习中")
+        self._learn_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self._learn_progress.setCancelButton(None)
+        self._learn_progress.setMinimumDuration(0)
+        self._learn_progress.show()
+
         try:
-            learned_ids = self.lore_book.learn_from_file(filepath)
+            if hasattr(self, "learn_file_btn") and self.learn_file_btn is not None:
+                self.learn_file_btn.setEnabled(False)
+        except Exception:
+            pass
+
+        self._learn_file_thread = LearnFileThread(self.lore_book, filepath)
+        self._learn_file_thread.learned.connect(self._on_learn_file_finished)
+        self._learn_file_thread.error.connect(self._on_learn_file_error)
+        self._learn_file_thread.start()
+
+    def _on_learn_file_finished(self, learned_ids: list) -> None:
+        try:
             self.load_lores()
             QMessageBox.information(self, "成功", f"从文件中学习到 {len(learned_ids)} 条知识")
-        except Exception as e:
-            logger.error(f"学习失败: {e}")
-            QMessageBox.critical(self, "错误", f"学习失败: {e}")
+        finally:
+            self._cleanup_learn_file_thread()
+
+    def _on_learn_file_error(self, error: str) -> None:
+        logger.error("学习失败: %s", error)
+        try:
+            QMessageBox.critical(self, "错误", f"学习失败: {error}")
+        finally:
+            self._cleanup_learn_file_thread()
+
+    def _cleanup_learn_file_thread(self) -> None:
+        try:
+            if self._learn_progress is not None:
+                self._learn_progress.close()
+        except Exception:
+            pass
+        self._learn_progress = None
+
+        try:
+            if hasattr(self, "learn_file_btn") and self.learn_file_btn is not None:
+                self.learn_file_btn.setEnabled(True)
+        except Exception:
+            pass
+
+        try:
+            if self._learn_file_thread is not None:
+                self._learn_file_thread.deleteLater()
+        except Exception:
+            pass
+        self._learn_file_thread = None
 
     # ==================== 样式方法 ====================
 
@@ -940,4 +1016,3 @@ class LoreBookManagerWidget(QWidget):
                 border-color: {MD3_LIGHT_COLORS['primary']};
             }}
         """)
-

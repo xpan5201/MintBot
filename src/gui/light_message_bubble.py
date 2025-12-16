@@ -65,12 +65,14 @@ from PyQt6.QtGui import (
     QMovie,
     QPainter,
     QPainterPath,
+    QImageReader,
     QTextCursor,
     QTextOption,
 )
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 import time
 import os
 
@@ -185,10 +187,27 @@ def _get_avatar_qss(size: int, is_user: bool) -> str:
 
 
 @lru_cache(maxsize=128)
-def _load_scaled_pixmap(path: str, max_size: int) -> QPixmap:
+def _load_scaled_pixmap(path: str, max_size: int, mtime_ns: int) -> QPixmap:
     """
     读取并按需缩放图片（带 LRU 缓存），减少频繁磁盘 IO 与重复缩放开销。
     """
+    _ = mtime_ns  # 仅用于缓存键，文件变更时自动失效
+
+    # v2.46.x: 优先用 QImageReader “按目标尺寸解码”，避免 QPixmap(path) 先解码整张大图再缩放导致卡顿/内存飙升
+    try:
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        size = reader.size()
+        if size.isValid() and (size.width() > max_size or size.height() > max_size):
+            target = QSize(max_size, max_size)
+            reader.setScaledSize(size.scaled(target, Qt.AspectRatioMode.KeepAspectRatio))
+        image = reader.read()
+        if not image.isNull():
+            return QPixmap.fromImage(image)
+    except Exception:
+        pass
+
+    # 兜底：沿用旧逻辑
     pixmap = QPixmap(path)
     if pixmap.isNull():
         return pixmap
@@ -1290,6 +1309,8 @@ class LightImageMessageBubble(QWidget):
         *,
         with_animation: bool = True,
         enable_shadow: bool = True,
+        autoplay: bool = True,
+        hover_play: bool = True,
     ):
         super().__init__(parent)
         self.image_path = image_path
@@ -1298,6 +1319,12 @@ class LightImageMessageBubble(QWidget):
         self.movie = None  # 用于播放动画
         self._with_animation = bool(with_animation)
         self._enable_shadow = bool(enable_shadow)
+        self._autoplay = bool(autoplay)
+        self._hover_play = bool(hover_play)
+        self._is_animated = False
+        self._static_pixmap: Optional[QPixmap] = None
+        self._max_size = 0
+        self._animation_enabled = False
 
         # 动画参数
         self._scale = 0.85
@@ -1347,30 +1374,26 @@ class LightImageMessageBubble(QWidget):
         try:
             path = Path(self.image_path)
             max_size = 200 if self.is_sticker else 400
+            self._max_size = max_size
 
             # 检查是否为动画格式
-            if path.suffix.lower() in ['.gif', '.webp']:
-                # 使用 QMovie 播放动画
-                self.movie = QMovie(str(path))
+            suffix = path.suffix.lower()
+            self._is_animated = suffix in {".gif", ".webp"}
+            try:
+                mtime_ns = path.stat().st_mtime_ns
+            except OSError:
+                mtime_ns = 0
 
-                self.movie.setScaledSize(QSize(max_size, max_size))
-                self.image_label.setMovie(self.movie)
-                self.movie.start()
+            pixmap = _load_scaled_pixmap(str(path), max_size, mtime_ns)
+            if pixmap.isNull():
+                raise ValueError("无法加载图片")
 
-                # 获取第一帧来设置大小
-                first_frame = self.movie.currentPixmap()
-                if not first_frame.isNull():
-                    self.image_label.setFixedSize(first_frame.size())
-                else:
-                    self.image_label.setFixedSize(max_size, max_size)
-            else:
-                # 静态图片
-                pixmap = _load_scaled_pixmap(str(path), max_size)
-                if pixmap.isNull():
-                    raise ValueError("无法加载图片")
+            self._static_pixmap = pixmap
+            self.image_label.setPixmap(pixmap)
+            self.image_label.setFixedSize(pixmap.size())
 
-                self.image_label.setPixmap(pixmap)
-                self.image_label.setFixedSize(pixmap.size())
+            if self._is_animated and self._autoplay:
+                self.set_animation_enabled(True)
 
             # 设置样式 - MD3 圆角边框 + Elevation Level 2
             self.image_label.setStyleSheet(_IMAGE_LABEL_QSS)
@@ -1414,6 +1437,62 @@ class LightImageMessageBubble(QWidget):
 
         if not self.is_user:
             main_layout.addStretch()
+
+    def supports_animation(self) -> bool:
+        return bool(self._is_animated)
+
+    def wants_autoplay(self) -> bool:
+        """该气泡是否配置为“自动播放”（用于聊天窗口的动图预算策略）。"""
+        return bool(self._autoplay)
+
+    def is_animation_enabled(self) -> bool:
+        """当前是否处于播放状态（用于聊天窗口的动图预算策略）。"""
+        return bool(self._animation_enabled)
+
+    def set_animation_enabled(self, enabled: bool) -> None:
+        """启用/禁用动图播放（用于长对话性能保护）。"""
+        if not self._is_animated:
+            return
+
+        enabled = bool(enabled)
+        if enabled and self._animation_enabled:
+            # 确保运行中
+            if self.movie is not None and self.movie.state() != QMovie.MovieState.Running:
+                self.movie.start()
+            return
+        if not enabled and not self._animation_enabled:
+            return
+
+        if enabled:
+            if self.movie is None:
+                try:
+                    self.movie = QMovie(str(Path(self.image_path)))
+                    # 性能/内存：避免缓存所有帧（长对话/多动图更稳）
+                    try:
+                        self.movie.setCacheMode(QMovie.CacheMode.CacheNone)
+                    except Exception:
+                        pass
+                    if self._max_size > 0:
+                        self.movie.setScaledSize(QSize(self._max_size, self._max_size))
+                except Exception:
+                    self.movie = None
+            if self.movie is None:
+                return
+            self.image_label.setMovie(self.movie)
+            self.movie.start()
+            self._animation_enabled = True
+            return
+
+        # disable
+        self._animation_enabled = False
+        if self.movie is not None:
+            try:
+                self.movie.stop()
+            except Exception:
+                pass
+        if self._static_pixmap is not None and not self._static_pixmap.isNull():
+            self.image_label.setPixmap(self._static_pixmap)
+            self.image_label.setFixedSize(self._static_pixmap.size())
 
     def setup_animations(self):
         """设置动画 - 淡入（性能优先）"""
@@ -1484,9 +1563,26 @@ class LightImageMessageBubble(QWidget):
     def cleanup(self):
         """清理资源 - v2.19.0 新增"""
         if self.movie:
-            self.movie.stop()
-            self.movie.deleteLater()
+            try:
+                self.movie.stop()
+            except Exception:
+                pass
+            try:
+                self.movie.deleteLater()
+            except Exception:
+                pass
             self.movie = None
+        self._animation_enabled = False
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        if self._hover_play and self._is_animated:
+            self.set_animation_enabled(True)
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        if self._hover_play and self._is_animated and not self._autoplay:
+            self.set_animation_enabled(False)
 
     def hideEvent(self, event):
         """隐藏事件 - 清理动画资源"""

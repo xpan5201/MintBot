@@ -7,9 +7,14 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox
 from PyQt6.QtCore import Qt, pyqtSignal
 
+from typing import TYPE_CHECKING, Optional
+
 from .auth_window import MD3TextField, MD3Button, MD3TextButton
 from .material_design_enhanced import MD3_ENHANCED_COLORS
 from .notifications import show_toast, Toast
+
+if TYPE_CHECKING:
+    from src.auth.auth_service import AuthService
 
 
 class LoginForm(QWidget):
@@ -22,7 +27,15 @@ class LoginForm(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._auth_service: Optional["AuthService"] = None
         self.setup_ui()
+
+    def _get_auth_service(self) -> "AuthService":
+        if self._auth_service is None:
+            from src.auth.auth_service import AuthService
+
+            self._auth_service = AuthService()
+        return self._auth_service
 
     def setup_ui(self):
         """设置 UI - 优化布局和间距"""
@@ -194,9 +207,8 @@ class LoginForm(QWidget):
             self.login_btn.set_loading(True)
 
             # 执行登录
-            from src.auth.auth_service import AuthService
-            auth_service = AuthService()
             remember_me = self.remember_checkbox.isChecked()
+            auth_service = self._get_auth_service()
             success, message = auth_service.login(username, password, remember_me)
 
             # 恢复按钮状态

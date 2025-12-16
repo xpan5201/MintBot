@@ -192,7 +192,7 @@ class _ServerRuntime:
     session: Any
     session_cm: Any
     client_cm: Any
-    call_lock: asyncio.Lock
+    call_lock: asyncio.Semaphore
 
 
 class MCPManager:
@@ -292,6 +292,11 @@ class MCPManager:
         command = str(getattr(server_cfg, "command", "") or "").strip()
         args = list(getattr(server_cfg, "args", []) or [])
         env = dict(getattr(server_cfg, "env", {}) or {})
+        try:
+            max_concurrency = int(getattr(server_cfg, "max_concurrency", 1) or 1)
+        except Exception:
+            max_concurrency = 1
+        max_concurrency = max(1, min(32, max_concurrency))
 
         if not command:
             logger.warning("MCP server=%s 未配置 command，已跳过", name)
@@ -323,7 +328,7 @@ class MCPManager:
                 session=session,
                 session_cm=session_cm,
                 client_cm=client_cm,
-                call_lock=asyncio.Lock(),
+                call_lock=asyncio.Semaphore(max_concurrency),
             )
             return runtime, adapted
         except Exception as exc:
@@ -388,7 +393,8 @@ class MCPManager:
         return adapted
 
     async def call_tool_async(self, server: str, tool_name: str, arguments: Dict[str, Any]) -> str:
-        runtime = self._servers.get(server)
+        with self._state_lock:
+            runtime = self._servers.get(server)
         if runtime is None:
             return f"MCP server '{server}' 未初始化或不存在"
 

@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import sys
 import aiohttp
 from typing import Optional, Dict, Any
 from src.utils.logger import get_logger
@@ -49,17 +50,21 @@ class HTTPConnectionPool:
         if self._session is not None and not self._session.closed:
             return
         
+        connector_kwargs: dict[str, Any] = {
+            "limit": 100,  # 全局最大连接数
+            "limit_per_host": 30,  # 单主机最大连接数
+            "ttl_dns_cache": 600,  # DNS缓存10分钟
+            "keepalive_timeout": 60,  # Keep-Alive超时60秒
+            "force_close": False,  # 启用连接复用
+            "use_dns_cache": True,  # 启用DNS缓存
+            "family": 0,  # 自动选择IPv4/IPv6
+        }
+        # Python 3.13.5+ 已修复底层问题，aiohttp 会忽略并给出弃用警告
+        if sys.version_info < (3, 13, 5):
+            connector_kwargs["enable_cleanup_closed"] = True
+
         # 优化的TCP连接器
-        self._connector = aiohttp.TCPConnector(
-            limit=100,  # 全局最大连接数
-            limit_per_host=30,  # 单主机最大连接数
-            ttl_dns_cache=600,  # DNS缓存10分钟
-            keepalive_timeout=60,  # Keep-Alive超时60秒
-            force_close=False,  # 启用连接复用
-            enable_cleanup_closed=True,  # 自动清理关闭的连接
-            use_dns_cache=True,  # 启用DNS缓存
-            family=0,  # 自动选择IPv4/IPv6
-        )
+        self._connector = aiohttp.TCPConnector(**connector_kwargs)
         
         # 创建HTTP会话
         self._session = aiohttp.ClientSession(
@@ -144,4 +149,3 @@ class HTTPConnectionPool:
 async def get_http_pool() -> HTTPConnectionPool:
     """获取全局HTTP连接池"""
     return await HTTPConnectionPool.get_instance()
-
