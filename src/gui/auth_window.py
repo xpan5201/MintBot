@@ -18,6 +18,7 @@ from .material_design_enhanced import (
     MD3_ENHANCED_EASING, get_elevation_shadow, get_typography_css
 )
 from .material_icons import MATERIAL_ICONS
+from .qss_utils import qss_rgba
 from ..auth import AuthService
 from src.utils.logger import get_logger
 
@@ -210,6 +211,8 @@ class MD3Button(QPushButton):
             """)
         else:
             # 轮廓按钮（Outlined Button）
+            hover_bg = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.08)
+            pressed_bg = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.16)
             self.setStyleSheet(f"""
                 QPushButton {{
                     background: transparent;
@@ -223,11 +226,11 @@ class MD3Button(QPushButton):
                     letter-spacing: 0.5px;
                 }}
                 QPushButton:hover {{
-                    background: rgba(38, 166, 154, 0.08);
+                    background: {hover_bg};
                     border: 2px solid {MD3_ENHANCED_COLORS['primary']};
                 }}
                 QPushButton:pressed {{
-                    background: rgba(38, 166, 154, 0.16);
+                    background: {pressed_bg};
                 }}
                 QPushButton:disabled {{
                     background: transparent;
@@ -262,6 +265,8 @@ class MD3TextButton(QPushButton):
         super().__init__(text, parent)
 
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        hover_bg = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.08)
+        pressed_bg = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.12)
         self.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
@@ -273,11 +278,11 @@ class MD3TextButton(QPushButton):
                 font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
             }}
             QPushButton:hover {{
-                background: rgba(38, 166, 154, 0.08);
+                background: {hover_bg};
                 border-radius: {MD3_ENHANCED_RADIUS['sm']};
             }}
             QPushButton:pressed {{
-                background: rgba(38, 166, 154, 0.12);
+                background: {pressed_bg};
             }}
         """)
 

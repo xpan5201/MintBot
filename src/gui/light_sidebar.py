@@ -32,6 +32,14 @@ from .material_design_enhanced import (
     get_elevation_shadow
 )
 from .material_icons import MaterialIconButton, MATERIAL_ICONS
+from .theme_manager import is_anime_theme
+from .qss_utils import qss_rgba
+
+ANIME_THEME_ENABLED = is_anime_theme()
+_SIDEBAR_HOVER_0 = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.08)
+_SIDEBAR_HOVER_1 = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.12)
+_SIDEBAR_PRESSED_0 = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.15)
+_SIDEBAR_PRESSED_1 = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.20)
 
 
 class IconButton(QPushButton):
@@ -102,15 +110,15 @@ class IconButton(QPushButton):
             QPushButton:hover {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(38, 166, 154, 0.08),
-                    stop:1 rgba(38, 166, 154, 0.12)
+                    stop:0 {_SIDEBAR_HOVER_0},
+                    stop:1 {_SIDEBAR_HOVER_1}
                 );
             }}
             QPushButton:pressed {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(38, 166, 154, 0.15),
-                    stop:1 rgba(38, 166, 154, 0.20)
+                    stop:0 {_SIDEBAR_PRESSED_0},
+                    stop:1 {_SIDEBAR_PRESSED_1}
                 );
             }}
         """)
@@ -203,14 +211,18 @@ class IconButton(QPushButton):
 
         # 绘制悬停状态
         if self.hover_opacity > 0 and not self.isChecked():
-            hover_color = QColor(0, 0, 0, int(self.hover_opacity * 255))
+            base = QColor(MD3_ENHANCED_COLORS["primary"]) if ANIME_THEME_ENABLED else QColor(0, 0, 0)
+            base.setAlpha(int(self.hover_opacity * 255))
+            hover_color = base
             painter.setBrush(QBrush(hover_color))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(self.rect(), 12, 12)
 
         # 绘制涟漪效果
         if self.ripple_active and self.ripple_opacity > 0:
-            ripple_color = QColor(0, 0, 0, int(self.ripple_opacity * 255))
+            base = QColor(MD3_ENHANCED_COLORS["primary"]) if ANIME_THEME_ENABLED else QColor(0, 0, 0)
+            base.setAlpha(int(self.ripple_opacity * 255))
+            ripple_color = base
             painter.setBrush(QBrush(ripple_color))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(

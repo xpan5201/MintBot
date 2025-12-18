@@ -159,6 +159,82 @@ MD3_ENHANCED_COLORS = {
     "frosted_glass_strong": "rgba(200, 243, 232, 0.95)",
 }
 
+
+def _apply_color_overrides(
+    base: dict[str, str],
+    overrides: dict[str, str],
+) -> dict[str, str]:
+    merged = dict(base)
+    merged.update(overrides)
+    return merged
+
+
+_ANIME_ENHANCED_COLOR_OVERRIDES: dict[str, str] = {
+    # Anime / Kawaii: Sakura Pink + Lavender + Sky Blue (保持 key 兼容)
+    "primary_10": "#FFF0F7",
+    "primary_20": "#FFE3F1",
+    "primary_30": "#FFD2E6",
+    "primary_40": "#FFB3D3",
+    "primary_50": "#FF6FAE",
+    "primary_60": "#FF4F9E",
+    "primary_70": "#FF2D8D",
+    "primary_80": "#C2185B",
+    "primary": "#FF6FAE",
+    "on_primary": "#FFFFFF",
+    "primary_container": "#FFE3F1",
+    "on_primary_container": "#5A1235",
+
+    "secondary_20": "#ECEAFF",
+    "secondary_30": "#DAD6FF",
+    "secondary_40": "#B1A8FF",
+    "secondary_50": "#8B7DFF",
+    "secondary": "#8B7DFF",
+    "secondary_container": "#ECEAFF",
+    "on_secondary_container": "#2A1A5C",
+
+    "tertiary_20": "#DDF3FF",
+    "tertiary_30": "#C7E8FF",
+    "tertiary_40": "#8FD1FF",
+    "tertiary_50": "#5AB6FF",
+    "tertiary": "#5AB6FF",
+    "tertiary_container": "#DDF3FF",
+    "on_tertiary_container": "#0B375C",
+
+    "surface": "#FFFCFE",
+    "surface_bright": "#FFFFFF",
+    "surface_container_low": "#FFF7FB",
+    "surface_container": "#FFF2FA",
+    "surface_container_high": "#FFE3F1",
+    "surface_container_highest": "#FFD2E6",
+    "on_surface_variant": "#4A3E49",
+
+    "background": "#FFF7FB",
+    "outline": "#F1C3DA",
+    "outline_variant": "#F6D8E7",
+
+    # 渐变色：从薄荷系切换到樱花/薰衣草系
+    "gradient_primary": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFB3D3, stop:1 #FF6FAE)",
+    "gradient_primary_vertical": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFB3D3, stop:1 #FF6FAE)",
+    "gradient_secondary": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #DAD6FF, stop:1 #8B7DFF)",
+    "gradient_tertiary": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #C7E8FF, stop:1 #5AB6FF)",
+    "gradient_surface": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFF7FB, stop:1 #FFE3F1)",
+    "gradient_mint_soft": "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFF2FA, stop:1 #ECEAFF)",
+
+    "frosted_glass_light": "rgba(255, 252, 254, 0.85)",
+    "frosted_glass": "rgba(255, 247, 251, 0.90)",
+    "frosted_glass_medium": "rgba(255, 242, 250, 0.92)",
+    "frosted_glass_strong": "rgba(255, 227, 241, 0.95)",
+}
+
+try:
+    from .theme_manager import is_anime_theme
+
+    if is_anime_theme():
+        MD3_ENHANCED_COLORS = _apply_color_overrides(MD3_ENHANCED_COLORS, _ANIME_ENHANCED_COLOR_OVERRIDES)
+except Exception:
+    # Theme is an optional layer; fall back to default colors on any import/config error.
+    pass
+
 # ============================================================================
 # Material Design 3 增强排版系统
 # ============================================================================
@@ -310,6 +386,32 @@ MD3_ENHANCED_RADIUS = {
     "extra_large": "28px",
     "circle": "9999px",
 }
+
+try:
+    from .theme_manager import is_anime_theme
+
+    if is_anime_theme():
+        # Anime / Kawaii: softer, rounder corners (keep keys compatible).
+        MD3_ENHANCED_RADIUS = {
+            "none": "0px",
+            "xs": "3px",
+            "sm": "6px",
+            "md": "10px",
+            "lg": "14px",
+            "xl": "18px",
+            "2xl": "22px",
+            "3xl": "32px",
+            "full": "9999px",
+
+            "extra_small": "6px",
+            "small": "10px",
+            "medium": "14px",
+            "large": "18px",
+            "extra_large": "32px",
+            "circle": "9999px",
+        }
+except Exception:
+    pass
 
 
 # ============================================================================

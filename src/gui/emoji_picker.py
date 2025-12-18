@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QLabel,
     QScrollArea,
+    QAbstractScrollArea,
     QTabWidget,
     QGraphicsDropShadowEffect,
     QLineEdit,
@@ -44,12 +45,11 @@ from PyQt6.QtCore import (
     QPropertyAnimation,
     QEasingCurve,
     pyqtProperty,
-    QTimer,
     QParallelAnimationGroup,
     QSequentialAnimationGroup,
     QSize,
 )
-from PyQt6.QtGui import QFont, QColor, QPixmap, QMovie, QIcon
+from PyQt6.QtGui import QFont, QColor, QPixmap, QMovie, QIcon, QImageReader
 from pathlib import Path
 from typing import Optional, List, Dict
 import json
@@ -65,6 +65,7 @@ from .material_design_enhanced import (
     get_typography_css,
     get_elevation_shadow,
 )
+from .material_icons import MaterialIconButton, MaterialIcon
 
 
 _STICKER_BUTTON_SIZE = 70
@@ -76,15 +77,31 @@ _STICKER_ANIM_EXTS = {".gif", ".webp"}
 def _load_sticker_preview_pixmap(path: str, size: int, mtime_ns: int) -> QPixmap:
     """加载表情包预览图（LRU缓存，含 mtime 失效键）。"""
     _ = mtime_ns  # 仅用于缓存键，文件变更时自动失效
+    # 性能：优先用 QImageReader 按目标尺寸解码，避免先解码大图再缩放导致卡顿/内存飙升
+    try:
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        original = reader.size()
+        if original.isValid() and (original.width() > size or original.height() > size):
+            target = QSize(size, size)
+            reader.setScaledSize(original.scaled(target, Qt.AspectRatioMode.KeepAspectRatio))
+        image = reader.read()
+        if not image.isNull():
+            return QPixmap.fromImage(image)
+    except Exception:
+        pass
+
     pixmap = QPixmap(path)
     if pixmap.isNull():
         return pixmap
-    return pixmap.scaled(
-        size,
-        size,
-        Qt.AspectRatioMode.KeepAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
-    )
+    if pixmap.width() > size or pixmap.height() > size:
+        pixmap = pixmap.scaled(
+            size,
+            size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+    return pixmap
 
 
 # 表情分类
@@ -294,6 +311,8 @@ EMOJI_CATEGORIES = {
         "♈",
     ],
 }
+
+_ALL_EMOJIS = frozenset(emoji for emojis in EMOJI_CATEGORIES.values() for emoji in emojis)
 
 
 class EmojiButton(QPushButton):
@@ -654,9 +673,10 @@ class EmojiPicker(QWidget):
         self.recent_emojis = []  # 最近使用的表情
         self.favorite_emojis = set()  # 收藏的表情
         self.custom_stickers = []  # 自定义表情包
-        self.search_results = []  # 搜索结果
+        self.search_results = []  # 搜索结果（emoji/sticker 混合）
         self._sticker_caption_threads = []  # 后台生成表情包说明标签的线程引用（避免被 GC）
         self._sticker_caption_in_progress = set()  # sticker_id 去重，避免重复生成 caption
+        self._lazy_tab_builders: dict[int, dict[str, object]] = {}
 
         # 加载用户数据
         self.load_user_data()
@@ -774,7 +794,18 @@ class EmojiPicker(QWidget):
         top_bar = QHBoxLayout()
 
         # 标题 - v2.19.2 优化：更大更醒目
-        title = QLabel("✨ 表情包")
+        title_icon = MaterialIcon("emoji_emotions", size=22)
+        title_icon.setStyleSheet(
+            f"""
+            QLabel {{
+                color: {MD3_ENHANCED_COLORS['on_surface']};
+                background: transparent;
+            }}
+        """
+        )
+        top_bar.addWidget(title_icon)
+
+        title = QLabel("表情包")
         title.setStyleSheet(
             f"""
             QLabel {{
@@ -791,25 +822,25 @@ class EmojiPicker(QWidget):
 
         # 上传按钮 - v2.19.2 优化：更大更醒目
         if self.user_id:
-            upload_btn = QToolButton()
-            upload_btn.setText("📤")
+            upload_btn = MaterialIconButton("add", "上传自定义表情包", size=44, icon_size=22)
             upload_btn.setToolTip("上传自定义表情包")
             upload_btn.setFixedSize(44, 44)
             upload_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             upload_btn.setStyleSheet(
                 f"""
-                QToolButton {{
+                QPushButton {{
                     background: {MD3_ENHANCED_COLORS['primary_container']};
                     color: {MD3_ENHANCED_COLORS['on_primary_container']};
                     border: none;
                     border-radius: {MD3_ENHANCED_RADIUS['xl']};
-                    font-size: 22px;
                 }}
-                QToolButton:hover {{
+                QPushButton:hover {{
                     background: {MD3_ENHANCED_COLORS['primary']};
+                    color: {MD3_ENHANCED_COLORS['on_primary']};
                 }}
-                QToolButton:pressed {{
+                QPushButton:pressed {{
                     background: {MD3_ENHANCED_COLORS['primary_60']};
+                    color: {MD3_ENHANCED_COLORS['on_primary']};
                 }}
             """
             )
@@ -834,11 +865,11 @@ class EmojiPicker(QWidget):
         search_layout.setSpacing(12)
 
         # 搜索图标
-        search_icon = QLabel("🔍")
+        search_icon = MaterialIcon("search", size=18)
         search_icon.setStyleSheet(
             f"""
             QLabel {{
-                font-size: 18px;
+                color: {MD3_ENHANCED_COLORS['on_surface_variant']};
                 background: transparent;
             }}
         """
@@ -865,6 +896,53 @@ class EmojiPicker(QWidget):
         search_layout.addWidget(self.search_input)
 
         container_layout.addWidget(search_container)
+
+        # 搜索结果区域（默认隐藏）：搜索时显示，避免破坏 tab 结构并减少重建开销
+        self.search_results_area = QScrollArea()
+        self.search_results_area.setWidgetResizable(True)
+        try:
+            if hasattr(self.search_results_area, "setViewportUpdateMode"):
+                self.search_results_area.setViewportUpdateMode(
+                    QAbstractScrollArea.ViewportUpdateMode.MinimalViewportUpdate
+                )
+        except Exception:
+            pass
+        self.search_results_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.search_results_area.setStyleSheet(
+            f"""
+            QScrollArea {{
+                border: none;
+                background: transparent;
+            }}
+            QScrollBar:vertical {{
+                background: {MD3_ENHANCED_COLORS['surface_container']};
+                width: 10px;
+                border-radius: 5px;
+                margin: 2px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {MD3_ENHANCED_COLORS['on_surface_variant']};
+                border-radius: 5px;
+                min-height: 30px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {MD3_ENHANCED_COLORS['primary']};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+        """
+        )
+        self.search_results_area.hide()
+
+        self._search_results_widget = QWidget()
+        self._search_results_grid = QGridLayout(self._search_results_widget)
+        self._search_results_grid.setSpacing(8)
+        self._search_results_grid.setContentsMargins(8, 8, 8, 8)
+        self.search_results_area.setWidget(self._search_results_widget)
+        container_layout.addWidget(self.search_results_area)
 
         # 标签页 - v2.19.2 优化样式：更现代的设计
         self.tab_widget = QTabWidget()
@@ -899,42 +977,132 @@ class EmojiPicker(QWidget):
         """
         )
 
-        # 添加最近使用标签页
-        if self.recent_emojis:
-            recent_scroll = self.create_emoji_grid(self.recent_emojis[:32], is_recent=True)
-            self.tab_widget.addTab(recent_scroll, "⏱️ 最近")
-
-        # 添加收藏标签页
-        if self.favorite_emojis:
-            favorite_scroll = self.create_emoji_grid(list(self.favorite_emojis), is_favorite=True)
-            self.tab_widget.addTab(favorite_scroll, "⭐ 收藏")
-
-        # 添加自定义表情包标签页
-        if self.custom_stickers:
-            custom_scroll = self.create_custom_sticker_grid()
-            self.tab_widget.addTab(custom_scroll, "🖼️ 自定义")
-
-        # 添加表情分类
-        for category, emojis in EMOJI_CATEGORIES.items():
-            scroll_area = self.create_emoji_grid(emojis)
-            self.tab_widget.addTab(scroll_area, category)
+        # 标签页内容按需创建：减少首次打开时的 widget 数量与动画对象，提升弹窗打开速度
+        self._build_tabs()
 
         container_layout.addWidget(self.tab_widget)
 
         layout.addWidget(container)
 
+    def _create_tab_placeholder(self, text: str) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 24, 0, 0)
+        layout.setSpacing(12)
+
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet(
+            f"""
+            QLabel {{
+                color: {MD3_ENHANCED_COLORS['on_surface_variant']};
+                {get_typography_css('body_medium')}
+                background: transparent;
+            }}
+        """
+        )
+        layout.addWidget(label)
+        layout.addStretch()
+        return widget
+
+    def _build_tabs(self) -> None:
+        """构建/重建标签页（类别页按需延迟创建）。"""
+        try:
+            self._lazy_tab_builders.clear()
+        except Exception:
+            self._lazy_tab_builders = {}
+
+        # 最近使用
+        if self.recent_emojis:
+            recent_scroll = self.create_emoji_grid(self.recent_emojis[:32])
+            self.tab_widget.addTab(recent_scroll, "最近")
+
+        # 收藏
+        if self.favorite_emojis:
+            favorite_scroll = self.create_emoji_grid(list(self.favorite_emojis))
+            self.tab_widget.addTab(favorite_scroll, "收藏")
+
+        # 自定义（始终显示；内容按需创建）
+        custom_placeholder = self._create_tab_placeholder("加载自定义表情包…")
+        custom_index = self.tab_widget.addTab(custom_placeholder, "自定义")
+        self._lazy_tab_builders[custom_index] = {"kind": "custom"}
+
+        # 分类（按需创建）
+        for category, emojis in EMOJI_CATEGORIES.items():
+            placeholder = self._create_tab_placeholder("加载中…")
+            idx = self.tab_widget.addTab(placeholder, category)
+            self._lazy_tab_builders[idx] = {"kind": "emoji", "emojis": emojis}
+
+        try:
+            self.tab_widget.currentChanged.disconnect(self._on_tab_changed)
+        except Exception:
+            pass
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+        self._on_tab_changed(self.tab_widget.currentIndex())
+
+    def _on_tab_changed(self, index: int) -> None:
+        """懒加载标签页内容：首次切换到该页时才创建滚动网格。"""
+        try:
+            builder = self._lazy_tab_builders.pop(int(index), None)
+        except Exception:
+            builder = None
+        if not builder:
+            return
+
+        placeholder = self.tab_widget.widget(index)
+        label = self.tab_widget.tabText(index)
+
+        kind = str(builder.get("kind") or "")
+        if kind == "custom":
+            new_widget = self.create_custom_sticker_grid()
+        else:
+            emojis = builder.get("emojis") or []
+            new_widget = self.create_emoji_grid(list(emojis))
+
+        old_block = self.tab_widget.blockSignals(True)
+        try:
+            self.tab_widget.removeTab(index)
+            self.tab_widget.insertTab(index, new_widget, label)
+        finally:
+            self.tab_widget.blockSignals(old_block)
+
+        try:
+            self.tab_widget.setCurrentIndex(index)
+        except Exception:
+            pass
+
+        if placeholder is not None:
+            try:
+                placeholder.deleteLater()
+            except Exception:
+                pass
+
+    def _set_search_active(self, active: bool) -> None:
+        """切换搜索结果视图与分类标签页视图。"""
+        try:
+            self.search_results_area.setVisible(bool(active))
+            self.tab_widget.setVisible(not bool(active))
+        except Exception:
+            pass
+
     def create_emoji_grid(
-        self, emojis: list, is_recent: bool = False, is_favorite: bool = False
+        self, emojis: list
     ) -> QScrollArea:
         """创建表情网格
 
         Args:
             emojis: 表情列表
-            is_recent: 是否为最近使用
-            is_favorite: 是否为收藏
         """
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        # 性能：减少滚动时的无效重绘（不同 PyQt 版本可能不提供该 API，需兼容）
+        try:
+            if hasattr(scroll_area, "setViewportUpdateMode"):
+                scroll_area.setViewportUpdateMode(
+                    QAbstractScrollArea.ViewportUpdateMode.MinimalViewportUpdate
+                )
+        except Exception:
+            pass
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_area.setStyleSheet(
             f"""
@@ -1005,6 +1173,14 @@ class EmojiPicker(QWidget):
         """
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        # 性能：减少滚动时的无效重绘（不同 PyQt 版本可能不提供该 API，需兼容）
+        try:
+            if hasattr(scroll_area, "setViewportUpdateMode"):
+                scroll_area.setViewportUpdateMode(
+                    QAbstractScrollArea.ViewportUpdateMode.MinimalViewportUpdate
+                )
+        except Exception:
+            pass
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_area.setStyleSheet(
             f"""
@@ -1364,84 +1540,133 @@ class EmojiPicker(QWidget):
             self.refresh_ui()
 
     def on_search_changed(self, text: str):
-        """搜索文本变化"""
-        if not text.strip():
-            # 清空搜索，显示所有分类
+        """搜索文本变化（优先匹配：自定义表情包 caption/文件名、分类名称、直接输入 emoji）。"""
+        query = (text or "").strip()
+        if not query:
             self.search_results = []
+            self._set_search_active(False)
             return
 
-        # 搜索表情
-        text = text.lower()
-        results = []
+        q = query.lower()
+        results: list[dict[str, object]] = []
 
-        # 如果搜索框为空，显示所有表情
-        if not text:
-            for category, emojis in EMOJI_CATEGORIES.items():
-                results.extend(emojis)
-        else:
-            # 根据分类名称和表情内容搜索
-            for category, emojis in EMOJI_CATEGORIES.items():
-                # 如果分类名称匹配，添加该分类的所有表情
-                if text in category.lower():
-                    results.extend(emojis)
-                else:
-                    # 否则只添加匹配的表情（这里简化处理，实际可以根据表情名称搜索）
-                    results.extend(emojis)
+        # 1) 自定义表情包：匹配 caption 或文件名
+        for sticker in list(getattr(self, "custom_stickers", []) or []):
+            try:
+                caption = str(sticker.get("caption") or "")
+                name = str(sticker.get("name") or "")
+                if q in caption.lower() or q in name.lower():
+                    results.append({"type": "sticker", "sticker": sticker})
+            except Exception:
+                continue
 
-        self.search_results = results[:50]  # 限制结果数量
+        # 2) 分类名称匹配：返回该分类下的所有 emoji
+        for category, emojis in EMOJI_CATEGORIES.items():
+            try:
+                if q in str(category).lower():
+                    for emoji in emojis:
+                        results.append({"type": "emoji", "emoji": emoji})
+            except Exception:
+                continue
 
-        # 更新显示搜索结果
+        # 3) 直接输入 emoji：如果命中已知表情，提升到最前
+        if query in _ALL_EMOJIS:
+            results.insert(0, {"type": "emoji", "emoji": query})
+
+        # 去重（保持顺序）
+        emoji_seen: set[str] = set()
+        sticker_seen: set[str] = set()
+        deduped: list[dict[str, object]] = []
+        for item in results:
+            kind = str(item.get("type") or "")
+            if kind == "emoji":
+                emoji = str(item.get("emoji") or "")
+                if not emoji or emoji in emoji_seen:
+                    continue
+                emoji_seen.add(emoji)
+                deduped.append(item)
+                continue
+
+            if kind == "sticker":
+                sticker = item.get("sticker") or {}
+                try:
+                    key = str(sticker.get("id") or sticker.get("path") or "")
+                except Exception:
+                    key = ""
+                if not key or key in sticker_seen:
+                    continue
+                sticker_seen.add(key)
+                deduped.append(item)
+
+        self.search_results = deduped[:64]
         self._update_search_results_display()
+        self._set_search_active(True)
 
     def _update_search_results_display(self) -> None:
-        """更新搜索结果显示 (v2.27.2: 实现搜索结果显示)"""
-        # 如果没有搜索结果，不做任何操作
-        if not hasattr(self, "search_results") or not self.search_results:
+        """更新搜索结果显示（使用独立滚动区域，避免破坏 tab 内容结构）。"""
+        grid = getattr(self, "_search_results_grid", None)
+        if grid is None:
             return
 
-        # 切换到第一个标签页（通常是"全部"或"最近使用"）
-        # 并更新其内容为搜索结果
-        if self.tabs.count() > 0:
-            # 获取第一个标签页的内容区域
-            first_tab = self.tabs.widget(0)
-            if first_tab:
-                # 清空现有内容
-                layout = first_tab.layout()
-                if layout:
-                    # 清空布局中的所有小部件
-                    while layout.count():
-                        item = layout.takeAt(0)
-                        if item.widget():
-                            item.widget().deleteLater()
+        # 清空旧内容
+        while grid.count():
+            item = grid.takeAt(0)
+            widget = item.widget() if item else None
+            if widget is not None:
+                widget.deleteLater()
 
-                    # 添加搜索结果
-                    scroll_area = QScrollArea()
-                    scroll_area.setWidgetResizable(True)
-                    scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-                    scroll_area.setStyleSheet(
-                        """
-                        QScrollArea {
-                            border: none;
-                            background: transparent;
-                        }
-                    """
-                    )
+        results = list(getattr(self, "search_results", []) or [])
+        if not results:
+            empty = QLabel("未找到匹配结果")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty.setStyleSheet(
+                f"""
+                QLabel {{
+                    color: {MD3_ENHANCED_COLORS['on_surface_variant']};
+                    {get_typography_css('body_medium')}
+                    background: transparent;
+                    padding: 24px 0;
+                }}
+            """
+            )
+            grid.addWidget(empty, 0, 0)
+            return
 
-                    content_widget = QWidget()
-                    grid_layout = QGridLayout(content_widget)
-                    grid_layout.setSpacing(8)
-                    grid_layout.setContentsMargins(16, 16, 16, 16)
+        cols = 7
+        for idx, item in enumerate(results):
+            row = idx // cols
+            col = idx % cols
+            kind = str(item.get("type") or "")
 
-                    # 添加搜索结果表情按钮
-                    for i, emoji in enumerate(self.search_results):
-                        row = i // 8
-                        col = i % 8
-                        btn = EmojiButton(emoji)
-                        btn.clicked.connect(lambda checked, e=emoji: self.emoji_selected.emit(e))
-                        grid_layout.addWidget(btn, row, col)
+            if kind == "sticker":
+                sticker = item.get("sticker") or {}
+                try:
+                    sticker_id = str(sticker.get("id") or "")
+                except Exception:
+                    sticker_id = ""
+                try:
+                    sticker_path = str(sticker.get("path") or "")
+                except Exception:
+                    sticker_path = ""
 
-                    scroll_area.setWidget(content_widget)
-                    layout.addWidget(scroll_area)
+                if sticker_id and sticker_path:
+                    btn = CustomStickerButton(sticker_path, sticker_id)
+                    btn.clicked.connect(lambda checked=False, s=sticker: self.on_sticker_clicked(s))
+                    btn.delete_requested.connect(self.on_sticker_delete_requested)
+                    grid.addWidget(btn, row, col)
+                continue
+
+            emoji = str(item.get("emoji") or "")
+            if not emoji:
+                continue
+            is_fav = emoji in getattr(self, "favorite_emojis", set())
+            btn = EmojiButton(emoji, is_favorite=is_fav)
+            btn.clicked.connect(lambda checked=False, e=emoji: self.on_emoji_clicked(e))
+            btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            btn.customContextMenuRequested.connect(
+                lambda pos, e=emoji, b=btn: self.show_emoji_context_menu(e, b, pos)
+            )
+            grid.addWidget(btn, row, col)
 
     def upload_custom_sticker(self):
         """上传自定义表情包 - v2.29.1 修复版
@@ -1847,23 +2072,7 @@ class EmojiPicker(QWidget):
         """刷新界面 - v2.29.1 优化版"""
         # 清空标签页
         self._dispose_tabs()
-
-        # 重新添加标签页
-        if self.recent_emojis:
-            recent_scroll = self.create_emoji_grid(self.recent_emojis[:32], is_recent=True)
-            self.tab_widget.addTab(recent_scroll, "⏱️ 最近")
-
-        if self.favorite_emojis:
-            favorite_scroll = self.create_emoji_grid(list(self.favorite_emojis), is_favorite=True)
-            self.tab_widget.addTab(favorite_scroll, "⭐ 收藏")
-
-        # 自定义表情包标签页始终显示（即使为空）
-        custom_scroll = self.create_custom_sticker_grid()
-        self.tab_widget.addTab(custom_scroll, "🖼️ 自定义")
-
-        for category, emojis in EMOJI_CATEGORIES.items():
-            scroll_area = self.create_emoji_grid(emojis)
-            self.tab_widget.addTab(scroll_area, category)
+        self._build_tabs()
 
     def save_user_data(self):
         """保存用户数据 - v2.29.5 修复"""

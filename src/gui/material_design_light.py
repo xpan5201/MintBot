@@ -103,6 +103,75 @@ MD3_LIGHT_COLORS = {
     "frosted_glass_dark": "rgba(216, 243, 237, 0.94)",  # 半透明薄荷绿（更深）
 }
 
+
+def _apply_color_overrides(
+    base: dict[str, str],
+    overrides: dict[str, str],
+) -> dict[str, str]:
+    merged = dict(base)
+    merged.update(overrides)
+    return merged
+
+
+_ANIME_LIGHT_COLOR_OVERRIDES: dict[str, str] = {
+    # Anime / Kawaii: Sakura Pink + Lavender + Sky Blue
+    "primary": "#FF6FAE",
+    "primary_light": "#FF9FCB",
+    "primary_lighter": "#FFD2E6",
+    "on_primary": "#FFFFFF",
+    "primary_container": "#FFE3F1",
+    "primary_container_dark": "#FFD2E6",
+    "on_primary_container": "#5A1235",
+
+    "secondary": "#8B7DFF",
+    "secondary_light": "#B1A8FF",
+    "secondary_lighter": "#DAD6FF",
+    "on_secondary": "#FFFFFF",
+    "secondary_container": "#ECEAFF",
+    "on_secondary_container": "#2A1A5C",
+
+    "tertiary": "#5AB6FF",
+    "tertiary_light": "#8FD1FF",
+    "tertiary_lighter": "#C7E8FF",
+    "on_tertiary": "#FFFFFF",
+    "tertiary_container": "#DDF3FF",
+    "on_tertiary_container": "#0B375C",
+
+    "surface": "#FFFCFE",
+    "surface_dim": "#FFF2FA",
+    "surface_container_low": "#FFF7FB",
+    "surface_container": "#FFF2FA",
+    "surface_container_high": "#FFE3F1",
+    "surface_container_highest": "#FFD2E6",
+    "on_surface_variant": "#4A3E49",
+
+    "background": "#FFF7FB",
+    "outline": "#F1C3DA",
+    "outline_variant": "#F6D8E7",
+
+    # Keep key names for compatibility; update stops for anime feel.
+    "gradient_mint_cyan": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FF9FCB, stop:1 #B1A8FF)",
+    "gradient_cyan_blue": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #B1A8FF, stop:1 #8FD1FF)",
+    "gradient_mint_blue": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FF9FCB, stop:1 #8FD1FF)",
+    "gradient_light_mint": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFF7FB, stop:1 #FFE3F1)",
+    "gradient_soft_mint": "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFF2FA, stop:1 #ECEAFF)",
+    "gradient_mint_vertical": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFD2E6, stop:1 #FFE3F1)",
+    "gradient_mint_radial": "qlineargradient(x1:0.5, y1:0.5, x2:1, y2:1, stop:0 #FFD2E6, stop:1 #B1A8FF)",
+
+    "frosted_glass": "rgba(255, 247, 251, 0.90)",
+    "frosted_glass_mint": "rgba(255, 227, 241, 0.92)",
+    "frosted_glass_dark": "rgba(255, 210, 230, 0.94)",
+}
+
+try:
+    from .theme_manager import is_anime_theme
+
+    if is_anime_theme():
+        MD3_LIGHT_COLORS = _apply_color_overrides(MD3_LIGHT_COLORS, _ANIME_LIGHT_COLOR_OVERRIDES)
+except Exception:
+    # Theme is an optional layer; fall back to default colors on any import/config error.
+    pass
+
 # ============================================================================
 # Material Design 3 阴影系统（浅色主题）
 # ============================================================================
@@ -145,6 +214,22 @@ MD3_RADIUS = {
     "extra_large": "28px",
     "full": "9999px",  # 完全圆形
 }
+
+try:
+    from .theme_manager import is_anime_theme
+
+    if is_anime_theme():
+        # Anime / Kawaii: slightly rounder corners for a softer look.
+        MD3_RADIUS = {
+            "extra_small": "6px",
+            "small": "10px",
+            "medium": "14px",
+            "large": "18px",
+            "extra_large": "32px",
+            "full": "9999px",
+        }
+except Exception:
+    pass
 
 # ============================================================================
 # Material Design 3 动画时长系统（与深色主题相同）

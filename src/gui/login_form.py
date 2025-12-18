@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Optional
 from .auth_window import MD3TextField, MD3Button, MD3TextButton
 from .material_design_enhanced import MD3_ENHANCED_COLORS
 from .notifications import show_toast, Toast
+from .qss_utils import qss_rgba
 
 if TYPE_CHECKING:
     from src.auth.auth_service import AuthService
@@ -121,6 +122,7 @@ class LoginForm(QWidget):
 
         self.remember_checkbox = QCheckBox("记住我")
         self.remember_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+        indicator_hover_bg = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.08)
         self.remember_checkbox.setStyleSheet(f"""
             QCheckBox {{
                 color: {MD3_ENHANCED_COLORS['on_surface_variant']};
@@ -136,7 +138,7 @@ class LoginForm(QWidget):
             }}
             QCheckBox::indicator:hover {{
                 border: 2px solid {MD3_ENHANCED_COLORS['primary']};
-                background: rgba(38, 166, 154, 0.08);
+                background: {indicator_hover_bg};
             }}
             QCheckBox::indicator:checked {{
                 background: {MD3_ENHANCED_COLORS['primary']};

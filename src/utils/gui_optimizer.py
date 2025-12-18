@@ -76,7 +76,7 @@ class ThrottledSignal(QObject):
 
     def trigger(self):
         """触发信号（会被节流）"""
-        current_time = time.time() * 1000  # 转换为毫秒
+        current_time = time.monotonic() * 1000  # 转换为毫秒（单调时钟，避免系统时间跳变）
 
         if current_time - self._last_trigger_time >= self.interval_ms:
             # 可以立即触发
@@ -93,7 +93,7 @@ class ThrottledSignal(QObject):
     def _on_timeout(self):
         """定时器超时"""
         if self._pending:
-            self._last_trigger_time = time.time() * 1000
+            self._last_trigger_time = time.monotonic() * 1000
             self.triggered.emit()
             self._pending = False
 
@@ -114,22 +114,32 @@ def debounce(delay_ms: int = 300):
 
     def decorator(func: Callable) -> Callable:
         timer_attr = f"_debounce_timer_{func.__name__}"
+        args_attr = f"_debounce_args_{func.__name__}"
+        kwargs_attr = f"_debounce_kwargs_{func.__name__}"
 
         @functools.wraps(func)
         def wrapper(self, *args, **kwargs):
-            # 获取或创建定时器
-            if not hasattr(self, timer_attr):
+            # 保存最新参数；定时器触发时仅执行最后一次调用
+            setattr(self, args_attr, args)
+            setattr(self, kwargs_attr, kwargs)
+
+            timer = getattr(self, timer_attr, None)
+            if timer is None:
                 timer = QTimer(self)
                 timer.setSingleShot(True)
+
+                def _fire() -> None:
+                    stored_args = getattr(self, args_attr, ())
+                    stored_kwargs = getattr(self, kwargs_attr, {})
+                    func(self, *stored_args, **stored_kwargs)
+
+                # 只连接一次，避免重复 connect 导致回调累积/内存泄漏
+                timer.timeout.connect(_fire)
                 setattr(self, timer_attr, timer)
-            else:
-                timer = getattr(self, timer_attr)
 
             # 停止之前的定时器
             timer.stop()
 
-            # 设置新的定时器
-            timer.timeout.connect(lambda: func(self, *args, **kwargs))
             timer.start(delay_ms)
 
         return wrapper
@@ -156,7 +166,7 @@ def throttle(interval_ms: int = 100):
 
         @functools.wraps(func)
         def wrapper(self, *args, **kwargs):
-            current_time = time.time() * 1000  # 转换为毫秒
+            current_time = time.monotonic() * 1000  # 转换为毫秒（单调时钟）
 
             # 获取上次调用时间
             last_call_time = getattr(self, last_call_attr, 0)

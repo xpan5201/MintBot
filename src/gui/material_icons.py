@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt, pyqtProperty, QPropertyAnimation, QEasingCurve, QPo
 from PyQt6.QtGui import QFont, QFontDatabase, QPainter, QColor, QBrush, QMouseEvent
 
 from .material_design_light import MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION, MD3_STATE_LAYERS
+from .qss_utils import qss_rgba
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -207,6 +208,10 @@ class MaterialIconButton(QPushButton):
 
     def setup_style(self):
         """设置样式 - v2.31.0: 优化悬停和选中效果"""
+        hover_0 = qss_rgba(MD3_LIGHT_COLORS["primary"], 0.08)
+        hover_1 = qss_rgba(MD3_LIGHT_COLORS["primary"], 0.12)
+        pressed_0 = qss_rgba(MD3_LIGHT_COLORS["primary"], 0.15)
+        pressed_1 = qss_rgba(MD3_LIGHT_COLORS["primary"], 0.20)
         self.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
@@ -217,8 +222,8 @@ class MaterialIconButton(QPushButton):
             QPushButton:hover {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(38, 166, 154, 0.08),
-                    stop:1 rgba(38, 166, 154, 0.12)
+                    stop:0 {hover_0},
+                    stop:1 {hover_1}
                 );
             }}
             QPushButton:checked {{
@@ -232,8 +237,8 @@ class MaterialIconButton(QPushButton):
             QPushButton:pressed {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(38, 166, 154, 0.15),
-                    stop:1 rgba(38, 166, 154, 0.20)
+                    stop:0 {pressed_0},
+                    stop:1 {pressed_1}
                 );
             }}
         """)
@@ -319,18 +324,26 @@ class MaterialIconButton(QPushButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # 绘制悬停状态 - 使用加深的薄荷绿色
+        # 绘制悬停状态 - 使用主题主色
         if self.hover_opacity > 0 and not self.isChecked():
-            # 加深的薄荷绿色悬停效果 (#4ECDC4)
-            hover_color = QColor(78, 205, 196, int(self.hover_opacity * 50))  # #4ECDC4 with opacity
+            try:
+                base = QColor(MD3_LIGHT_COLORS["primary"])
+            except Exception:
+                base = QColor(0, 0, 0)
+            hover_color = QColor(base)
+            hover_color.setAlpha(int(self.hover_opacity * 50))
             painter.setBrush(QBrush(hover_color))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(self.rect(), 12, 12)
 
-        # 绘制涟漪效果 - 使用加深的薄荷绿色
+        # 绘制涟漪效果 - 使用主题主色
         if self.ripple_active and self.ripple_opacity > 0:
-            # 加深的薄荷绿色涟漪效果 (#4ECDC4)
-            ripple_color = QColor(78, 205, 196, int(self.ripple_opacity * 70))  # #4ECDC4 with opacity
+            try:
+                base = QColor(MD3_LIGHT_COLORS["primary"])
+            except Exception:
+                base = QColor(0, 0, 0)
+            ripple_color = QColor(base)
+            ripple_color.setAlpha(int(self.ripple_opacity * 70))
             painter.setBrush(QBrush(ripple_color))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(

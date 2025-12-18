@@ -7,7 +7,7 @@ v2.30.27 新增：优化GUI渲染性能，减少不必要的重绘
 - 虚拟滚动支持
 """
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, QCoreApplication
 from typing import Callable, Optional
 import time
 
@@ -51,6 +51,12 @@ class RenderOptimizer:
         """
         self.flush_callback = flush_callback
         self.buffer_timer = QTimer()
+        try:
+            parent = QCoreApplication.instance()
+            if parent is not None:
+                self.buffer_timer.setParent(parent)
+        except Exception:
+            pass
         self.buffer_timer.timeout.connect(self._flush_text_buffer)
         self.buffer_timer.setInterval(batch_interval_ms)
 
@@ -119,6 +125,12 @@ class RenderOptimizer:
 
         # 创建新定时器
         timer = QTimer()
+        try:
+            parent = QCoreApplication.instance()
+            if parent is not None:
+                timer.setParent(parent)
+        except Exception:
+            pass
         timer.setSingleShot(True)
         timer.timeout.connect(callback)
         timer.timeout.connect(lambda: self._on_debounce_executed(key))

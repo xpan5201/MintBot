@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QAbstractScrollArea,
     QScrollArea,
     QLabel,
+    QProgressBar,
     QSizePolicy,
     QStackedWidget,
     QGraphicsOpacityEffect,
@@ -19,20 +20,21 @@ from PyQt6.QtCore import (
     QThread,
     QThreadPool,
     pyqtSignal,
+    pyqtProperty,
     QPropertyAnimation,
     QEasingCurve,
     QTimer,
     QPoint,
     QRect,
+    QRectF,
+    QEvent,
 )
-from PyQt6.QtGui import QFont, QColor, QPixmap
+from PyQt6.QtGui import QFont, QColor, QPixmap, QPainter, QPen, QBrush, QFontMetrics
 from pathlib import Path
 from functools import lru_cache
-from threading import Event
-from typing import Any, Optional, List, TYPE_CHECKING
+from typing import Any, Optional
 import re
 import time
-import asyncio
 import os
 import weakref
 
@@ -143,21 +145,24 @@ from .material_design_enhanced import (
     get_typography_css,
     get_elevation_shadow,
 )
-from .material_icons import MaterialIconButton, MATERIAL_ICONS
-from .enhanced_rich_input import EnhancedInputWidget
+from .theme_manager import is_anime_theme
+from .qss_utils import qss_rgba
+from .enhanced_rich_input import EnhancedInputWidget, ChatComposerIconButton
 from .loading_states import EmptyState
 from .notifications import show_toast, Toast
 from .contacts_panel import ContactsPanel
 from src.utils.logger import get_logger
 from src.auth.user_session import user_session
 from src.auth.session_store import delete_session_token_file, write_session_token_file
-from src.utils.gui_optimizer import throttle, track_object
+from src.utils.gui_optimizer import throttle
 from .chat_window_optimizer import ChatWindowOptimizer
+from .workers.chat_history_loader import ChatHistoryLoaderThread, ChatHistoryLoadRequest
+from .workers.agent_chat import AgentInitThread, ChatThread
+from .workers.tts_synthesis import TTSSynthesisTask
+from .workers.vision_analysis import VisionAnalyzeTask
+from .workers.vision_batch import BatchImageRecognitionThread
 
 logger = get_logger(__name__)
-
-if TYPE_CHECKING:  # pragma: no cover
-    from src.agent.core import MintChatAgent
 
 
 @lru_cache(maxsize=32)
@@ -241,152 +246,544 @@ def _create_avatar_label_for_header(avatar_text: str, size: int) -> QLabel:
     return avatar_label
 
 
-class ChatThread(QThread):
-    """聊天线程（简化版，直接调用Agent）"""
+class CharacterStatusIsland(QWidget):
+    """角色状态“原子岛”栏：悬停展开显示心情与好感度。"""
 
-    chunk_received = pyqtSignal(str)
-    error = pyqtSignal(str)
+    COLLAPSED_HEIGHT = 56
+    EXPANDED_HEIGHT = 140
 
     def __init__(
         self,
-        agent: "MintChatAgent",
-        message: str,
-        image_path: Optional[str] = None,
-        image_analysis: Optional[dict] = None,
-        timeout: float = 300.0,
-    ):
-        super().__init__()
-        self.agent = agent
-        self.message = message
-        self.image_path = image_path
-        self.image_analysis = image_analysis
-        self.timeout = timeout
-        self._is_running = True
-        self._cancel_event = Event()
-        self._had_error = False
-        self._start_time = None
+        avatar_text: str,
+        name: str,
+        *,
+        max_width: int = 820,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._agent: object | None = None
+        self._expanded = False
+        self._collapsed_height = int(self.COLLAPSED_HEIGHT)
+        self._expanded_height = int(self.EXPANDED_HEIGHT)
+        self._radius_px = 28
+        self._bg_color = QColor(255, 255, 255, 235)
+        self._border_color = QColor(0, 0, 0, 30)
+        self._details_target_height = 0
 
-        track_object(self, f"ChatThread-{message[:20]}")
-
-    def run(self):
-        """运行线程"""
+        self.setObjectName("characterStatusIsland")
         try:
-            self.setPriority(QThread.Priority.LowPriority)
-            self._start_time = time.time()
-
-            logger.info("ChatThread开始运行")
-
-            total_chunks = 0
-            emitted_chunks = 0
-            chunk_buffer: list[str] = []
-            buffer_len = 0
-            last_emit_ts = time.monotonic()
-            emit_interval_s = max(0.0, CHATTHREAD_EMIT_INTERVAL_MS / 1000.0)
-            emit_threshold = CHATTHREAD_EMIT_THRESHOLD
-
-            for chunk in self.agent.chat_stream(
-                self.message,
-                save_to_long_term=True,
-                image_path=self.image_path,
-                image_analysis=self.image_analysis,
-                cancel_event=self._cancel_event,
-            ):
-                if (not self._is_running) or self._cancel_event.is_set() or self.isInterruptionRequested():
-                    break
-
-                if time.time() - self._start_time > self.timeout:
-                    logger.warning("ChatThread超时 (%s秒)", self.timeout)
-                    self._cancel_event.set()
-                    self._had_error = True
-                    self.error.emit(f"请求超时（{self.timeout}秒），请稍后重试")
-                    return
-
-                # 跳过空片段
-                if not chunk:
-                    continue
-
-                total_chunks += 1
-                chunk_buffer.append(chunk)
-                buffer_len += len(chunk)
-
-                now = time.monotonic()
-                if buffer_len >= emit_threshold or (now - last_emit_ts) >= emit_interval_s:
-                    payload = "".join(chunk_buffer)
-                    chunk_buffer.clear()
-                    buffer_len = 0
-                    last_emit_ts = now
-                    if payload:
-                        emitted_chunks += 1
-                        self.chunk_received.emit(payload)
-
-            if chunk_buffer:
-                payload = "".join(chunk_buffer)
-                if payload:
-                    emitted_chunks += 1
-                    self.chunk_received.emit(payload)
-
-            execution_time = time.time() - self._start_time
-            logger.info(
-                "ChatThread完成，共接收 %s 个chunk（批量emit=%s 次），耗时 %.2f秒",
-                total_chunks,
-                emitted_chunks,
-                execution_time,
-            )
-            # QThread 内置 finished 信号会在 run 返回后自动触发
-
-        except Exception as e:
-            from src.utils.exceptions import handle_exception
-            handle_exception(e, logger, "ChatThread运行失败")
-            if self._is_running and (not self._cancel_event.is_set()):
-                self._had_error = True
-                self.error.emit(str(e))
-
-    def stop(self):
-        """停止线程"""
-        logger.info("正在停止ChatThread...")
-        self._is_running = False
-        self._cancel_event.set()
+            self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        except Exception:
+            pass
         try:
-            self.requestInterruption()
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        except Exception:
+            pass
+        self.setMouseTracking(True)
+        try:
+            self.setFixedHeight(self._collapsed_height)
+        except Exception:
+            pass
+        try:
+            if int(max_width) > 0:
+                self.setMaximumWidth(int(max_width))
         except Exception:
             pass
 
-    def cleanup(self):
-        """清理资源"""
-        logger.info("开始清理 ChatThread 资源...")
-        self.stop()
-        if self.isRunning():
-            logger.debug("ChatThread仍在运行，延迟清理引用")
-            return
-        self.agent = None
-        self.message = None
-        self.image_path = None
-        self.image_analysis = None
-        self._is_running = False
-        self._cancel_event = Event()
-        self._start_time = None
-        logger.info("ChatThread 资源已清理")
+        root = QVBoxLayout(self)
+        # Slightly larger horizontal padding so the content doesn't "stick" to the pill edges.
+        root.setContentsMargins(16, 8, 16, 8)
+        root.setSpacing(6)
 
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(12)
 
-class AgentInitThread(QThread):
-    """后台初始化 Agent，避免阻塞 GUI 主线程。"""
+        self.avatar_label = _create_avatar_label_for_header(avatar_text, 40)
+        top_row.addWidget(self.avatar_label)
 
-    agent_ready = pyqtSignal(object)
-    error = pyqtSignal(str)
+        texts = QVBoxLayout()
+        texts.setContentsMargins(0, 0, 0, 0)
+        texts.setSpacing(2)
 
-    def __init__(self, user_id: Any):
-        super().__init__()
-        self.user_id = user_id
+        self.name_label = QLabel(str(name or ""))
+        self.name_label.setStyleSheet(
+            f"""
+            QLabel {{
+                color: {MD3_ENHANCED_COLORS['on_surface']};
+                {get_typography_css('title_medium')}
+                background: transparent;
+                font-weight: 650;
+            }}
+            """
+        )
+        texts.addWidget(self.name_label)
 
-    def run(self) -> None:
+        self.status_label = QLabel("● 离线")
+        self.status_label.setStyleSheet(
+            f"""
+            QLabel {{
+                color: {MD3_ENHANCED_COLORS['primary_60']};
+                {get_typography_css('body_small')}
+                background: transparent;
+                font-weight: 600;
+            }}
+            """
+        )
+        texts.addWidget(self.status_label)
+
+        top_row.addLayout(texts, 1)
+        self.more_btn = ChatComposerIconButton(
+            "more_vert",
+            "更多",
+            size=40,
+            icon_size=20,
+            variant=ChatComposerIconButton.VARIANT_GHOST,
+            parent=self,
+        )
+        top_row.addWidget(self.more_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        root.addLayout(top_row)
+
+        self.details = QWidget()
+        self.details.setVisible(False)
+        details_layout = QVBoxLayout(self.details)
+        # Extra inner padding so the bars/texts don't feel "too long" edge-to-edge.
+        details_layout.setContentsMargins(14, 0, 14, 0)
+        details_layout.setSpacing(10)
+
+        self._metric_icon_font = QFont("Material Symbols Outlined")
+        self._metric_icon_font.setPixelSize(18)
+
+        mood_row = QHBoxLayout()
+        mood_row.setContentsMargins(0, 0, 0, 0)
+        mood_row.setSpacing(10)
+        self.mood_icon = self._create_metric_icon("masks", tooltip="心情", accent="primary")
+        mood_row.addWidget(self.mood_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.mood_bar = QProgressBar()
+        self._style_progress(self.mood_bar, MD3_ENHANCED_COLORS["gradient_primary"], height=18)
+        self.mood_bar.setFormat("— 0%")
+        mood_row.addWidget(self.mood_bar, 1)
+        details_layout.addLayout(mood_row)
+
+        divider = QWidget()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet(f"background: {qss_rgba(MD3_ENHANCED_COLORS['outline_variant'], 0.9)};")
+        details_layout.addWidget(divider)
+        self._details_divider = divider
+
+        affection_row = QHBoxLayout()
+        affection_row.setContentsMargins(0, 0, 0, 0)
+        affection_row.setSpacing(10)
+        self.affection_icon = self._create_metric_icon("favorite", tooltip="好感度", accent="secondary")
+        affection_row.addWidget(self.affection_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.affection_bar = QProgressBar()
+        self._style_progress(self.affection_bar, MD3_ENHANCED_COLORS["gradient_secondary"], height=18)
+        self.affection_bar.setFormat("— 0%")
+        affection_row.addWidget(self.affection_bar, 1)
+        details_layout.addLayout(affection_row)
+
         try:
-            from src.agent.core import MintChatAgent
+            self._details_target_height = max(0, int(details_layout.sizeHint().height()))
+            self._expanded_height = max(
+                self._collapsed_height,
+                self._collapsed_height + int(root.spacing()) + int(self._details_target_height) + 9,
+            )
+        except Exception:
+            pass
+        try:
+            self.details.setMaximumHeight(0)
+        except Exception:
+            pass
 
-            agent = MintChatAgent(user_id=self.user_id)
-            self.agent_ready.emit(agent)
-        except Exception as e:
-            logger.error("初始化 Agent 失败: %s", e, exc_info=True)
-            self.error.emit(str(e))
+        root.addWidget(self.details)
+
+        effect = QGraphicsOpacityEffect(self.details)
+        effect.setOpacity(0.0)
+        self.details.setGraphicsEffect(effect)
+        self._details_effect = effect
+
+        self._height_anim = QPropertyAnimation(self, b"island_height", self)
+        self._height_anim.setDuration(200)
+        self._height_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._details_height_anim = QPropertyAnimation(self.details, b"maximumHeight", self)
+        self._details_height_anim.setDuration(180)
+        self._details_height_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._details_opacity_anim = QPropertyAnimation(effect, b"opacity", self)
+        self._details_opacity_anim.setDuration(140)
+        self._details_opacity_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._details_opacity_anim.finished.connect(self._maybe_hide_details)
+
+        self._details_fade_timer = QTimer(self)
+        self._details_fade_timer.setSingleShot(True)
+        self._details_fade_timer.setInterval(90)
+        self._details_fade_timer.timeout.connect(self._start_details_fade_in)
+
+        self._collapse_timer = QTimer(self)
+        self._collapse_timer.setSingleShot(True)
+        self._collapse_timer.setInterval(140)
+        self._collapse_timer.timeout.connect(lambda: self._set_expanded(False))
+
+        self.setStyleSheet(
+            """
+            #characterStatusIsland {
+                background: transparent;
+                border: none;
+            }
+            """
+        )
+        self._apply_style(hovered=False)
+
+    @pyqtProperty(int)
+    def island_height(self) -> int:
+        return int(self.height())
+
+    @island_height.setter
+    def island_height(self, value: int) -> None:
+        try:
+            height = int(value)
+        except Exception:
+            height = self._collapsed_height
+        height = max(self._collapsed_height, min(self._expanded_height, height))
+        try:
+            self.setFixedHeight(height)
+        except Exception:
+            pass
+
+    def _create_metric_icon(self, icon_name: str, *, tooltip: str, accent: str) -> QLabel:
+        label = QLabel(str(icon_name or ""))
+        label.setFixedSize(24, 24)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setToolTip(str(tooltip or ""))
+        try:
+            label.setFont(self._metric_icon_font)
+        except Exception:
+            pass
+
+        try:
+            accent_color = MD3_ENHANCED_COLORS.get(str(accent), MD3_ENHANCED_COLORS["primary"])
+        except Exception:
+            accent_color = MD3_ENHANCED_COLORS["primary"]
+        label.setStyleSheet(
+            f"""
+            QLabel {{
+                background: {qss_rgba(accent_color, 0.10)};
+                border: 1px solid {qss_rgba(accent_color, 0.28)};
+                border-radius: 12px;
+                color: {accent_color};
+            }}
+            """
+        )
+        return label
+
+    def _style_progress(self, bar: QProgressBar, chunk_bg: str, *, height: int) -> None:
+        bar.setRange(0, 100)
+        bar.setTextVisible(True)
+        bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bar.setFixedHeight(int(height))
+        radius = max(4, int(round(int(height) / 2)))
+        bar.setStyleSheet(
+            f"""
+            QProgressBar {{
+                background: {qss_rgba(MD3_ENHANCED_COLORS['outline_variant'], 0.75)};
+                border: none;
+                border-radius: {radius}px;
+                text-align: center;
+                color: {MD3_ENHANCED_COLORS['on_surface']};
+                {get_typography_css('label_medium')}
+                font-weight: 650;
+            }}
+            QProgressBar::chunk {{
+                background: {chunk_bg};
+                border-radius: {radius}px;
+            }}
+            """
+        )
+
+    _RGBA_RE = re.compile(
+        r"rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)(?:\\s*,\\s*([0-9.]+))?\\s*\\)"
+    )
+
+    def _parse_qcolor(self, value: str) -> QColor:
+        raw = str(value or "").strip()
+        match = self._RGBA_RE.fullmatch(raw)
+        if match:
+            r = int(match.group(1))
+            g = int(match.group(2))
+            b = int(match.group(3))
+            a = match.group(4)
+            if a is None:
+                alpha = 255
+            else:
+                try:
+                    af = float(a)
+                    alpha = int(round(af * 255.0)) if af <= 1.0 else int(round(af))
+                except Exception:
+                    alpha = 255
+            return QColor(r, g, b, max(0, min(255, alpha)))
+
+        color = QColor(raw)
+        if color.isValid():
+            return color
+        return QColor(255, 255, 255, 235)
+
+    def _apply_style(self, *, hovered: bool) -> None:
+        radius = str(MD3_ENHANCED_RADIUS.get("extra_large", "28px"))
+        try:
+            self._radius_px = int(radius.replace("px", "").strip() or 0)
+        except Exception:
+            self._radius_px = 28
+
+        if hovered:
+            bg = MD3_ENHANCED_COLORS.get("frosted_glass_medium", "#FFFFFF")
+            border_base = QColor(MD3_ENHANCED_COLORS.get("primary", "#000000"))
+            border_base.setAlpha(int(0.85 * 255))
+        else:
+            bg = MD3_ENHANCED_COLORS.get("frosted_glass_light", "#FFFFFF")
+            border_base = QColor(MD3_ENHANCED_COLORS.get("outline_variant", "#000000"))
+            border_base.setAlpha(int(0.90 * 255))
+
+        self._bg_color = self._parse_qcolor(bg)
+        self._border_color = border_base
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def paintEvent(self, _event):  # noqa: N802 - Qt API naming
+        try:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
+            painter.setPen(QPen(self._border_color, 1.0))
+            painter.setBrush(QBrush(self._bg_color))
+            painter.drawRoundedRect(rect, self._radius_px, self._radius_px)
+        except Exception:
+            pass
+
+    def set_agent(self, agent: object | None) -> None:
+        self._agent = agent
+        self._refresh_details()
+
+    def _format_bar_text(self, bar: QProgressBar, left: str, percent: int) -> str:
+        left = str(left or "—").strip()
+        percent_text = f"{int(percent)}%"
+        try:
+            fm = QFontMetrics(bar.font())
+            width = int(bar.width() or 0)
+            if width <= 0:
+                if len(left) > 16:
+                    left = left[:15] + "…"
+                return f"{left} {percent_text}"
+            padding = 18
+            available = max(0, width - padding)
+            reserve = fm.horizontalAdvance(" " + percent_text)
+            left_max = max(0, available - reserve)
+            if left_max <= 0:
+                return percent_text
+            left_elided = fm.elidedText(left, Qt.TextElideMode.ElideRight, left_max)
+            if left_elided:
+                return f"{left_elided} {percent_text}"
+            return percent_text
+        except Exception:
+            if len(left) > 16:
+                left = left[:15] + "…"
+            return f"{left} {percent_text}"
+
+    def _refresh_details(self) -> None:
+        mood_state = "—"
+        mood_value = 0.0
+        relationship_level = 0.5
+        relationship_desc = ""
+
+        agent = getattr(self, "_agent", None)
+        if agent is not None:
+            try:
+                mood_system = getattr(agent, "mood_system", None)
+                if mood_system is not None and bool(getattr(mood_system, "enabled", False)):
+                    mood_state = str(mood_system.get_mood_state())
+                    mood_value = float(getattr(mood_system, "mood_value", 0.0) or 0.0)
+            except Exception:
+                pass
+
+            try:
+                emotion_engine = getattr(agent, "emotion_engine", None)
+                if emotion_engine is not None:
+                    user_profile = getattr(emotion_engine, "user_profile", None)
+                    relationship_level = float(getattr(user_profile, "relationship_level", relationship_level) or 0.0)
+                    relationship_desc = str(emotion_engine.get_relationship_description() or "")
+            except Exception:
+                pass
+
+        mood_pct = int(max(0, min(100, round((mood_value + 1.0) * 50.0))))
+        affection_pct = int(max(0, min(100, round(relationship_level * 100.0))))
+
+        try:
+            self.mood_bar.setValue(mood_pct)
+            left = str(mood_state) if mood_state else "—"
+            self.mood_bar.setFormat(self._format_bar_text(self.mood_bar, left, mood_pct))
+        except Exception:
+            pass
+
+        try:
+            self.affection_bar.setValue(affection_pct)
+            left = str(relationship_desc) if relationship_desc else "—"
+            self.affection_bar.setFormat(self._format_bar_text(self.affection_bar, left, affection_pct))
+        except Exception:
+            pass
+
+    def _start_details_fade_in(self) -> None:
+        if not self._expanded:
+            return
+
+        try:
+            if not self.details.isVisible():
+                self.details.setVisible(True)
+        except Exception:
+            pass
+
+        try:
+            self._details_height_anim.stop()
+            start_h = int(self.details.maximumHeight() or 0)
+            if start_h <= 0:
+                try:
+                    self.details.setMaximumHeight(0)
+                except Exception:
+                    pass
+                start_h = 0
+            self._details_height_anim.setStartValue(start_h)
+            target = int(getattr(self, "_details_target_height", 0) or 0)
+            if target <= 0:
+                target = max(0, int(self._expanded_height - self._collapsed_height))
+            self._details_height_anim.setEndValue(target)
+            self._details_height_anim.start()
+        except Exception:
+            pass
+        try:
+            self._details_opacity_anim.stop()
+            self._details_opacity_anim.setDuration(160)
+            self._details_opacity_anim.setStartValue(float(self._details_effect.opacity()))
+            self._details_opacity_anim.setEndValue(1.0)
+            self._details_opacity_anim.start()
+        except Exception:
+            pass
+
+    def _set_expanded(self, expanded: bool) -> None:
+        expanded = bool(expanded)
+        if expanded == self._expanded:
+            return
+        self._expanded = expanded
+
+        try:
+            self._details_fade_timer.stop()
+        except Exception:
+            pass
+        try:
+            self._details_height_anim.stop()
+        except Exception:
+            pass
+        try:
+            self._details_opacity_anim.stop()
+        except Exception:
+            pass
+
+        if expanded:
+            self._refresh_details()
+            self._apply_style(hovered=True)
+
+            try:
+                self._details_effect.setOpacity(0.0)
+            except Exception:
+                pass
+            try:
+                # Delay showing details until the island has grown a bit; avoids layout jitter at start.
+                self.details.setMaximumHeight(0)
+                self.details.setVisible(False)
+            except Exception:
+                pass
+
+            try:
+                self._height_anim.stop()
+                self._height_anim.setStartValue(int(self.height() or self._collapsed_height))
+                self._height_anim.setEndValue(self._expanded_height)
+                self._height_anim.start()
+            except Exception:
+                try:
+                    self.setFixedHeight(self._expanded_height)
+                except Exception:
+                    pass
+
+            try:
+                self._details_fade_timer.start()
+            except Exception:
+                self._start_details_fade_in()
+            return
+
+        # Collapse
+        self._apply_style(hovered=False)
+
+        try:
+            details_visible = bool(self.details.isVisible())
+        except Exception:
+            details_visible = True
+        try:
+            opacity = float(self._details_effect.opacity())
+        except Exception:
+            opacity = 1.0
+
+        if not details_visible or opacity <= 0.01:
+            self._maybe_hide_details()
+            return
+
+        try:
+            # Fade out first, then shrink (in _maybe_hide_details) for smoother collapse.
+            self._details_opacity_anim.setDuration(120)
+            self._details_opacity_anim.setStartValue(opacity)
+            self._details_opacity_anim.setEndValue(0.0)
+            self._details_opacity_anim.start()
+        except Exception:
+            self._maybe_hide_details()
+
+    def _maybe_hide_details(self) -> None:
+        if not self._expanded:
+            try:
+                self.details.setVisible(False)
+            except Exception:
+                pass
+            try:
+                self._details_height_anim.stop()
+            except Exception:
+                pass
+            try:
+                self.details.setMaximumHeight(0)
+            except Exception:
+                pass
+            try:
+                self._height_anim.stop()
+                self._height_anim.setStartValue(int(self.height() or self._expanded_height))
+                self._height_anim.setEndValue(self._collapsed_height)
+                self._height_anim.start()
+            except Exception:
+                try:
+                    self.setFixedHeight(self._collapsed_height)
+                except Exception:
+                    pass
+
+    def enterEvent(self, event):  # noqa: N802 - Qt API naming
+        super().enterEvent(event)
+        try:
+            self._collapse_timer.stop()
+        except Exception:
+            pass
+        self._set_expanded(True)
+
+    def leaveEvent(self, event):  # noqa: N802 - Qt API naming
+        super().leaveEvent(event)
+        try:
+            self._collapse_timer.start()
+        except Exception:
+            self._set_expanded(False)
 
 
 class LightChatWindow(LightFramelessWindow):
@@ -432,8 +829,11 @@ class LightChatWindow(LightFramelessWindow):
         self._animated_image_bubbles: "weakref.WeakSet[LightImageMessageBubble]" = weakref.WeakSet()
 
         # 线程池 - 优化多线程性能
-        self.thread_pool = QThreadPool.globalInstance()
+        # 使用独立线程池，避免修改 globalInstance() 的全局配置影响其他模块
+        self.thread_pool = QThreadPool()
         self.thread_pool.setMaxThreadCount(4)  # 最多4个线程
+        # 线程池任务引用：防止 QRunnable 被 GC 导致崩溃
+        self._vision_tasks: list[object] = []
 
         # 当前聊天线程
         self.current_chat_thread = None
@@ -448,6 +848,15 @@ class LightChatWindow(LightFramelessWindow):
         self._message_cache = {}  # 消息缓存（性能优化：避免重复查询数据库）
         self._loaded_message_count = {}  # 已加载消息数量
         self._total_message_count = {}  # 消息总数
+        # 聊天历史后台加载：将 DB 查询移出 UI 线程，避免切换联系人/上滑加载卡顿
+        self._history_load_seq = 0
+        self._active_initial_history_request_id = 0
+        self._active_more_history_request_id = 0
+        self._active_initial_history_thread: Optional[ChatHistoryLoaderThread] = None
+        self._active_more_history_thread: Optional[ChatHistoryLoaderThread] = None
+        self._pending_history_load_state: dict[int, dict[str, Any]] = {}
+        self._live_history_threads: list[ChatHistoryLoaderThread] = []
+        self._history_loading_widget: Optional[QWidget] = None
 
         # v2.30.0: 图片分析相关
         self.current_image_analysis = None  # 当前图片分析结果
@@ -522,116 +931,21 @@ class LightChatWindow(LightFramelessWindow):
 
         # 聊天内容区域
         chat_content = QWidget()
+        chat_content.setObjectName("chatContentSurface")
+        chat_content.setStyleSheet(
+            f"""
+            QWidget#chatContentSurface {{
+                background: {MD3_ENHANCED_COLORS['surface']};
+            }}
+            """
+        )
         chat_layout = QVBoxLayout(chat_content)
         chat_layout.setContentsMargins(0, 0, 0, 0)
         chat_layout.setSpacing(0)
 
         chat_main_layout.addWidget(chat_content)
 
-        # 聊天头部 - MD3 Surface Container + 简洁设计
-        header = QWidget()
-        header.setFixedHeight(72)  # MD3 标准高度
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(24, 16, 24, 16)
-
-        # 头部背景和分隔线
-        header.setStyleSheet(
-            f"""
-            QWidget {{
-                background: {MD3_ENHANCED_COLORS['surface_container']};
-                border-bottom: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
-            }}
-        """
-        )
-
-        # 联系人信息
-        contact_info = QHBoxLayout()
-        contact_info.setSpacing(16)
-
-        # 头像 - v2.22.0 使用自定义头像
-        ai_avatar = user_session.get_ai_avatar() if user_session.is_logged_in() else "🐱"
-
-        self.avatar_label = _create_avatar_label_for_header(ai_avatar, 56)
-        contact_info.addWidget(self.avatar_label)
-
-        # 添加头像脉冲动画（在线状态指示）
-        self._setup_avatar_pulse_animation()
-
-        # 名称和状态
-        name_status_layout = QVBoxLayout()
-        name_status_layout.setSpacing(4)
-
-        self.name_label = QLabel("小雪糕")
-        self.name_label.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {MD3_ENHANCED_COLORS['on_surface']};
-                {get_typography_css('title_large')}
-                background: transparent;
-                font-weight: 600;
-            }}
-        """
-        )
-        name_status_layout.addWidget(self.name_label)
-
-        # 状态标签带动画
-        self.status_label = QLabel("● 在线")
-        self.status_label.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {MD3_ENHANCED_COLORS['primary_60']};
-                {get_typography_css('body_medium')}
-                background: transparent;
-                font-weight: 500;
-            }}
-        """
-        )
-        name_status_layout.addWidget(self.status_label)
-
-        contact_info.addLayout(name_status_layout)
-
-        header_layout.addLayout(contact_info)
-        header_layout.addStretch()
-
-        # 可选：FPS 监控（用于定位卡顿/验证优化效果）
-        if FPS_OVERLAY_ENABLED:
-            self._fps_label = QLabel("FPS --")
-            self._fps_label.setStyleSheet(
-                f"""
-                QLabel {{
-                    color: {MD3_ENHANCED_COLORS['on_surface_variant']};
-                    background: transparent;
-                    font-size: 12px;
-                    font-weight: 600;
-                }}
-            """
-            )
-            header_layout.addWidget(self._fps_label)
-            self._setup_fps_overlay()
-
-        # 工具按钮 - MD3 State Layers (Hover: 8%, Pressed: 12%)
-        tools_btn = QPushButton("⚙️")
-        tools_btn.setFixedSize(48, 48)
-        tools_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        tools_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background: transparent;
-                border: none;
-                border-radius: 24px;
-                font-size: 22px;
-            }}
-            QPushButton:hover {{
-                background: rgba(38, 166, 154, 20);  /* 8% opacity state layer */
-            }}
-            QPushButton:pressed {{
-                background: rgba(38, 166, 154, 31);  /* 12% opacity state layer */
-            }}
-        """
-        )
-        header_layout.addWidget(tools_btn)
-
-        chat_layout.addWidget(header)
+        # 聊天头部：使用消息区 overlay 的“原子岛”（避免展开推挤布局）
 
         # 消息区域 - MD3 Surface + 简洁设计
         # 添加圆角，与输入框上方圆角呼应
@@ -681,15 +995,82 @@ class LightChatWindow(LightFramelessWindow):
         """
         )
 
-        # 消息容器
+        # 消息容器（居中列：更像 ChatGPT 的阅读宽度）
         self.messages_widget = QWidget()
+        try:
+            self.messages_widget.setObjectName("messagesColumn")
+            self.messages_widget.setMaximumWidth(820)
+        except Exception:
+            pass
+
         self.messages_layout = QVBoxLayout(self.messages_widget)
-        self.messages_layout.setContentsMargins(0, 16, 0, 16)
+        # 顶部预留空间给“原子岛”悬浮层（不占布局高度）
+        self.messages_layout.setContentsMargins(0, CharacterStatusIsland.COLLAPSED_HEIGHT + 20, 0, 16)
         self.messages_layout.setSpacing(8)
         self.messages_layout.addStretch()
 
-        self.scroll_area.setWidget(self.messages_widget)
-        chat_layout.addWidget(self.scroll_area)
+        self.messages_outer_widget = QWidget()
+        try:
+            self.messages_outer_widget.setObjectName("messagesOuter")
+        except Exception:
+            pass
+        outer_layout = QHBoxLayout(self.messages_outer_widget)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+        outer_layout.addStretch(1)
+        outer_layout.addWidget(self.messages_widget, 0)
+        outer_layout.addStretch(1)
+
+        self.scroll_area.setWidget(self.messages_outer_widget)
+
+        # 原子岛：固定在消息显示框（viewport）内，展开不再推挤下方消息区域
+        ai_avatar = user_session.get_ai_avatar() if user_session.is_logged_in() else "🐱"
+        self.character_island = CharacterStatusIsland(
+            ai_avatar,
+            "小雪糕",
+            max_width=560,
+            parent=self.scroll_area.viewport(),
+        )
+        try:
+            self.character_island.set_agent(getattr(self, "agent", None))
+        except Exception:
+            pass
+
+        self.avatar_label = self.character_island.avatar_label
+        self.name_label = self.character_island.name_label
+        self.status_label = self.character_island.status_label
+
+        # 更多菜单（放入“原子岛”右侧，避免悬停收起影响点击）
+        self.more_btn = self.character_island.more_btn
+        self.more_btn.clicked.connect(self._show_header_menu)
+
+        # 轻量在线状态脉冲（绑定 status_label）
+        self._setup_avatar_pulse_animation()
+
+        # 可选：FPS 监控（用于定位卡顿/验证优化效果）
+        if FPS_OVERLAY_ENABLED:
+            self._fps_label = QLabel("FPS --", parent=self.scroll_area.viewport())
+            self._fps_label.setStyleSheet(
+                f"""
+                QLabel {{
+                    color: {MD3_ENHANCED_COLORS['on_surface_variant']};
+                    background: transparent;
+                    font-size: 12px;
+                    font-weight: 600;
+                }}
+            """
+            )
+            self._setup_fps_overlay()
+
+        # overlay 定位（窗口 resize 时保持居中）
+        self._overlay_viewport = self.scroll_area.viewport()
+        try:
+            self._overlay_viewport.installEventFilter(self)
+        except Exception:
+            pass
+        QTimer.singleShot(0, self._position_message_overlays)
+
+        chat_layout.addWidget(self.scroll_area, 1)
 
         # v2.30.12: 监听滚动事件，实现滚动到顶部自动加载更多
         scrollbar = self.scroll_area.verticalScrollBar()
@@ -699,178 +1080,52 @@ class LightChatWindow(LightFramelessWindow):
         scrollbar.rangeChanged.connect(self._on_scroll_range_changed)
         self._is_loading_more = False  # 防止重复加载
 
-        # 输入区域 - 动态高度，向上扩张
+        # 输入区域 - ChatGPT Web 风格输入卡片（按钮与预览内聚到 EnhancedInputWidget）
         input_area = QWidget()
-        # 设置最小高度和最大高度，允许动态调整
-        self._input_area_min_height = 140  # 单行时的高度
-        self._input_area_max_height = 280  # 4行时的最大高度
-        input_area.setMinimumHeight(self._input_area_min_height)
-        input_area.setMaximumHeight(self._input_area_max_height)
+        input_area.setStyleSheet("background: transparent;")
+        try:
+            input_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        except Exception:
+            pass
 
-        input_layout = QVBoxLayout(input_area)
-        input_layout.setContentsMargins(24, 16, 24, 16)
-        input_layout.setSpacing(12)
+        input_layout = QHBoxLayout(input_area)
+        input_layout.setContentsMargins(24, 16, 24, 20)
+        input_layout.setSpacing(0)
 
-        # 输入区域背景
-        input_area.setStyleSheet(
-            f"""
-            QWidget {{
-                background: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {MD3_ENHANCED_COLORS['surface_bright']},
-                    stop:1 {MD3_ENHANCED_COLORS['primary_10']}
-                );
-                border-top: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
-                border-top-left-radius: 0px;
-                border-top-right-radius: 0px;
-                border-bottom-left-radius: 0px;
-                border-bottom-right-radius: 12px;
-            }}
-        """
-        )
-
-        # 保存 input_area 引用，用于动态调整高度
+        # 保留 input_area 引用（用于后续布局/状态控制）
         self.input_area = input_area
 
-        # v2.30.7: 使用新的增强输入框组件（支持内联显示表情包和文件预览）
         self.enhanced_input = EnhancedInputWidget()
+        try:
+            self.enhanced_input.setMaximumWidth(820)
+        except Exception:
+            pass
         self.enhanced_input.send_requested.connect(self._on_enhanced_send)
-        input_layout.addWidget(self.enhanced_input)
+        try:
+            # 输入内容变化时，刷新发送按钮可用性（需要同时满足：有内容 + Agent 就绪）
+            self.enhanced_input.content_changed.connect(lambda: self._set_send_enabled(True))
+        except Exception:
+            pass
+        input_layout.addStretch(1)
+        input_layout.addWidget(self.enhanced_input, 1)
+        input_layout.addStretch(1)
 
-        # 保持向后兼容的引用
+        # 向后兼容引用
         self.input_text = self.enhanced_input.input_text
-        self.image_preview_container = self.enhanced_input.file_preview_container
-        self.pending_images = []  # 保持兼容性
 
-        # v2.30.8: 添加输入框高度属性的引用（向后兼容）
-        self._single_line_height = self.input_text._single_line_height
-        self._max_lines = self.input_text._max_lines
+        # 复用增强输入框内部按钮（统一由 ChatWindow 控制 enable/disable）
+        self.send_btn = self.enhanced_input.send_btn
+        self.composer_plus_btn = self.enhanced_input.plus_btn
+        self.composer_mic_btn = self.enhanced_input.mic_btn
 
-        # 按钮区域
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(12)
-
-        # 表情按钮 - MD3 Outlined Button + State Layers
-        self.emoji_btn = MaterialIconButton("emoji_emotions", "表情", size=40, icon_size=22)
-        self.emoji_btn.setCheckable(False)
-        self.emoji_btn.clicked.connect(self._on_emoji_clicked)
-        self.emoji_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background: transparent;
-                border: none;
-                border-radius: 20px;
-                color: {MD3_ENHANCED_COLORS['on_surface_variant']};
-            }}
-            QPushButton:hover {{
-                background: rgba(38, 166, 154, 20);  /* 8% state layer */
-                color: {MD3_ENHANCED_COLORS['primary']};
-            }}
-            QPushButton:pressed {{
-                background: rgba(38, 166, 154, 31);  /* 12% state layer */
-            }}
-        """
-        )
-        button_layout.addWidget(self.emoji_btn)
-
-        # 附件按钮 - MD3 Outlined Button + State Layers
-        self.attach_btn = MaterialIconButton("attach_file", "附件", size=40, icon_size=22)
-        self.attach_btn.setCheckable(False)
-        self.attach_btn.clicked.connect(self._on_attach_clicked)
-        self.attach_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background: transparent;
-                border: none;
-                border-radius: 20px;
-                color: {MD3_ENHANCED_COLORS['on_surface_variant']};
-            }}
-            QPushButton:hover {{
-                background: rgba(38, 166, 154, 20);  /* 8% state layer */
-                color: {MD3_ENHANCED_COLORS['primary']};
-            }}
-            QPushButton:pressed {{
-                background: rgba(38, 166, 154, 31);  /* 12% state layer */
-            }}
-        """
-        )
-        button_layout.addWidget(self.attach_btn)
-
-        button_layout.addStretch()
-
-        # 发送按钮 - 使用 Material Design 图标，增强视觉效果
-        send_btn_container = QWidget()
-        send_btn_layout = QHBoxLayout(send_btn_container)
-        send_btn_layout.setContentsMargins(16, 0, 16, 0)
-        send_btn_layout.setSpacing(8)
-
-        # 发送图标
-        from PyQt6.QtGui import QFont
-
-        send_icon = QLabel(MATERIAL_ICONS["send"])
-        send_icon_font = QFont("Material Symbols Outlined")
-        send_icon_font.setPixelSize(20)
-        send_icon.setFont(send_icon_font)
-        send_icon.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {MD3_ENHANCED_COLORS['on_primary']};
-                background: transparent;
-            }}
-        """
-        )
-        send_btn_layout.addWidget(send_icon)
-
-        # 发送文本
-        send_text = QLabel("发送")
-        send_text.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {MD3_ENHANCED_COLORS['on_primary']};
-                background: transparent;
-                font-size: 15px;
-                font-weight: 600;
-            }}
-        """
-        )
-        send_btn_layout.addWidget(send_text)
-
-        # 将容器转换为按钮 - MD3 Filled Button + Elevation Level 1
-        self.send_btn = QPushButton()
-        self.send_btn.setFixedSize(120, 48)
-        self.send_btn.setLayout(send_btn_layout)
-        self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.send_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background: {MD3_ENHANCED_COLORS['primary']};
-                border: none;
-                border-radius: 24px;
-            }}
-            QPushButton:hover {{
-                background: {MD3_ENHANCED_COLORS['primary_60']};
-            }}
-            QPushButton:pressed {{
-                background: {MD3_ENHANCED_COLORS['primary_70']};
-            }}
-            QPushButton:disabled {{
-                background: {MD3_ENHANCED_COLORS['surface_container']};
-            }}
-        """
-        )
-
-        # 添加 MD3 Elevation Level 1 阴影效果
-        send_shadow = QGraphicsDropShadowEffect(self.send_btn)
-        send_shadow.setBlurRadius(3)  # MD3 Level 1
-        send_shadow.setXOffset(0)
-        send_shadow.setYOffset(1)  # MD3 Level 1
-        send_shadow.setColor(QColor(0, 0, 0, 38))  # 0.15 * 255
-        self.send_btn.setGraphicsEffect(send_shadow)
-
-        self.send_btn.clicked.connect(self._send_message)
-        button_layout.addWidget(self.send_btn)
-
-        input_layout.addLayout(button_layout)
+        try:
+            self.composer_plus_btn.clicked.connect(self._show_composer_tools_menu)
+        except Exception:
+            pass
+        try:
+            self.composer_mic_btn.clicked.connect(self._on_composer_mic_clicked)
+        except Exception:
+            pass
 
         chat_layout.addWidget(input_area)
 
@@ -904,35 +1159,34 @@ class LightChatWindow(LightFramelessWindow):
         # ==================== 集成完成 ====================
 
     def showEvent(self, event):
-        """窗口显示事件 - v2.29.17 确保输入框初始高度正确"""
+        """窗口显示事件 - 同步发送按钮状态。"""
         super().showEvent(event)
-        # 确保输入框保持单行高度
-        if hasattr(self, 'input_text') and hasattr(self, '_single_line_height'):
-            self.input_text.setFixedHeight(self._single_line_height)
-        if hasattr(self, 'input_area') and hasattr(self, '_input_area_min_height'):
-            self.input_area.setFixedHeight(self._input_area_min_height)
-
-    def eventFilter(self, obj, event):
-        """事件过滤器 - v2.29.11 优化：Enter发送，Shift+Enter换行，优化逻辑"""
-        if obj == self.input_text and event.type() == event.Type.KeyPress:
-            key = event.key()
-            # v2.29.11: 合并Enter和Return的判断，提升可读性
-            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                # Shift+Enter：插入换行符（默认行为）
-                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                    return False
-                # Enter：发送消息（仅当有内容时）
-                if self.input_text.toPlainText().strip():
-                    self._send_message()
-                return True
-        return super().eventFilter(obj, event)
+        try:
+            self._set_send_enabled(True)
+        except Exception:
+            pass
 
     def _set_send_enabled(self, enabled: bool) -> None:
         """统一管理发送按钮状态，避免在 Agent 未就绪时误启用。"""
         try:
-            can_send = bool(enabled) and (self.agent is not None) and not bool(
-                getattr(self, "_agent_initializing", False)
-            )
+            has_content = True
+            try:
+                if hasattr(self, "enhanced_input") and self.enhanced_input is not None:
+                    has_content = bool(self.enhanced_input.has_content())
+                elif hasattr(self, "input_text") and self.input_text is not None:
+                    has_content = bool(self.input_text.toPlainText().strip())
+            except Exception:
+                has_content = True
+
+            is_sending = False
+            try:
+                thread = getattr(self, "current_chat_thread", None)
+                is_sending = bool(thread is not None and thread.isRunning())
+            except Exception:
+                is_sending = False
+
+            agent_ready = (self.agent is not None) and not bool(getattr(self, "_agent_initializing", False))
+            can_send = bool(enabled) and agent_ready and has_content and not is_sending
             self.send_btn.setEnabled(can_send)
         except Exception:
             pass
@@ -943,12 +1197,45 @@ class LightChatWindow(LightFramelessWindow):
             if not hasattr(self, "status_label") or self.status_label is None:
                 return
             if bool(getattr(self, "_agent_initializing", False)):
+                color = MD3_ENHANCED_COLORS["warning"]
                 self.status_label.setText("● 初始化中")
+                self.status_label.setStyleSheet(
+                    f"""
+                    QLabel {{
+                        color: {color};
+                        {get_typography_css('body_small')}
+                        background: transparent;
+                        font-weight: 600;
+                    }}
+                    """
+                )
                 return
             if self.agent is None or bool(getattr(self, "_agent_init_failed", False)):
+                color = MD3_ENHANCED_COLORS["outline"]
                 self.status_label.setText("● 离线")
+                self.status_label.setStyleSheet(
+                    f"""
+                    QLabel {{
+                        color: {color};
+                        {get_typography_css('body_small')}
+                        background: transparent;
+                        font-weight: 600;
+                    }}
+                    """
+                )
                 return
+            color = MD3_ENHANCED_COLORS["success"]
             self.status_label.setText("● 在线")
+            self.status_label.setStyleSheet(
+                f"""
+                QLabel {{
+                    color: {color};
+                    {get_typography_css('body_small')}
+                    background: transparent;
+                    font-weight: 600;
+                }}
+                """
+            )
         except Exception:
             pass
 
@@ -964,6 +1251,12 @@ class LightChatWindow(LightFramelessWindow):
         self._agent_initializing = True
         self._agent_init_failed = False
         self._update_agent_status_label()
+        try:
+            island = getattr(self, "character_island", None)
+            if island is not None:
+                island.set_agent(None)
+        except Exception:
+            pass
         self._set_send_enabled(True)
 
         thread = AgentInitThread(user_id=getattr(self, "_agent_user_id", None))
@@ -996,6 +1289,12 @@ class LightChatWindow(LightFramelessWindow):
             pass
 
         self._update_agent_status_label()
+        try:
+            island = getattr(self, "character_island", None)
+            if island is not None:
+                island.set_agent(self.agent)
+        except Exception:
+            pass
         self._set_send_enabled(True)
         try:
             show_toast(self, "AI 助手已就绪", Toast.TYPE_SUCCESS, duration=1500)
@@ -1009,6 +1308,12 @@ class LightChatWindow(LightFramelessWindow):
         self._cleanup_agent_init_thread()
 
         self._update_agent_status_label()
+        try:
+            island = getattr(self, "character_island", None)
+            if island is not None:
+                island.set_agent(None)
+        except Exception:
+            pass
         self._set_send_enabled(True)
 
         logger.error("Agent 初始化失败: %s", error)
@@ -1017,75 +1322,6 @@ class LightChatWindow(LightFramelessWindow):
             show_toast(self, f"AI 初始化失败: {msg}", Toast.TYPE_ERROR, duration=3000)
         except Exception:
             pass
-
-    def _adjust_input_height(self):
-        """根据内容自动调整输入框高度 - v2.29.17 优化：彻底修复初始化时高度异常问题
-
-        规则：
-        - 单行时：56px (MD3 标准单行高度)
-        - 多行时：自动扩张，每行约 24px (line-height: 1.5 * 16px)
-        - 最多 4 行：56 + 24*3 = 128px
-        - 超过 4 行：固定高度，启用滚动条
-        - 扩张方向：向上扩张（固定底部位置）
-
-        v2.29.17 修复：
-        - 使用setFixedHeight而不是setMinimum/MaximumHeight，避免自动扩展
-        - 添加初始化检查，避免初始化时错误调整高度
-        - 添加文档高度合理性检查，避免异常值导致错误调整
-        - 空内容时强制保持单行高度，不进行任何计算
-        """
-        # v2.29.16: 如果输入框未初始化，不调整高度
-        if not hasattr(self, '_input_initialized') or not self._input_initialized:
-            return
-
-        # v2.29.17: 获取文本内容，如果为空则直接保持单行高度
-        text_content = self.input_text.toPlainText()
-        if not text_content:
-            # 空内容时强制保持单行高度
-            if self.input_text.height() != self._single_line_height:
-                self.input_text.setFixedHeight(self._single_line_height)
-            if self.input_area.height() != self._input_area_min_height:
-                self.input_area.setFixedHeight(self._input_area_min_height)
-            return
-
-        # v2.29.11: 缓存常量，避免重复计算
-        PADDING = 32  # 上下 padding 各 16px
-        BUTTON_AREA_HEIGHT = 48
-        MARGINS = 32
-        SPACING = 12
-
-        # 获取文档高度并计算需要的高度
-        doc_height = self.input_text.document().size().height()
-
-        # v2.29.17: 检查文档高度是否合理（有内容时才检查）
-        # 如果文档高度异常大（>500），说明文档计算错误，使用行数估算
-        if doc_height > 500:
-            # 使用行数估算高度
-            line_count = text_content.count('\n') + 1
-            estimated_height = self._single_line_height + (line_count - 1) * 24
-            content_height = min(estimated_height, self._single_line_height * self._max_lines)
-        else:
-            content_height = int(doc_height + PADDING)
-
-        # v2.29.11: 使用clamp函数简化范围限制
-        new_input_height = max(
-            self._single_line_height,
-            min(content_height, self._single_line_height * self._max_lines),
-        )
-
-        # 计算 input_area 的新高度
-        new_area_height = new_input_height + BUTTON_AREA_HEIGHT + MARGINS + SPACING
-
-        # 限制 input_area 高度
-        new_area_height = max(
-            self._input_area_min_height, min(new_area_height, self._input_area_max_height)
-        )
-
-        # v2.29.11: 只在高度真正改变时才更新，避免不必要的重绘
-        if self.input_text.height() != new_input_height:
-            self.input_text.setFixedHeight(new_input_height)
-        if self.input_area.height() != new_area_height:
-            self.input_area.setFixedHeight(new_area_height)
 
     def _send_message(self):
         """发送消息 - v2.30.7: 统一走增强输入框（支持内联表情包/附件）。"""
@@ -1300,7 +1536,7 @@ class LightChatWindow(LightFramelessWindow):
             return
 
         if not hasattr(self, "_animated_image_budget_timer"):
-            self._animated_image_budget_timer = QTimer()
+            self._animated_image_budget_timer = QTimer(self)
             self._animated_image_budget_timer.setSingleShot(True)
             self._animated_image_budget_timer.timeout.connect(self._enforce_animated_image_budget)
 
@@ -1320,26 +1556,26 @@ class LightChatWindow(LightFramelessWindow):
             return
 
         animated_set = getattr(self, "_animated_image_bubbles", None)
-        if animated_set is not None:
-            try:
-                animated = [b for b in list(animated_set) if b is not None]
-            except Exception:
-                animated = []
-        else:
-            animated = []
-
-        # 兼容兜底：如果索引未初始化，退回全树扫描（相对更慢，但保证功能可用）
-        if not animated:
+        if animated_set is None:
+            # 兼容兜底：极端情况下索引未初始化，退回全树扫描（更慢，但保证功能可用）。
             try:
                 bubbles = messages_widget.findChildren(LightImageMessageBubble)
             except Exception:
                 bubbles = []
+
+            animated: list[LightImageMessageBubble] = []
             for bubble in bubbles:
                 try:
-                    if bubble.supports_animation():
+                    if bubble is not None and bubble.supports_animation():
                         animated.append(bubble)
                 except Exception:
                     continue
+        else:
+            # 正常路径：只处理登记过的动图气泡（避免滚动时全树扫描导致掉帧）。
+            try:
+                animated = [b for b in list(animated_set) if b is not None]
+            except Exception:
+                animated = []
 
         if not animated:
             return
@@ -1744,7 +1980,7 @@ class LightChatWindow(LightFramelessWindow):
             self._stream_render_remaining = 0
 
         if not hasattr(self, "_stream_render_timer"):
-            self._stream_render_timer = QTimer()
+            self._stream_render_timer = QTimer(self)
             self._stream_render_timer.setInterval(STREAM_RENDER_INTERVAL_MS)
             self._stream_render_timer.timeout.connect(self._drain_stream_render_queue)
 
@@ -1776,7 +2012,7 @@ class LightChatWindow(LightFramelessWindow):
                 pass
 
         if not hasattr(self, "_scroll_timer"):
-            self._scroll_timer = QTimer()
+            self._scroll_timer = QTimer(self)
             self._scroll_timer.setSingleShot(True)
             # 流式期间更强调“跟随”，这里绕过 _scroll_to_bottom 的节流限制
             self._scroll_timer.timeout.connect(self._ensure_scroll_to_bottom)
@@ -2092,6 +2328,25 @@ class LightChatWindow(LightFramelessWindow):
         except Exception:
             self._live_chat_threads.append(thread)
 
+    def _register_vision_task(self, task: object) -> None:
+        """保留线程池任务引用，避免 QRunnable 被 GC 导致崩溃。"""
+        if task is None:
+            return
+        try:
+            if task not in self._vision_tasks:
+                self._vision_tasks.append(task)
+        except Exception:
+            self._vision_tasks.append(task)
+
+    def _cleanup_finished_vision_task(self, task: object) -> None:
+        if task is None:
+            return
+        try:
+            if task in self._vision_tasks:
+                self._vision_tasks.remove(task)
+        except Exception:
+            pass
+
     def _cancel_chat_thread(self, thread: Optional["ChatThread"]) -> None:
         if thread is None:
             return
@@ -2386,6 +2641,8 @@ class LightChatWindow(LightFramelessWindow):
                 ai_message,
                 image_path=image_path,
                 image_analysis=image_analysis,
+                emit_interval_ms=CHATTHREAD_EMIT_INTERVAL_MS,
+                emit_threshold=CHATTHREAD_EMIT_THRESHOLD,
             )
             self._register_live_chat_thread(self.current_chat_thread)
             self.current_chat_thread.chunk_received.connect(self._on_chunk_received)
@@ -2399,6 +2656,60 @@ class LightChatWindow(LightFramelessWindow):
         except Exception as e:
             logger.error("发送消息失败: %s", e, exc_info=True)
             show_toast(self, f"发送失败: {e}", Toast.TYPE_ERROR)
+
+    def _show_composer_tools_menu(self) -> None:
+        """显示输入框“+”菜单（附件、表情等）。"""
+        from PyQt6.QtWidgets import QMenu
+
+        anchor = getattr(self, "composer_plus_btn", None)
+        if anchor is None:
+            return
+
+        menu = QMenu(self)
+        menu_selected = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.08)
+        menu.setStyleSheet(
+            f"""
+            QMenu {{
+                background: {MD3_ENHANCED_COLORS['surface_container']};
+                border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
+                border-radius: {MD3_ENHANCED_RADIUS['xl']};
+                padding: 6px;
+            }}
+            QMenu::item {{
+                padding: 8px 12px;
+                border-radius: {MD3_ENHANCED_RADIUS['lg']};
+                color: {MD3_ENHANCED_COLORS['on_surface']};
+            }}
+            QMenu::item:selected {{
+                background: {menu_selected};
+            }}
+        """
+        )
+
+        attach_action = menu.addAction("添加图片/附件…")
+        emoji_action = menu.addAction("表情/表情包…")
+        menu.addSeparator()
+        clear_action = menu.addAction("清空输入")
+
+        action = menu.exec(anchor.mapToGlobal(QPoint(0, anchor.height())))
+        if action is None:
+            return
+        if action == attach_action:
+            self._on_attach_clicked()
+        elif action == emoji_action:
+            self._on_emoji_clicked()
+        elif action == clear_action:
+            try:
+                self.enhanced_input.clear_all()
+            except Exception:
+                pass
+
+    def _on_composer_mic_clicked(self) -> None:
+        """输入框语音按钮点击（占位）。"""
+        try:
+            show_toast(self, "语音输入开发中…", Toast.TYPE_INFO, duration=1500)
+        except Exception:
+            pass
 
     def _on_emoji_clicked(self):
         """表情按钮点击 - v2.19.0 升级版"""
@@ -2414,7 +2725,11 @@ class LightChatWindow(LightFramelessWindow):
             self.emoji_picker.sticker_selected.connect(self._on_sticker_selected)
 
         # 显示表情选择器
-        self.emoji_picker.show_at_button(self.emoji_btn)
+        anchor = getattr(self, "composer_plus_btn", None) or getattr(self, "more_btn", None)
+        if anchor is not None:
+            self.emoji_picker.show_at_button(anchor)
+        else:
+            self.emoji_picker.show()
 
     def _on_emoji_selected(self, emoji: str):
         """表情选中 - 插入到输入框 - v2.30.7 优化"""
@@ -2547,101 +2862,31 @@ class LightChatWindow(LightFramelessWindow):
                     logger.warning("不支持的文件类型: %s", file_path)
 
     def _add_pending_image(self, image_path: str):
-        """添加待发送图片到预览区域 (v2.30.2 新增)"""
-        from PyQt6.QtWidgets import QLabel, QPushButton, QVBoxLayout
-        from PyQt6.QtGui import QPixmap
-        from PyQt6.QtCore import Qt
-        from src.gui.material_design_light import MD3_LIGHT_COLORS
-
-        # 检查是否已添加
-        if image_path in self.pending_images:
-            logger.debug("图片已在待发送列表中: %s", image_path)
+        """添加待发送图片到输入框内的预览区域（兼容旧接口）。"""
+        if not image_path:
             return
-
-        # 添加到待发送列表
-        self.pending_images.append(image_path)
-
-        # 创建图片预览项
-        preview_item = QWidget()
-        preview_item.setFixedSize(90, 90)
-        preview_item.setProperty("image_path", image_path)  # 保存路径用于删除
-
-        item_layout = QVBoxLayout(preview_item)
-        item_layout.setContentsMargins(0, 0, 0, 0)
-        item_layout.setSpacing(0)
-
-        # 图片容器
-        image_container = QWidget()
-        image_container.setFixedSize(90, 70)
-        image_container_layout = QVBoxLayout(image_container)
-        image_container_layout.setContentsMargins(0, 0, 0, 0)
-
-        # 加载并显示缩略图
-        image_label = QLabel()
-        pixmap = QPixmap(image_path)
-        if not pixmap.isNull():
-            scaled_pixmap = pixmap.scaled(
-                90, 70,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            image_label.setPixmap(scaled_pixmap)
-            image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        image_label.setStyleSheet(f"""
-            QLabel {{
-                background: {MD3_LIGHT_COLORS['surface_container']};
-                border: 2px solid {MD3_LIGHT_COLORS['outline_variant']};
-                border-radius: 8px;
-            }}
-        """)
-        image_container_layout.addWidget(image_label)
-        item_layout.addWidget(image_container)
-
-        # 删除按钮
-        remove_btn = QPushButton("×")
-        remove_btn.setFixedSize(90, 20)
-        remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        remove_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {MD3_LIGHT_COLORS['error']};
-                color: {MD3_LIGHT_COLORS['on_error']};
-                border: none;
-                border-radius: 4px;
-                font-size: 16px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background: {MD3_LIGHT_COLORS['error_light']};
-            }}
-        """)
-        remove_btn.clicked.connect(lambda: self._remove_pending_image(image_path, preview_item))
-        item_layout.addWidget(remove_btn)
-
-        # 添加到预览区域（在stretch之前）
-        self.image_preview_content_layout.insertWidget(
-            self.image_preview_content_layout.count() - 1,
-            preview_item
-        )
-
-        # 显示预览区域
-        self.image_preview_container.setVisible(True)
-
-        logger.debug("添加待发送图片: %s, 当前共 %s 张", image_path, len(self.pending_images))
+        try:
+            self.enhanced_input.add_file(image_path)
+        except Exception:
+            pass
+        try:
+            if image_path not in self.pending_images:
+                self.pending_images.append(image_path)
+        except Exception:
+            pass
 
     def _remove_pending_image(self, image_path: str, preview_item: QWidget):
-        """从待发送列表中移除图片 (v2.30.2 新增)"""
-        if image_path in self.pending_images:
-            self.pending_images.remove(image_path)
-
-        # 移除预览项
-        self.image_preview_content_layout.removeWidget(preview_item)
-        preview_item.deleteLater()
-
-        # 如果没有待发送图片了，隐藏预览区域
-        if not self.pending_images:
-            self.image_preview_container.setVisible(False)
-
-        logger.debug("移除待发送图片: %s, 剩余 %s 张", image_path, len(self.pending_images))
+        """从待发送列表中移除图片（兼容旧接口）。"""
+        _ = preview_item
+        try:
+            self.enhanced_input.remove_file(image_path)
+        except Exception:
+            pass
+        try:
+            if image_path in self.pending_images:
+                self.pending_images.remove(image_path)
+        except Exception:
+            pass
 
     def _process_multiple_images(self, image_paths: list, user_message: str = ""):
         """处理多张图片的识别 (v2.30.2 新增)"""
@@ -2749,8 +2994,7 @@ class LightChatWindow(LightFramelessWindow):
 
     def _batch_recognize_images(self, image_paths: list, mode: str, user_message: str = ""):
         """批量识别图片 (v2.30.2 新增)"""
-        from PyQt6.QtCore import QThread, pyqtSignal
-        from src.multimodal.vision import get_vision_processor_instance
+        # 批量识别线程已抽离到 workers 模块（仍使用线程内有限并发）
 
         # 不在聊天区插入“正在识别/识别完成”等过程消息（按需求仅终端日志）
         logger.info("开始批量识别图片: count=%s, mode=%s", len(image_paths), mode)
@@ -2767,75 +3011,6 @@ class LightChatWindow(LightFramelessWindow):
         self._stream_model_done = False
         self._show_typing_indicator()
         self.send_btn.setEnabled(False)
-
-        # 创建批量识别线程
-        class BatchImageRecognitionThread(QThread):
-            """批量图片识别线程 - v2.30.6 增强并发控制"""
-            progress = pyqtSignal(int, int, dict)  # 当前索引, 总数, 结果
-            finished = pyqtSignal(list)  # 所有结果
-            error = pyqtSignal(str)
-
-            def __init__(self, image_paths: list, mode: str, llm, max_concurrent: int = 3):
-                super().__init__()
-                self.image_paths = image_paths
-                self.mode = mode
-                self.llm = llm
-                self.max_concurrent = max_concurrent  # v2.30.6: 最大并发数
-                self._is_running = True  # v2.30.6: 停止标志
-
-            def run(self):
-                try:
-                    from concurrent.futures import ThreadPoolExecutor, as_completed
-                    processor = get_vision_processor_instance()
-
-                    results = []
-                    total = len(self.image_paths)
-
-                    # v2.30.6: 使用线程池并发处理
-                    with ThreadPoolExecutor(max_workers=self.max_concurrent) as executor:
-                        # 提交所有任务
-                        future_to_index = {
-                            executor.submit(
-                                processor.smart_analyze,
-                                image_path,
-                                mode=self.mode,
-                                llm=self.llm
-                            ): (i, image_path)
-                            for i, image_path in enumerate(self.image_paths)
-                        }
-
-                        # 按完成顺序处理结果
-                        completed = 0
-                        for future in as_completed(future_to_index):
-                            if not self._is_running:
-                                logger.info("批量识别被取消")
-                                break
-
-                            i, image_path = future_to_index[future]
-                            try:
-                                result = future.result()
-                                result['image_path'] = image_path
-                                results.append((i, result))  # 保存索引以便排序
-                                completed += 1
-
-                                # 发送进度
-                                self.progress.emit(completed, total, result)
-                            except Exception as e:
-                                logger.error("识别图片 %s 失败: %s", image_path, e)
-                                # 继续处理其他图片
-
-                    # v2.30.6: 按原始顺序排序结果
-                    results.sort(key=lambda x: x[0])
-                    sorted_results = [r[1] for r in results]
-
-                    self.finished.emit(sorted_results)
-                except Exception as e:
-                    logger.error("批量识别失败: %s", e)
-                    self.error.emit(str(e))
-
-            def stop(self):
-                """停止识别 - v2.30.6 新增"""
-                self._is_running = False
 
         # 创建并启动线程
         from src.llm.factory import get_vision_llm
@@ -2917,7 +3092,9 @@ class LightChatWindow(LightFramelessWindow):
                 self.agent,
                 self._convert_stickers_to_description(ai_message),
                 image_path=first_image_path,
-                image_analysis=combined_analysis
+                image_analysis=combined_analysis,
+                emit_interval_ms=CHATTHREAD_EMIT_INTERVAL_MS,
+                emit_threshold=CHATTHREAD_EMIT_THRESHOLD,
             )
             self._register_live_chat_thread(self.current_chat_thread)
             self.current_chat_thread.chunk_received.connect(self._on_chunk_received)
@@ -2955,43 +3132,31 @@ class LightChatWindow(LightFramelessWindow):
         self._show_typing_indicator()
         self.send_btn.setEnabled(False)
 
-        from PyQt6.QtCore import QThread, pyqtSignal
-        from src.multimodal.vision import get_vision_processor_instance
-
-        class _SingleImageRecognitionThread(QThread):
-            finished = pyqtSignal(dict)
-            error = pyqtSignal(str)
-
-            def __init__(self, path: str, llm, mode: str = "auto"):
-                super().__init__()
-                self.path = path
-                self.llm = llm
-                self.mode = mode
-
-            def run(self):
-                try:
-                    result = get_vision_processor_instance().smart_analyze(
-                        self.path,
-                        mode=self.mode,
-                        llm=self.llm,
-                    )
-                    self.finished.emit(result)
-                except Exception as e:
-                    self.error.emit(str(e))
-
-        # 创建并启动线程
         from src.llm.factory import get_vision_llm
         vision_llm = get_vision_llm()
-        self.image_recognition_thread = _SingleImageRecognitionThread(
-            image_path, vision_llm, mode="auto"
-        )
-        self.image_recognition_thread.finished.connect(
-            lambda result: self._on_single_image_recognition_finished(result, image_path, user_message)
-        )
-        self.image_recognition_thread.error.connect(
-            lambda error: self._on_single_image_recognition_error(error, image_path=image_path)
-        )
-        self.image_recognition_thread.start()
+
+        task = VisionAnalyzeTask(image_path, mode="auto", llm=vision_llm)
+        self._register_vision_task(task)
+
+        def _on_result(result: dict, p=image_path, um=user_message) -> None:
+            if bool(getattr(self, "_closing", False)):
+                return
+            self._on_single_image_recognition_finished(result, p, um)
+
+        def _on_error(payload: dict, p=image_path) -> None:
+            if bool(getattr(self, "_closing", False)):
+                return
+            try:
+                error_msg = str(payload.get("error") or "")
+            except Exception:
+                error_msg = ""
+            self._on_single_image_recognition_error(error_msg or "图片识别失败", image_path=p)
+
+        task.signals.result_ready.connect(_on_result)
+        task.signals.error.connect(_on_error)
+        task.signals.finished.connect(lambda t=task: self._cleanup_finished_vision_task(t))
+
+        self.thread_pool.start(task)
 
     def _on_single_image_recognition_error(self, error: str, *, image_path: str) -> None:
         logger.error("图片识别失败: %s (%s)", error, image_path)
@@ -3037,6 +3202,8 @@ class LightChatWindow(LightFramelessWindow):
                 self._convert_stickers_to_description(ai_message),
                 image_path=image_path,
                 image_analysis=result,
+                emit_interval_ms=CHATTHREAD_EMIT_INTERVAL_MS,
+                emit_threshold=CHATTHREAD_EMIT_THRESHOLD,
             )
             self._register_live_chat_thread(self.current_chat_thread)
             self.current_chat_thread.chunk_received.connect(self._on_chunk_received)
@@ -3149,9 +3316,6 @@ class LightChatWindow(LightFramelessWindow):
 
     def _process_image_recognition(self, image_path: str, mode: str):
         """处理图片识别 (v2.30.0 新增)"""
-        from PyQt6.QtCore import QThread, pyqtSignal
-        from src.multimodal.vision import get_vision_processor_instance
-
         # 显示处理中的消息
         logger.info("开始图片识别(手动模式): %s, mode=%s", image_path, mode)
         try:
@@ -3162,43 +3326,31 @@ class LightChatWindow(LightFramelessWindow):
         self._show_typing_indicator()
         self.send_btn.setEnabled(False)
 
-        # 创建识别线程
-        class ImageRecognitionThread(QThread):
-            """图片识别线程"""
-            finished = pyqtSignal(dict)
-            error = pyqtSignal(str)
-
-            def __init__(self, image_path: str, mode: str, llm):
-                super().__init__()
-                self.image_path = image_path
-                self.mode = mode
-                self.llm = llm
-
-            def run(self):
-                try:
-                    # 使用VisionProcessor进行智能分析
-                    result = get_vision_processor_instance().smart_analyze(
-                        self.image_path,
-                        mode=self.mode,
-                        llm=self.llm
-                    )
-                    self.finished.emit(result)
-                except Exception as e:
-                    self.error.emit(str(e))
-
-        # 创建并启动线程
         from src.llm.factory import get_vision_llm
         vision_llm = get_vision_llm()
-        self.image_recognition_thread = ImageRecognitionThread(
-            image_path, mode, vision_llm
-        )
-        self.image_recognition_thread.finished.connect(
-            lambda result: self._on_image_recognition_finished(result, image_path)
-        )
-        self.image_recognition_thread.error.connect(
-            lambda error: self._on_single_image_recognition_error(error, image_path=image_path)
-        )
-        self.image_recognition_thread.start()
+
+        task = VisionAnalyzeTask(image_path, mode=mode, llm=vision_llm)
+        self._register_vision_task(task)
+
+        def _on_result(result: dict, p=image_path) -> None:
+            if bool(getattr(self, "_closing", False)):
+                return
+            self._on_image_recognition_finished(result, p)
+
+        def _on_error(payload: dict, p=image_path) -> None:
+            if bool(getattr(self, "_closing", False)):
+                return
+            try:
+                error_msg = str(payload.get("error") or "")
+            except Exception:
+                error_msg = ""
+            self._on_single_image_recognition_error(error_msg or "图片识别失败", image_path=p)
+
+        task.signals.result_ready.connect(_on_result)
+        task.signals.error.connect(_on_error)
+        task.signals.finished.connect(lambda t=task: self._cleanup_finished_vision_task(t))
+
+        self.thread_pool.start(task)
 
     def _on_image_recognition_finished(self, result: dict, image_path: str):
         """图片识别完成回调 (v2.30.0 新增)"""
@@ -3226,6 +3378,8 @@ class LightChatWindow(LightFramelessWindow):
             self._convert_stickers_to_description(ai_message),
             image_path=image_path,
             image_analysis=result,
+            emit_interval_ms=CHATTHREAD_EMIT_INTERVAL_MS,
+            emit_threshold=CHATTHREAD_EMIT_THRESHOLD,
         )
         self._register_live_chat_thread(self.current_chat_thread)
         self.current_chat_thread.chunk_received.connect(self._on_chunk_received)
@@ -3268,6 +3422,508 @@ class LightChatWindow(LightFramelessWindow):
         # 切换联系人面板
         self.contacts_panel.toggle()
 
+    def _show_header_menu(self) -> None:
+        """显示头部“更多”菜单。"""
+        from PyQt6.QtWidgets import QMenu
+
+        anchor = getattr(self, "more_btn", None)
+        if anchor is None:
+            return
+
+        menu = QMenu(self)
+        menu_selected = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.08)
+        menu.setStyleSheet(
+            f"""
+            QMenu {{
+                background: {MD3_ENHANCED_COLORS['surface_container']};
+                border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
+                border-radius: {MD3_ENHANCED_RADIUS['xl']};
+                padding: 6px;
+            }}
+            QMenu::item {{
+                padding: 8px 12px;
+                border-radius: {MD3_ENHANCED_RADIUS['lg']};
+                color: {MD3_ENHANCED_COLORS['on_surface']};
+            }}
+            QMenu::item:selected {{
+                background: {menu_selected};
+            }}
+        """
+        )
+
+        settings_action = menu.addAction("设置")
+        refresh_action = menu.addAction("刷新当前对话")
+        clear_action = menu.addAction("清空当前聊天记录…")
+        logout_action = menu.addAction("退出登录")
+
+        action = menu.exec(anchor.mapToGlobal(QPoint(0, anchor.height())))
+        if action is None:
+            return
+        if action == settings_action:
+            self._on_settings_clicked()
+        elif action == refresh_action:
+            self._refresh_current_chat()
+        elif action == clear_action:
+            self._confirm_and_clear_current_chat_history()
+        elif action == logout_action:
+            self._on_logout_clicked()
+
+    def _refresh_current_chat(self) -> None:
+        """刷新当前对话视图（清空 UI 并重新加载最近消息）。"""
+        contact = getattr(self, "current_contact", None)
+        if not contact:
+            return
+
+        self.scroll_area.setUpdatesEnabled(False)
+        self._clear_messages()
+        self.scroll_area.setUpdatesEnabled(True)
+
+        if user_session.is_logged_in():
+            self._load_chat_history(contact)
+            show_toast(self, "正在刷新聊天记录…", Toast.TYPE_INFO, duration=1200)
+        else:
+            show_toast(self, "未登录，无法加载聊天记录", Toast.TYPE_WARNING, duration=1500)
+
+    def _confirm_and_clear_current_chat_history(self) -> None:
+        """确认并清空当前联系人的聊天记录（不可撤销）。"""
+        contact = getattr(self, "current_contact", None)
+        if not contact:
+            return
+
+        if not user_session.is_logged_in():
+            show_toast(self, "未登录，无法清空聊天记录", Toast.TYPE_WARNING, duration=1500)
+            return
+
+        from PyQt6.QtWidgets import QMessageBox
+
+        answer = QMessageBox.question(
+            self,
+            "清空聊天记录",
+            f"确定要清空与「{contact}」的聊天记录吗？\n该操作不可撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            ok = bool(user_session.clear_chat_history(contact))
+        except Exception as exc:
+            logger.error("清空聊天记录失败: %s", exc, exc_info=True)
+            ok = False
+
+        if not ok:
+            show_toast(self, "清空失败，请稍后重试", Toast.TYPE_ERROR, duration=1800)
+            return
+
+        # 同步 UI 缓存状态（否则分页 offset/keyset 会基于旧计数出现错位）
+        try:
+            if hasattr(self, "_message_cache"):
+                self._message_cache[contact] = {}
+            if hasattr(self, "_loaded_message_count"):
+                self._loaded_message_count[contact] = 0
+            if hasattr(self, "_total_message_count"):
+                self._total_message_count[contact] = 0
+            if hasattr(self, "_oldest_message_id"):
+                self._oldest_message_id[contact] = None
+        except Exception:
+            pass
+
+        self.scroll_area.setUpdatesEnabled(False)
+        self._clear_messages()
+        self.scroll_area.setUpdatesEnabled(True)
+        show_toast(self, "已清空聊天记录", Toast.TYPE_SUCCESS, duration=1500)
+
+    def _next_history_request_id(self) -> int:
+        """生成递增的历史加载请求 ID，用于丢弃过期结果。"""
+        try:
+            self._history_load_seq += 1
+        except Exception:
+            self._history_load_seq = int(getattr(self, "_history_load_seq", 0)) + 1
+        return int(self._history_load_seq)
+
+    def _register_live_history_thread(self, thread: Optional[ChatHistoryLoaderThread]) -> None:
+        """保留历史加载线程引用，避免 QThread 被 GC 导致崩溃。"""
+        if thread is None:
+            return
+        try:
+            if thread not in self._live_history_threads:
+                self._live_history_threads.append(thread)
+        except Exception:
+            self._live_history_threads.append(thread)
+
+    def _cleanup_finished_history_thread(self, thread: Optional[ChatHistoryLoaderThread]) -> None:
+        """清理已结束的历史加载线程。"""
+        if thread is None:
+            return
+        try:
+            if thread is getattr(self, "_active_initial_history_thread", None):
+                self._active_initial_history_thread = None
+        except Exception:
+            pass
+        try:
+            if thread is getattr(self, "_active_more_history_thread", None):
+                self._active_more_history_thread = None
+        except Exception:
+            pass
+        try:
+            try:
+                thread.result_ready.disconnect()
+                thread.error.disconnect()
+                thread.finished.disconnect()
+            except TypeError:
+                pass
+        except Exception:
+            pass
+
+        try:
+            thread.requestInterruption()
+        except Exception:
+            pass
+
+        try:
+            thread.deleteLater()
+        except Exception:
+            pass
+
+        try:
+            if thread in self._live_history_threads:
+                self._live_history_threads.remove(thread)
+        except Exception:
+            pass
+
+    def _cancel_history_thread(self, thread: Optional[ChatHistoryLoaderThread]) -> None:
+        if thread is None:
+            return
+        self._register_live_history_thread(thread)
+        try:
+            if thread.isRunning():
+                try:
+                    thread.requestInterruption()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _show_history_loading_state(self, contact_name: str) -> None:
+        """显示历史加载占位，避免切换联系人时界面长时间空白。"""
+        self._remove_history_loading_state()
+        try:
+            from .loading_states import CircularProgress
+
+            container = QWidget()
+            layout = QVBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+            layout.addStretch(1)
+
+            progress = CircularProgress(size=28)
+
+            title = QLabel("加载中…")
+            title.setStyleSheet(
+                f"""
+                QLabel {{
+                    color: {MD3_ENHANCED_COLORS['on_surface']};
+                    {get_typography_css('title_medium')}
+                    background: transparent;
+                    font-weight: 600;
+                }}
+                """
+            )
+
+            subtitle = QLabel(f"正在加载 {contact_name} 的聊天记录")
+            subtitle.setStyleSheet(
+                f"""
+                QLabel {{
+                    color: {MD3_ENHANCED_COLORS['on_surface_variant']};
+                    {get_typography_css('body_medium')}
+                    background: transparent;
+                }}
+                """
+            )
+            subtitle.setWordWrap(True)
+
+            layout.addWidget(progress, alignment=Qt.AlignmentFlag.AlignHCenter)
+            layout.addSpacing(12)
+            layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignHCenter)
+            layout.addSpacing(6)
+            layout.addWidget(subtitle, alignment=Qt.AlignmentFlag.AlignHCenter)
+            layout.addStretch(1)
+            self._history_loading_widget = container
+            self.messages_layout.insertWidget(0, container)
+        except Exception:
+            self._history_loading_widget = None
+
+    def _remove_history_loading_state(self) -> None:
+        widget = getattr(self, "_history_loading_widget", None)
+        self._history_loading_widget = None
+        if widget is None:
+            return
+        try:
+            if hasattr(self, "messages_layout") and self.messages_layout is not None:
+                self.messages_layout.removeWidget(widget)
+        except Exception:
+            pass
+        try:
+            widget.deleteLater()
+        except Exception:
+            pass
+
+    def _on_history_load_result(self, payload: object) -> None:
+        """接收后台线程加载结果并在 UI 线程应用。"""
+        if not isinstance(payload, dict):
+            return
+
+        mode = payload.get("mode")
+        contact_name = payload.get("contact_name")
+        request_id = int(payload.get("request_id") or 0)
+        if not contact_name:
+            return
+
+        if mode == "initial":
+            if request_id != int(getattr(self, "_active_initial_history_request_id", 0)):
+                return
+            if contact_name != getattr(self, "current_contact", None):
+                return
+
+            total_count = int(payload.get("total_count") or 0)
+            messages = payload.get("messages") or []
+            if not isinstance(messages, list):
+                messages = []
+            self._apply_loaded_chat_history(contact_name, total_count, messages)
+            return
+
+        if mode == "more":
+            if request_id != int(getattr(self, "_active_more_history_request_id", 0)):
+                return
+            if contact_name != getattr(self, "current_contact", None):
+                # 联系人已切换：释放加载锁，但丢弃结果
+                try:
+                    self._pending_history_load_state.pop(request_id, None)
+                except Exception:
+                    pass
+                self._is_loading_more = False
+                return
+
+            state = self._pending_history_load_state.pop(request_id, {})
+            old_value = int(state.get("old_value", 0))
+            old_max = int(state.get("old_max", 0))
+            prev_loaded = int(state.get("loaded_count", 0))
+            total_count = int(state.get("total_count", 0))
+
+            messages = payload.get("messages") or []
+            if not isinstance(messages, list):
+                messages = []
+            self._apply_loaded_more_history(
+                contact_name,
+                messages,
+                old_value=old_value,
+                old_max=old_max,
+                prev_loaded_count=prev_loaded,
+                total_count=total_count,
+            )
+
+    def _on_history_load_error(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+
+        mode = payload.get("mode")
+        contact_name = payload.get("contact_name")
+        request_id = int(payload.get("request_id") or 0)
+        error_text = payload.get("error") or "加载失败"
+
+        if mode == "initial":
+            if request_id != int(getattr(self, "_active_initial_history_request_id", 0)):
+                return
+            if contact_name != getattr(self, "current_contact", None):
+                return
+            self._remove_history_loading_state()
+            show_toast(self, f"加载历史失败：{error_text}", Toast.TYPE_ERROR, duration=2500)
+            return
+
+        if mode == "more":
+            if request_id != int(getattr(self, "_active_more_history_request_id", 0)):
+                return
+            try:
+                self._pending_history_load_state.pop(request_id, None)
+            except Exception:
+                pass
+            self._is_loading_more = False
+            show_toast(self, f"加载更多失败：{error_text}", Toast.TYPE_ERROR, duration=2500)
+
+    def _apply_loaded_chat_history(
+        self,
+        contact_name: str,
+        total_count: int,
+        messages: list[dict],
+    ) -> None:
+        """将后台加载到的聊天历史应用到界面（批量插入、禁用动画）。"""
+        scroll_widget = self.scroll_area.widget()
+        scrollbar = self.scroll_area.verticalScrollBar()
+        old_bulk_loading = getattr(self, "_bulk_loading_messages", False)
+        old_scrollbar_signals = False
+        try:
+            self._remove_history_loading_state()
+
+            # v2.30.12: 更新消息总数（用于判断是否还有更多消息）
+            self._total_message_count[contact_name] = int(total_count)
+
+            # 批量插入：禁用滚动区域更新，避免闪烁/抖动
+            self._bulk_loading_messages = True
+            try:
+                old_scrollbar_signals = scrollbar.blockSignals(True)
+            except Exception:
+                old_scrollbar_signals = False
+            self.scroll_area.setUpdatesEnabled(False)
+            if scroll_widget is not None:
+                scroll_widget.setUpdatesEnabled(False)
+
+            if not messages:
+                self._add_message(
+                    f"开始与 {contact_name} 的对话吧！",
+                    is_user=False,
+                    save_to_db=False,
+                    with_animation=False,
+                )
+            else:
+                # 缓存加载的消息（使用消息ID去重）
+                contact_cache = self._message_cache.setdefault(contact_name, {})
+                for msg in messages:
+                    msg_id = msg.get("id")
+                    if msg_id:
+                        contact_cache[msg_id] = msg
+
+                # 记录最早消息 id，用于后续向上翻页
+                oldest = messages[0].get("id") if messages else None
+                try:
+                    self._oldest_message_id[contact_name] = oldest
+                except Exception:
+                    pass
+
+                for msg in messages:
+                    self._add_message(
+                        msg.get("content", ""),
+                        is_user=(msg.get("role") == "user"),
+                        save_to_db=False,
+                        with_animation=False,
+                    )
+
+            # 更新已加载消息数量
+            self._loaded_message_count[contact_name] = len(messages)
+
+            # 重新启用更新并强制刷新布局
+            if scroll_widget is not None:
+                scroll_widget.setUpdatesEnabled(True)
+            self.scroll_area.setUpdatesEnabled(True)
+            self.messages_layout.update()
+            self._schedule_messages_geometry_update()
+            self._ensure_scroll_to_bottom()
+
+            if total_count > len(messages):
+                logger.debug("还有 %s 条历史消息未加载", total_count - len(messages))
+
+            logger.info(
+                "已加载 %s/%s 条历史消息（联系人: %s）",
+                len(messages),
+                total_count,
+                contact_name,
+            )
+        except Exception as e:
+            from src.utils.exceptions import handle_exception
+
+            handle_exception(e, logger, "应用聊天历史失败")
+        finally:
+            # 双保险：避免异常/提前返回导致界面不更新
+            if scroll_widget is not None:
+                scroll_widget.setUpdatesEnabled(True)
+            self.scroll_area.setUpdatesEnabled(True)
+            try:
+                scrollbar.blockSignals(old_scrollbar_signals)
+            except Exception:
+                pass
+            self._bulk_loading_messages = old_bulk_loading
+
+    def _apply_loaded_more_history(
+        self,
+        contact_name: str,
+        messages: list[dict],
+        *,
+        old_value: int,
+        old_max: int,
+        prev_loaded_count: int,
+        total_count: int,
+    ) -> None:
+        """将后台加载到的“更多历史”插入到顶部，并恢复滚动位置。"""
+        try:
+            if not messages:
+                show_toast(self, "没有更多历史消息", Toast.TYPE_INFO, duration=1500)
+                return
+
+            # 缓存新加载的消息
+            contact_cache = self._message_cache.setdefault(contact_name, {})
+            for msg in messages:
+                msg_id = msg.get("id")
+                if msg_id and msg_id not in contact_cache:
+                    contact_cache[msg_id] = msg
+
+            # 更新“最早消息 id”，用于下一次 keyset 翻页
+            new_oldest = messages[0].get("id") if messages else None
+            if new_oldest:
+                try:
+                    self._oldest_message_id[contact_name] = new_oldest
+                except Exception:
+                    pass
+
+            scroll_widget = self.scroll_area.widget()
+            scrollbar = self.scroll_area.verticalScrollBar()
+            old_bulk_loading = getattr(self, "_bulk_loading_messages", False)
+            old_scrollbar_signals = False
+            try:
+                self._bulk_loading_messages = True
+                try:
+                    old_scrollbar_signals = scrollbar.blockSignals(True)
+                except Exception:
+                    old_scrollbar_signals = False
+                self.scroll_area.setUpdatesEnabled(False)
+                if scroll_widget is not None:
+                    scroll_widget.setUpdatesEnabled(False)
+
+                for msg in reversed(messages):  # 反转以保持时间顺序
+                    self._insert_message_at_top(
+                        msg.get("content", ""),
+                        is_user=(msg.get("role") == "user"),
+                        with_animation=False,
+                    )
+
+                self._loaded_message_count[contact_name] = prev_loaded_count + len(messages)
+            finally:
+                if scroll_widget is not None:
+                    scroll_widget.setUpdatesEnabled(True)
+                self.scroll_area.setUpdatesEnabled(True)
+                try:
+                    scrollbar.blockSignals(old_scrollbar_signals)
+                except Exception:
+                    pass
+                self._bulk_loading_messages = old_bulk_loading
+
+            self.messages_layout.update()
+            self._schedule_messages_geometry_update()
+            QTimer.singleShot(100, lambda: self._restore_scroll_position(old_value, old_max))
+
+            logger.info(
+                "已加载 %s/%s 条历史消息",
+                self._loaded_message_count.get(contact_name, 0),
+                total_count,
+            )
+            show_toast(
+                self,
+                f"已加载更多历史消息 ({self._loaded_message_count.get(contact_name, 0)}/{total_count})",
+                Toast.TYPE_SUCCESS,
+                duration=1500,
+            )
+        finally:
+            self._is_loading_more = False
+
     def _on_contact_selected(self, contact_name: str):
         """联系人选中 - 切换到该联系人的消息容器 - v2.21.3 优化：流畅切换，无闪烁"""
 
@@ -3304,13 +3960,12 @@ class LightChatWindow(LightFramelessWindow):
 
         # 清空当前消息
         self._clear_messages()
+        # 先恢复更新：历史查询移至后台线程后，不应长时间保持禁用（避免界面空白/无响应）
+        self.scroll_area.setUpdatesEnabled(True)
 
-        # 加载该联系人的聊天历史（内部会重新启用更新）
+        # 加载该联系人的聊天历史（后台线程查询，UI 线程批量插入）
         if user_session.is_logged_in():
             self._load_chat_history(contact_name)
-        else:
-            # 如果未登录，手动重新启用更新
-            self.scroll_area.setUpdatesEnabled(True)
 
         # 更新头部显示
         self.name_label.setText(contact_name)
@@ -3328,119 +3983,59 @@ class LightChatWindow(LightFramelessWindow):
             contact_name: 联系人名称
             limit: 加载消息数量（默认20条，避免一次加载过多）
         """
+        if not user_session.is_logged_in():
+            return
 
-        scroll_widget = self.scroll_area.widget()
-        scrollbar = self.scroll_area.verticalScrollBar()
-        old_bulk_loading = getattr(self, "_bulk_loading_messages", False)
-        old_scrollbar_signals = False
         try:
-            logger.debug("开始加载聊天历史: %s (limit=%s)", contact_name, limit)
+            logger.debug("开始异步加载聊天历史: %s (limit=%s)", contact_name, limit)
 
-            # v2.30.12: 初始化消息缓存和分页状态
-            if not hasattr(self, '_message_cache'):
-                self._message_cache = {}  # {contact_name: {msg_id: msg}}
-            if not hasattr(self, '_loaded_message_count'):
-                self._loaded_message_count = {}  # {contact_name: count}
-            if not hasattr(self, '_total_message_count'):
-                self._total_message_count = {}  # {contact_name: total}
+            # 初始化消息缓存和分页状态（防御性：兼容旧对象）
+            if not hasattr(self, "_message_cache"):
+                self._message_cache = {}
+            if not hasattr(self, "_loaded_message_count"):
+                self._loaded_message_count = {}
+            if not hasattr(self, "_total_message_count"):
+                self._total_message_count = {}
             if not hasattr(self, "_oldest_message_id"):
                 # {contact_name: oldest_loaded_msg_id}; 用于 keyset pagination，避免大 OFFSET 退化
                 self._oldest_message_id = {}
 
-            # 重置当前联系人的缓存
+            # 重置当前联系人的缓存与计数（结果返回后再写入真实 total_count）
             self._message_cache[contact_name] = {}
             self._loaded_message_count[contact_name] = 0
+            self._total_message_count[contact_name] = 0
             self._oldest_message_id[contact_name] = None
 
-            # v2.30.12: 获取消息总数（用于判断是否还有更多消息）
-            total_count = user_session.get_chat_history_count(contact_name)
-            self._total_message_count[contact_name] = total_count
-            logger.debug("消息总数: %s", total_count)
+            self._show_history_loading_state(contact_name)
 
-            # 从数据库加载最近的聊天历史（性能优化：限制数量）
-            # v2.49.x: 使用 keyset pagination（按 id），避免 OFFSET 在大历史下越来越慢
-            messages = user_session.get_chat_history_page(contact_name, limit=limit, before_id=None)
+            request_id = self._next_history_request_id()
+            self._active_initial_history_request_id = request_id
 
-            # v2.21.3 优化：禁用滚动区域更新，批量加载消息（包含无历史消息的欢迎提示）
-            self._bulk_loading_messages = True
-            # 同步屏蔽滚动条信号，避免批量插入期间触发 valueChanged 导致额外逻辑与抖动
-            try:
-                old_scrollbar_signals = scrollbar.blockSignals(True)
-            except Exception:
-                old_scrollbar_signals = False
-            self.scroll_area.setUpdatesEnabled(False)
-            if scroll_widget is not None:
-                scroll_widget.setUpdatesEnabled(False)
+            # 快速切换联系人时，取消上一轮历史加载（避免并发 DB 查询拖慢 UI）
+            self._cancel_history_thread(getattr(self, "_active_initial_history_thread", None))
 
-            # 显示历史消息（v2.21.3 优化：禁用动画，避免闪烁）
-            try:
-                if not messages:
-                    # 没有历史消息，显示欢迎消息（注意：仍需确保最终恢复更新开关）
-                    logger.debug("没有历史消息，显示欢迎消息")
-                    self._add_message(
-                        f"开始与 {contact_name} 的对话吧！",
-                        is_user=False,
-                        save_to_db=False,
-                        with_animation=False,
-                    )
-                else:
-                    logger.debug("开始显示 %s 条历史消息", len(messages))
-                    # v2.30.12: 缓存加载的消息（使用消息ID去重）
-                    contact_cache = self._message_cache[contact_name]
-                    for msg in messages:
-                        msg_id = msg.get("id")
-                        if msg_id:
-                            contact_cache[msg_id] = msg
-                    # 记录最早消息 id，用于后续向上翻页
-                    oldest = messages[0].get("id") if messages else None
-                    self._oldest_message_id[contact_name] = oldest
-
-                    for msg in messages:
-                        is_user = msg.get("role") == "user"
-                        # v2.21.3 关键优化：with_animation=False 禁用入场动画
-                        self._add_message(
-                            msg["content"],
-                            is_user=is_user,
-                            save_to_db=False,
-                            with_animation=False,
-                        )
-            finally:
-                self._bulk_loading_messages = old_bulk_loading
-
-            # v2.30.12: 更新已加载消息数量
-            self._loaded_message_count[contact_name] = len(messages)
-
-            # v2.48.8 修复：重新启用更新并强制刷新布局
-            if scroll_widget is not None:
-                scroll_widget.setUpdatesEnabled(True)
-            self.scroll_area.setUpdatesEnabled(True)
-
-            # v2.48.8 修复：强制更新布局，避免抖动
-            self.messages_layout.update()
-            self._schedule_messages_geometry_update()
-
-            # 统一走批量滚动调度：若此刻 maximum 尚未最终确定，rangeChanged 会再次触发跟随到底部
-            self._ensure_scroll_to_bottom()
-
-            # v2.30.12: 如果还有更多消息，显示提示
-            if total_count > limit:
-                logger.debug("还有 %s 条历史消息未加载", total_count - limit)
-
-            logger.info("已加载 %s/%s 条历史消息（联系人: %s）", len(messages), total_count, contact_name)
+            thread = ChatHistoryLoaderThread(
+                ChatHistoryLoadRequest(
+                    request_id=request_id,
+                    mode="initial",
+                    contact_name=contact_name,
+                    limit=limit,
+                    before_id=None,
+                    offset=0,
+                    include_total=True,
+                )
+            )
+            thread.result_ready.connect(self._on_history_load_result)
+            thread.error.connect(self._on_history_load_error)
+            thread.finished.connect(lambda thr=thread: self._cleanup_finished_history_thread(thr))
+            self._register_live_history_thread(thread)
+            self._active_initial_history_thread = thread
+            thread.start()
         except Exception as e:
             from src.utils.exceptions import handle_exception
 
             handle_exception(e, logger, "加载聊天历史失败")
-        finally:
-            # 双保险：避免异常/提前返回导致界面不更新
-            if scroll_widget is not None:
-                scroll_widget.setUpdatesEnabled(True)
-            self.scroll_area.setUpdatesEnabled(True)
-            try:
-                scrollbar.blockSignals(old_scrollbar_signals)
-            except Exception:
-                pass
-            self._bulk_loading_messages = old_bulk_loading
+            self._remove_history_loading_state()
 
     def _load_more_history(self, contact_name: str, limit: int = 20):
         """加载更多历史消息 (v2.30.12: 新增分页加载功能)
@@ -3449,23 +4044,27 @@ class LightChatWindow(LightFramelessWindow):
             contact_name: 联系人名称
             limit: 每次加载的消息数量
         """
+        if not user_session.is_logged_in():
+            self._is_loading_more = False
+            return
+
         try:
-            # 检查是否还有更多消息
-            if not hasattr(self, '_loaded_message_count'):
+            if not hasattr(self, "_loaded_message_count"):
                 logger.warning("未初始化消息计数器")
+                self._is_loading_more = False
                 return
 
-            loaded_count = self._loaded_message_count.get(contact_name, 0)
-            total_count = self._total_message_count.get(contact_name, 0)
+            loaded_count = int(self._loaded_message_count.get(contact_name, 0))
+            total_count = int(self._total_message_count.get(contact_name, 0))
 
             if loaded_count >= total_count:
                 logger.info("已加载全部 %s 条消息", total_count)
                 show_toast(self, "已加载全部历史消息", Toast.TYPE_INFO, duration=2000)
+                self._is_loading_more = False
                 return
 
-            # 计算还需要加载的消息数量
             remaining = total_count - loaded_count
-            load_count = min(limit, remaining)
+            load_count = min(int(limit), int(remaining))
 
             before_id = None
             try:
@@ -3474,98 +4073,49 @@ class LightChatWindow(LightFramelessWindow):
                 before_id = None
 
             logger.debug(
-                "加载更多历史消息: loaded=%s, limit=%s, before_id=%s",
+                "异步加载更多历史: loaded=%s, limit=%s, before_id=%s",
                 loaded_count,
                 load_count,
                 before_id,
             )
 
-            # 从数据库加载更多消息
-            if before_id:
-                messages = user_session.get_chat_history_page(
-                    contact_name, limit=load_count, before_id=before_id
-                )
-            else:
-                # 兜底：首次加载异常/旧数据结构时退回 OFFSET
-                messages = user_session.get_chat_history(contact_name, limit=load_count, offset=loaded_count)
-
-            if not messages:
-                logger.warning("没有加载到更多消息")
-                return
-
-            # v2.30.12: 缓存新加载的消息
-            contact_cache = self._message_cache.setdefault(contact_name, {})
-            for msg in messages:
-                msg_id = msg.get('id')
-                if msg_id and msg_id not in contact_cache:
-                    contact_cache[msg_id] = msg
-            # 更新“最早消息 id”，用于下一次 keyset 翻页
-            new_oldest = messages[0].get("id") if messages else None
-            if new_oldest:
-                try:
-                    self._oldest_message_id[contact_name] = new_oldest
-                except Exception:
-                    pass
-
-            # 记录当前滚动位置
             scrollbar = self.scroll_area.verticalScrollBar()
-            old_value = scrollbar.value()
-            old_max = scrollbar.maximum()
+            old_value = int(scrollbar.value())
+            old_max = int(scrollbar.maximum())
 
-            scroll_widget = self.scroll_area.widget()
-            old_bulk_loading = getattr(self, "_bulk_loading_messages", False)
-            old_scrollbar_signals = False
-            try:
-                self._bulk_loading_messages = True
+            request_id = self._next_history_request_id()
+            self._active_more_history_request_id = request_id
+            self._pending_history_load_state[request_id] = {
+                "old_value": old_value,
+                "old_max": old_max,
+                "loaded_count": loaded_count,
+                "total_count": total_count,
+            }
 
-                # 禁用滚动区域及其内容区域更新，避免批量插入引发频繁重绘/抖动
-                try:
-                    old_scrollbar_signals = scrollbar.blockSignals(True)
-                except Exception:
-                    old_scrollbar_signals = False
-                self.scroll_area.setUpdatesEnabled(False)
-                if scroll_widget is not None:
-                    scroll_widget.setUpdatesEnabled(False)
+            self._cancel_history_thread(getattr(self, "_active_more_history_thread", None))
 
-                # 在顶部插入历史消息（禁用动画）
-                logger.debug("在顶部插入 %s 条历史消息", len(messages))
-                for msg in reversed(messages):  # 反转以保持时间顺序
-                    self._insert_message_at_top(
-                        msg["content"],
-                        is_user=(msg.get("role") == "user"),
-                        with_animation=False,
-                    )
-
-                # 更新已加载消息数量
-                self._loaded_message_count[contact_name] = loaded_count + len(messages)
-            finally:
-                if scroll_widget is not None:
-                    scroll_widget.setUpdatesEnabled(True)
-                self.scroll_area.setUpdatesEnabled(True)
-                try:
-                    scrollbar.blockSignals(old_scrollbar_signals)
-                except Exception:
-                    pass
-                self._bulk_loading_messages = old_bulk_loading
-
-            # v2.48.8 修复：强制更新布局，避免抖动
-            self.messages_layout.update()
-            self._schedule_messages_geometry_update()
-
-            # v2.48.8 修复：增加延迟到 100ms，确保布局完全更新后再恢复滚动位置
-            QTimer.singleShot(100, lambda: self._restore_scroll_position(old_value, old_max))
-
-            logger.info("已加载 %s/%s 条历史消息", self._loaded_message_count[contact_name], total_count)
-            show_toast(
-                self,
-                f"已加载 {len(messages)} 条历史消息",
-                Toast.TYPE_SUCCESS,
-                duration=2000
+            thread = ChatHistoryLoaderThread(
+                ChatHistoryLoadRequest(
+                    request_id=request_id,
+                    mode="more",
+                    contact_name=contact_name,
+                    limit=load_count,
+                    before_id=int(before_id) if before_id else None,
+                    offset=loaded_count,
+                    include_total=False,
+                )
             )
+            thread.result_ready.connect(self._on_history_load_result)
+            thread.error.connect(self._on_history_load_error)
+            thread.finished.connect(lambda thr=thread: self._cleanup_finished_history_thread(thr))
+            self._register_live_history_thread(thread)
+            self._active_more_history_thread = thread
+            thread.start()
         except Exception as e:
             from src.utils.exceptions import handle_exception
 
             handle_exception(e, logger, "加载更多历史消息失败")
+            self._is_loading_more = False
 
     def _insert_message_at_top(self, message: str, is_user: bool, with_animation: bool = False):
         """在顶部插入消息 (v2.30.13: 修复导入错误)
@@ -3738,13 +4288,11 @@ class LightChatWindow(LightFramelessWindow):
         self._schedule_stream_scroll()
 
     def _load_more_with_reset(self):
-        """加载更多消息并重置加载状态 (v2.30.12: 新增)"""
-        try:
-            if self.current_contact:
-                self._load_more_history(self.current_contact, limit=20)
-        finally:
-            # 重置加载状态
-            QTimer.singleShot(500, lambda: setattr(self, '_is_loading_more', False))
+        """加载更多消息（异步查询 + UI 批量插入）。"""
+        if not self.current_contact:
+            self._is_loading_more = False
+            return
+        self._load_more_history(self.current_contact, limit=20)
 
     def _save_current_chat_history(self):
         """保存当前聊天历史（在切换联系人时调用）"""
@@ -3771,28 +4319,343 @@ class LightChatWindow(LightFramelessWindow):
 
     def _on_settings_saved(self):
         """设置保存后的回调 - v2.22.0 优化：刷新头像"""
-        logger.info("设置已保存，需要重启应用以应用新设置")
+        try:
+            logger.info("设置已保存")
+        except Exception:
+            pass
 
-        # v2.22.0 刷新头像显示
-        if user_session.is_logged_in():
-            ai_avatar = user_session.get_ai_avatar()
-            # 重新创建头像标签
-            new_avatar_label = _create_avatar_label_for_header(ai_avatar, 56)
-            # 替换旧的头像标签
-            old_avatar = self.avatar_label
-            parent_layout = old_avatar.parent().layout()
-            if parent_layout:
-                index = parent_layout.indexOf(old_avatar)
-                parent_layout.removeWidget(old_avatar)
-                old_avatar.deleteLater()
-                parent_layout.insertWidget(index, new_avatar_label)
-                self.avatar_label = new_avatar_label
-                # 重新设置脉冲动画
-                self._setup_avatar_pulse_animation()
-            logger.info("AI助手头像已刷新: %s", ai_avatar)
+        # v2.22.0: 刷新头像显示（避免替换 widget 导致嵌套布局结构被破坏）
+        try:
+            if user_session.is_logged_in():
+                ai_avatar = user_session.get_ai_avatar()
+                self._update_header_avatar_label(ai_avatar)
+                logger.info("AI助手头像已刷新: %s", ai_avatar)
+        except Exception:
+            pass
+
+        # v2.51.x: 检测“需重启生效”的设置并提供一键重启
+        try:
+            restart_reasons = self._get_restart_required_reasons()
+            agent_reload_reasons = {"LLM 配置已更改", "AI 助手（Agent）参数已更改"}
+            needs_agent_reload = any(reason in agent_reload_reasons for reason in restart_reasons)
+            if needs_agent_reload:
+                try:
+                    self._reload_agent_after_settings_saved()
+                except Exception:
+                    pass
+                restart_reasons = [r for r in restart_reasons if r not in agent_reload_reasons]
+
+            if restart_reasons:
+                from PyQt6.QtWidgets import QMessageBox
+
+                details = "\n".join(f"• {reason}" for reason in restart_reasons)
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Icon.Information)
+                box.setWindowTitle("✅ 设置已保存")
+                box.setText("以下设置需要重启应用后生效：\n\n" + details + "\n\n是否立即重启？")
+                restart_btn = box.addButton("立即重启", QMessageBox.ButtonRole.AcceptRole)
+                later_btn = box.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
+                box.setDefaultButton(restart_btn)
+                box.exec()
+
+                if box.clickedButton() == restart_btn:
+                    self._restart_application()
+                    return
+                _ = later_btn
+        except Exception:
+            # 重启提示失败不应影响正常流程
+            pass
 
         # 返回聊天区域
         self._on_settings_back()
+
+    def _reload_agent_after_settings_saved(self) -> None:
+        """设置保存后重载 Agent（避免“改了配置但运行态未更新”导致的异常）。"""
+        try:
+            thread = getattr(self, "current_chat_thread", None)
+            if thread is not None and thread.isRunning():
+                self._cancel_chat_thread(thread)
+        except Exception:
+            pass
+
+        try:
+            if getattr(self, "typing_indicator", None) is not None:
+                self._hide_typing_indicator()
+        except Exception:
+            pass
+
+        try:
+            self._reset_stream_render_state()
+        except Exception:
+            pass
+
+        try:
+            old_agent = getattr(self, "agent", None)
+            if old_agent is not None and hasattr(old_agent, "close"):
+                old_agent.close()
+        except Exception:
+            pass
+
+        self.agent = None
+        self._agent_init_failed = False
+        self._init_agent_async()
+        try:
+            show_toast(self, "正在应用新配置，重启 AI…", Toast.TYPE_INFO, duration=1500)
+        except Exception:
+            pass
+
+    def _update_header_avatar_label(self, avatar_text: str) -> None:
+        """更新聊天窗口头部头像（不替换 widget，避免破坏嵌套布局结构）。"""
+        label = getattr(self, "avatar_label", None)
+        if label is None:
+            return
+
+        try:
+            size = int(label.width() or label.height() or 56)
+        except Exception:
+            size = 56
+
+        try:
+            label.setFixedSize(size, size)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        except Exception:
+            pass
+
+        avatar_path = Path(avatar_text) if avatar_text else None
+        if avatar_path and avatar_path.is_file():
+            try:
+                mtime_ns = avatar_path.stat().st_mtime_ns
+            except OSError:
+                mtime_ns = 0
+
+            rounded = _load_rounded_header_avatar_pixmap(str(avatar_path), size, mtime_ns)
+            try:
+                if not rounded.isNull():
+                    label.setPixmap(rounded)
+                    label.setText("")
+                else:
+                    label.setPixmap(QPixmap())
+                    label.setText("🐱")
+                label.setScaledContents(False)
+            except Exception:
+                pass
+        else:
+            try:
+                label.setPixmap(QPixmap())
+                label.setText(avatar_text if avatar_text else "🐱")
+                label.setScaledContents(False)
+            except Exception:
+                pass
+
+        # 统一样式（与 _create_avatar_label_for_header 一致）
+        try:
+            label.setStyleSheet(
+                f"""
+                QLabel {{
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:1, y2:1,
+                        stop:0 {MD3_ENHANCED_COLORS['primary_40']},
+                        stop:1 {MD3_ENHANCED_COLORS['secondary_40']}
+                    );
+                    border-radius: {size // 2}px;
+                    font-size: {size // 2}px;
+                    border: 3px solid {MD3_ENHANCED_COLORS['surface_bright']};
+                }}
+                """
+            )
+        except Exception:
+            pass
+
+    def _get_restart_required_reasons(self) -> list[str]:
+        """检测本次保存是否包含“需重启生效”的变更。"""
+        reasons: list[str] = []
+
+        def _norm_path(value: object) -> str:
+            try:
+                from os.path import normcase, normpath
+
+                raw = str(value or "")
+                return normcase(normpath(raw)) if raw else ""
+            except Exception:
+                return str(value or "")
+
+        # 当前运行时配置（以“当前运行 session”视角为准：缓存/常量不变）
+        try:
+            from src.config.settings import settings as runtime_settings
+        except Exception:
+            runtime_settings = None
+
+        # 当前主题（theme_manager 内部缓存符合“本次运行不变”的语义）
+        try:
+            from .theme_manager import get_active_theme_name, normalize_theme_name
+
+            current_theme = normalize_theme_name(get_active_theme_name())
+        except Exception:
+            current_theme = "mint"
+
+        current_data_dir = _norm_path(getattr(runtime_settings, "data_dir", "./data") if runtime_settings else "./data")
+
+        # 读取最新 config.yaml（保存后文件已更新）
+        try:
+            import yaml
+
+            config_path = Path("config.yaml")
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+            config = raw if isinstance(raw, dict) else {}
+        except Exception:
+            config = {}
+
+        gui_section = config.get("GUI") or config.get("gui") or {}
+        if not isinstance(gui_section, dict):
+            gui_section = {}
+
+        llm_section = config.get("LLM") or config.get("llm") or {}
+        if not isinstance(llm_section, dict):
+            llm_section = {}
+
+        agent_section = config.get("Agent") or config.get("agent") or {}
+        if not isinstance(agent_section, dict):
+            agent_section = {}
+
+        tts_section = config.get("TTS") or config.get("tts") or {}
+        if not isinstance(tts_section, dict):
+            tts_section = {}
+
+        mcp_section = config.get("MCP") or config.get("mcp") or {}
+        if not isinstance(mcp_section, dict):
+            mcp_section = {}
+
+        try:
+            from .theme_manager import normalize_theme_name
+
+            new_theme = normalize_theme_name(gui_section.get("theme"))
+        except Exception:
+            new_theme = "mint"
+
+        new_data_dir = _norm_path(config.get("data_dir", "./data") or "./data")
+
+        if new_theme != current_theme:
+            reasons.append("界面主题已更改")
+        if new_data_dir != current_data_dir:
+            reasons.append("数据目录已更改")
+
+        if runtime_settings is not None:
+            try:
+                current_log_level = str(getattr(runtime_settings, "log_level", "INFO") or "INFO").upper()
+                new_log_level = str(config.get("log_level", current_log_level) or "INFO").upper()
+                current_log_dir = _norm_path(getattr(runtime_settings, "log_dir", "logs") or "logs")
+                new_log_dir = _norm_path(config.get("log_dir", current_log_dir) or current_log_dir)
+                if new_log_level != current_log_level or new_log_dir != current_log_dir:
+                    reasons.append("日志配置已更改")
+            except Exception:
+                pass
+
+            try:
+                current_llm = getattr(runtime_settings, "llm", None)
+                current_llm_dict = current_llm.model_dump() if current_llm is not None else {}
+                llm_changed = False
+                for key in ("api", "model", "key"):
+                    if key in llm_section and llm_section.get(key) != current_llm_dict.get(key):
+                        llm_changed = True
+                        break
+                if llm_changed:
+                    reasons.append("LLM 配置已更改")
+            except Exception:
+                pass
+
+            try:
+                current_agent = getattr(runtime_settings, "agent", None)
+                current_agent_dict = current_agent.model_dump() if current_agent is not None else {}
+                for key, value in agent_section.items():
+                    if key in current_agent_dict and value != current_agent_dict.get(key):
+                        reasons.append("AI 助手（Agent）参数已更改")
+                        break
+            except Exception:
+                pass
+
+            try:
+                embedding_keys = (
+                    "vector_db_path",
+                    "memory_path",
+                    "cache_path",
+                    "embedding_model",
+                    "embedding_api_base",
+                    "use_local_embedding",
+                    "enable_embedding_cache",
+                )
+                embedding_changed = False
+                for key in embedding_keys:
+                    if key not in config:
+                        continue
+                    new_value = config.get(key)
+                    current_value = getattr(runtime_settings, key, None)
+                    if key.endswith("_path") or key.endswith("_dir") or key in {"vector_db_path"}:
+                        if _norm_path(new_value) != _norm_path(current_value):
+                            embedding_changed = True
+                            break
+                    else:
+                        if new_value != current_value:
+                            embedding_changed = True
+                            break
+                if embedding_changed:
+                    reasons.append("向量/嵌入配置已更改")
+            except Exception:
+                pass
+
+            try:
+                current_tts = getattr(runtime_settings, "tts", None)
+                current_tts_dict = current_tts.model_dump() if current_tts is not None else {}
+                for key, value in tts_section.items():
+                    if key in current_tts_dict and value != current_tts_dict.get(key):
+                        reasons.append("语音（TTS）配置已更改")
+                        break
+            except Exception:
+                pass
+
+            try:
+                current_mcp = getattr(runtime_settings, "mcp", None)
+                current_mcp_dict = current_mcp.model_dump() if current_mcp is not None else {}
+                for key, value in mcp_section.items():
+                    if key in current_mcp_dict and value != current_mcp_dict.get(key):
+                        reasons.append("工具（MCP）配置已更改")
+                        break
+            except Exception:
+                pass
+
+        return reasons
+
+    def _restart_application(self) -> None:
+        """一键重启应用（启动新进程后退出当前进程）。"""
+        try:
+            import sys
+
+            from PyQt6.QtCore import QCoreApplication, QProcess
+            from PyQt6.QtWidgets import QApplication
+
+            program = sys.executable
+            args = list(sys.argv[1:]) if getattr(sys, "frozen", False) else list(sys.argv)
+
+            ok, _pid = QProcess.startDetached(program, args, str(Path.cwd()))
+            if not ok:
+                raise RuntimeError("startDetached() returned False")
+
+            app = QApplication.instance()
+            if app is not None:
+                app.closeAllWindows()
+                app.quit()
+                return
+
+            QCoreApplication.quit()
+        except Exception as exc:
+            try:
+                logger.error("重启失败: %s", exc)
+            except Exception:
+                pass
+
+            try:
+                show_toast(self, "重启失败，请手动重启应用", Toast.TYPE_ERROR, duration=2500)
+            except Exception:
+                pass
 
     def _on_logout_clicked(self):
         """退出登录按钮点击 - 带平滑动画"""
@@ -3948,6 +4811,55 @@ class LightChatWindow(LightFramelessWindow):
         self._fps_frame_count = 0
         self._fps_last_ts = now
 
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt API naming
+        try:
+            if obj is getattr(self, "_overlay_viewport", None):
+                et = event.type()
+                if et in {QEvent.Type.Resize, QEvent.Type.Show}:
+                    QTimer.singleShot(0, self._position_message_overlays)
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
+
+    def _position_message_overlays(self) -> None:
+        """让“原子岛”等 overlay 始终固定在消息显示框顶部居中。"""
+        viewport = getattr(self, "_overlay_viewport", None)
+        island = getattr(self, "character_island", None)
+        if viewport is None or island is None:
+            return
+
+        try:
+            margin_x = 24
+            margin_top = 12
+            available = max(0, int(viewport.width()) - margin_x * 2)
+            max_w = 560
+            try:
+                max_w = int(island.maximumWidth() or max_w)
+            except Exception:
+                pass
+            target_w = min(max_w, available) if available > 0 else 0
+            if target_w <= 0:
+                return
+            if target_w < 320 and available >= 320:
+                target_w = 320
+            island.setFixedWidth(target_w)
+            x = max(0, (int(viewport.width()) - target_w) // 2)
+            y = max(0, int(margin_top))
+            island.move(x, y)
+            island.raise_()
+        except Exception:
+            pass
+
+        try:
+            fps = getattr(self, "_fps_label", None)
+            if fps is not None:
+                fps.adjustSize()
+                fps_x = max(0, int(viewport.width()) - int(fps.width()) - 12)
+                fps.move(fps_x, 12)
+                fps.raise_()
+        except Exception:
+            pass
+
     def _setup_avatar_pulse_animation(self):
         """设置头像脉冲动画 - 在线状态指示器
 
@@ -4017,6 +4929,7 @@ class LightChatWindow(LightFramelessWindow):
         """窗口关闭事件 - 清理资源"""
         try:
             logger.info("聊天窗口正在关闭，清理资源...")
+            self._closing = True
 
             # 1. 停止所有动画
             if hasattr(self, "avatar_pulse_animation") and self.avatar_pulse_animation:
@@ -4108,35 +5021,71 @@ class LightChatWindow(LightFramelessWindow):
                 except Exception as e:
                     logger.error("清理 Agent 初始化线程失败: %s", e)
 
+            # 2.3. 清理历史加载线程（切换联系人/上滑加载更多）
+            if getattr(self, "_live_history_threads", None):
+                for thread in list(self._live_history_threads):
+                    try:
+                        if thread is None:
+                            continue
+                        if thread.isRunning():
+                            try:
+                                thread.requestInterruption()
+                            except Exception:
+                                pass
+                            if not thread.wait(2000):
+                                thread.terminate()
+                                thread.wait(500)
+                        thread.deleteLater()
+                    except Exception:
+                        pass
+                try:
+                    self._live_history_threads.clear()
+                except Exception:
+                    pass
+            try:
+                self._pending_history_load_state.clear()
+            except Exception:
+                pass
+
             # 2.5. 清理图片识别线程 (v2.46.1: 新增)
-            if hasattr(self, 'image_recognition_thread') and self.image_recognition_thread is not None:
+            worker = getattr(self, "image_recognition_thread", None)
+            if worker is not None:
                 try:
                     logger.info("停止图片识别线程...")
-                    if self.image_recognition_thread.isRunning():
-                        if hasattr(self.image_recognition_thread, 'stop'):
-                            self.image_recognition_thread.stop()
-                        if not self.image_recognition_thread.wait(2000):
-                            logger.warning("图片识别线程未能在2秒内结束，强制终止")
-                            self.image_recognition_thread.terminate()
-                            self.image_recognition_thread.wait(1000)
-                    self.image_recognition_thread.deleteLater()
+                    is_running = getattr(worker, "isRunning", None)
+                    if callable(is_running) and is_running():
+                        if hasattr(worker, "stop"):
+                            worker.stop()
+                        if hasattr(worker, "wait") and callable(worker.wait):
+                            if not worker.wait(2000):
+                                logger.warning("图片识别线程未能在2秒内结束，强制终止")
+                                if hasattr(worker, "terminate"):
+                                    worker.terminate()
+                                worker.wait(1000)
+                    if hasattr(worker, "deleteLater"):
+                        worker.deleteLater()
                     self.image_recognition_thread = None
                     logger.info("图片识别线程已清理")
                 except Exception as e:
                     logger.error("清理图片识别线程失败: %s", e)
 
             # 2.6. 清理批量识别线程 (v2.46.1: 新增)
-            if hasattr(self, 'batch_recognition_thread') and self.batch_recognition_thread is not None:
+            batch_worker = getattr(self, "batch_recognition_thread", None)
+            if batch_worker is not None:
                 try:
                     logger.info("停止批量识别线程...")
-                    if self.batch_recognition_thread.isRunning():
-                        if hasattr(self.batch_recognition_thread, 'stop'):
-                            self.batch_recognition_thread.stop()
-                        if not self.batch_recognition_thread.wait(2000):
-                            logger.warning("批量识别线程未能在2秒内结束，强制终止")
-                            self.batch_recognition_thread.terminate()
-                            self.batch_recognition_thread.wait(1000)
-                    self.batch_recognition_thread.deleteLater()
+                    is_running = getattr(batch_worker, "isRunning", None)
+                    if callable(is_running) and is_running():
+                        if hasattr(batch_worker, "stop"):
+                            batch_worker.stop()
+                        if hasattr(batch_worker, "wait") and callable(batch_worker.wait):
+                            if not batch_worker.wait(2000):
+                                logger.warning("批量识别线程未能在2秒内结束，强制终止")
+                                if hasattr(batch_worker, "terminate"):
+                                    batch_worker.terminate()
+                                batch_worker.wait(1000)
+                    if hasattr(batch_worker, "deleteLater"):
+                        batch_worker.deleteLater()
                     self.batch_recognition_thread = None
                     logger.info("批量识别线程已清理")
                 except Exception as e:
@@ -4193,19 +5142,31 @@ class LightChatWindow(LightFramelessWindow):
 
             # 8. 清理 TTS 工作线程和队列
             if hasattr(self, "tts_workers") and self.tts_workers:
-                logger.info("清理 %s 个 TTS 工作线程...", len(self.tts_workers))
-                # 先停止所有正在运行的线程
-                for worker in self.tts_workers:
+                logger.info("清理 %s 个 TTS 后台任务...", len(self.tts_workers))
+                # 兼容旧实现：如果列表里仍有 QThread，则尽量停止；线程池任务无法强制中断，关闭时需保留引用避免 GC 崩溃。
+                remaining_tasks: list[object] = []
+                for worker in list(self.tts_workers):
                     try:
-                        if worker.isRunning():
-                            worker.requestInterruption()  # 请求中断
-                            if not worker.wait(2000):  # 等待最多2秒
-                                worker.terminate()  # 强制终止
-                                worker.wait(1000)  # 再等待1秒
-                        worker.deleteLater()
-                    except Exception as e:
-                            logger.debug("清理 TTS worker 时出错: %s", e)
-                self.tts_workers.clear()
+                        is_running = getattr(worker, "isRunning", None)
+                        if callable(is_running):
+                            if is_running():
+                                if hasattr(worker, "requestInterruption"):
+                                    worker.requestInterruption()
+                                if hasattr(worker, "wait") and callable(worker.wait):
+                                    if not worker.wait(2000):
+                                        if hasattr(worker, "terminate"):
+                                            worker.terminate()
+                                        worker.wait(1000)
+                            if hasattr(worker, "deleteLater"):
+                                worker.deleteLater()
+                            continue
+                    except Exception as exc:
+                        logger.debug("清理 TTS worker 时出错: %s", exc)
+
+                    # QRunnable：保留引用直到线程池任务自然结束（避免窗口关闭时被 GC）
+                    remaining_tasks.append(worker)
+
+                self.tts_workers = remaining_tasks
             
             # 清理TTS队列和状态
             if hasattr(self, "tts_queue"):
@@ -4345,14 +5306,17 @@ class LightChatWindow(LightFramelessWindow):
         if not self.tts_enabled or not self.tts_manager or not self.audio_player:
             return
 
+        if bool(getattr(self, "_closing", False)):
+            return
+
         if not text or not text.strip():
             return
-        
+
         # v2.48.14: 最终过滤保护层 - 确保工具调用信息不会进入TTS
         # 即使前面的过滤有遗漏，这里也会再次过滤
         if self._needs_tool_filter(text):
             text = self._filter_tool_info_safe(text)
-        
+
         # 如果过滤后为空或只包含空白，直接返回
         if not text or not text.strip():
             logger.debug("TTS 跳过空文本（最终过滤后）")
@@ -4364,127 +5328,48 @@ class LightChatWindow(LightFramelessWindow):
             logger.debug("TTS 任务加入队列: %s...", text[:20])
             return
 
+        self.tts_busy = True
+
+        task = TTSSynthesisTask(self.tts_manager, text)
+        self.tts_workers.append(task)
+
+        def on_audio_ready(audio_data: bytes) -> None:
+            if bool(getattr(self, "_closing", False)):
+                return
+            try:
+                if self.audio_player:
+                    success = self.audio_player.play_audio(audio_data)
+                    if not success:
+                        logger.warning("音频播放失败，但继续处理队列")
+            except Exception as exc:
+                logger.error("播放音频时出错: %s", exc)
+
+        def on_error_occurred(error_msg: str) -> None:
+            logger.error(error_msg)
+
+        def cleanup_task() -> None:
+            try:
+                if task in self.tts_workers:
+                    self.tts_workers.remove(task)
+            except Exception:
+                pass
+            finally:
+                self.tts_busy = False
+
+            if bool(getattr(self, "_closing", False)):
+                return
+
+            if self.tts_queue:
+                next_text = self.tts_queue.pop(0)
+                QTimer.singleShot(0, lambda: self._synthesize_tts_async(next_text))
+
+        task.signals.audio_ready.connect(on_audio_ready)
+        task.signals.error.connect(on_error_occurred)
+        task.signals.finished.connect(cleanup_task)
+
         try:
-            # 使用 QThread 在后台执行 TTS 合成
-            from PyQt6.QtCore import QThread, pyqtSignal
-            import asyncio
-
-            class TTSWorker(QThread):
-                """TTS 合成工作线程"""
-                audio_ready = pyqtSignal(bytes)
-                error_occurred = pyqtSignal(str)
-
-                def __init__(self, tts_manager, text):
-                    super().__init__()
-                    self.tts_manager = tts_manager
-                    self.text = text
-
-                def run(self):
-                    """运行 TTS 合成"""
-                    loop = None
-                    try:
-                        # 创建新的 event loop
-                        loop = asyncio.new_event_loop()
-                        # 绑定新的 event loop
-                        asyncio.set_event_loop(loop)
-
-                        # 执行异步合成
-                        audio_data = loop.run_until_complete(
-                            self.tts_manager.synthesize_text(self.text)
-                        )
-
-                        # 发送音频数据
-                        if audio_data:
-                            self.audio_ready.emit(audio_data)
-                        else:
-                            # 合成返回None，可能是服务不可用或合成失败
-                            self.error_occurred.emit("TTS 合成返回空结果")
-
-                    except asyncio.CancelledError:
-                        # 任务被取消，不记录错误
-                        pass
-                    except Exception as e:
-                        error_msg = f"TTS 合成失败: {e}"
-                        logger.error(error_msg, exc_info=False)
-                        self.error_occurred.emit(error_msg)
-                    finally:
-                        # 确保清理事件循环
-                        if loop:
-                            try:
-                                # 取消所有待处理的任务
-                                pending = asyncio.all_tasks(loop)
-                                for task in pending:
-                                    task.cancel()
-                                # 等待所有任务完成
-                                if pending:
-                                    loop.run_until_complete(
-                                        asyncio.gather(*pending, return_exceptions=True)
-                                    )
-                            except Exception:
-                                pass
-                            finally:
-                                try:
-                                    loop.close()
-                                except Exception:
-                                    pass
-
-            # 标记为忙碌
-            self.tts_busy = True
-
-            # 创建并启动 worker
-            worker = TTSWorker(self.tts_manager, text)
-            
-            # 处理音频播放成功
-            def on_audio_ready(audio_data: bytes):
-                """处理音频数据就绪"""
-                try:
-                    if self.audio_player:
-                        success = self.audio_player.play_audio(audio_data)
-                        if not success:
-                            logger.warning("音频播放失败，但继续处理队列")
-                except Exception as e:
-                    logger.error("播放音频时出错: %s", e)
-            
-            worker.audio_ready.connect(on_audio_ready)
-            
-            # 处理错误（确保清理状态）
-            def on_error_occurred(error_msg: str):
-                """处理TTS合成错误"""
-                logger.error(error_msg)
-                # 错误发生时也要清理状态，避免队列卡住
-                if not worker.isRunning():
-                    cleanup_worker()
-            
-            worker.error_occurred.connect(on_error_occurred)
-
-            # 线程完成后清理
-            def cleanup_worker():
-                """清理完成的工作线程，并调度下一个队列任务"""
-                try:
-                    if worker in self.tts_workers:
-                        self.tts_workers.remove(worker)
-                    worker.deleteLater()
-                except Exception as e:
-                        logger.debug("清理 TTS worker 时出错: %s", e)
-                finally:
-                    # 当前任务结束
-                    self.tts_busy = False
-                    # 如果队列中还有待处理的句子，继续下一个
-                    if self.tts_queue:
-                        next_text = self.tts_queue.pop(0)
-                        # 使用定时器避免在回调中同步递归调用
-                        QTimer.singleShot(0, lambda: self._synthesize_tts_async(next_text))
-
-            worker.finished.connect(cleanup_worker)
-
-            # 保存到列表，防止被垃圾回收
-            self.tts_workers.append(worker)
-
-            # 启动线程
-            worker.start()
-
-            logger.debug("TTS 合成任务已启动: %s...", text[:20])
-
-        except Exception as e:
-            logger.error("TTS 合成失败: %s", e)
-            self.tts_busy = False
+            self.thread_pool.start(task)
+            logger.debug("TTS 合成任务已提交: %s...", text[:20])
+        except Exception as exc:
+            logger.error("启动 TTS 合成任务失败: %s", exc)
+            cleanup_task()

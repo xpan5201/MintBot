@@ -37,7 +37,7 @@ class AudioWaveform(QWidget):
         self.is_playing = False
         
         # 更新定时器
-        self.update_timer = QTimer()
+        self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self._update_waveform)
         self.update_timer.setInterval(50)  # 20fps
         
@@ -223,4 +223,3 @@ class AudioWaveform(QWidget):
                     int(bar_height),
                     gradient
                 )
-

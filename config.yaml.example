@@ -36,6 +36,11 @@ Agent:
   max_history_length: 20
   enable_tools: true
 
+# GUI（可选）：界面主题
+# - theme: mint（默认） / anime（二次元）
+GUI:
+  theme: "mint"
+
 # MCP（可选）：Model Context Protocol 工具系统
 MCP:
   enable: false

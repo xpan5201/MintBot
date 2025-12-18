@@ -75,11 +75,11 @@ class OptimizedStreamingBubble(QWidget):
         
     def setup_timers(self):
         """设置定时器"""
-        self.buffer_timer = QTimer()
+        self.buffer_timer = QTimer(self)
         self.buffer_timer.timeout.connect(self._flush_text_buffer)
         self.buffer_timer.setSingleShot(True)
 
-        self.adjust_timer = QTimer()
+        self.adjust_timer = QTimer(self)
         self.adjust_timer.timeout.connect(self._adjust_height)
         self.adjust_timer.setSingleShot(True)
 
@@ -220,4 +220,3 @@ class OptimizedMessageBubble(QWidget):
     def get_text(self) -> str:
         """获取文本内容"""
         return self.message
-

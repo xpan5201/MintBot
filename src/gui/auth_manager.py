@@ -29,6 +29,7 @@ from .login_form import LoginForm
 from .register_form import RegisterForm
 from .change_password_form import ChangePasswordForm
 from .material_design_enhanced import MD3_ENHANCED_DURATION, MD3_ENHANCED_EASING, MD3_ENHANCED_COLORS
+from .theme_manager import is_anime_theme
 
 from src.utils.logger import get_logger
 
@@ -101,9 +102,12 @@ class AuthManager(QWidget):
 
         # ========== 主容器 ==========
         self.container = QWidget()
+        container_background = MD3_ENHANCED_COLORS["surface_bright"]
+        if is_anime_theme():
+            container_background = MD3_ENHANCED_COLORS.get("gradient_surface", container_background)
         self.container.setStyleSheet(f"""
             QWidget {{
-                background: {MD3_ENHANCED_COLORS['surface_bright']};
+                background: {container_background};
                 border-radius: 16px;
             }}
         """)

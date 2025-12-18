@@ -15,8 +15,6 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
 
 from src.version import __version__, print_version_info
-from src.gui.light_chat_window import LightChatWindow
-from src.gui.auth_manager import AuthManager
 from src.auth.auth_service import AuthService
 from src.auth.user_session import user_session
 from src.auth.session_store import (
@@ -126,6 +124,22 @@ def main() -> None:
     font = QFont("Microsoft YaHei UI", 10)
     app.setFont(font)
 
+    # 确保 Material Symbols 字体可用（图标按钮/导航栏依赖）。未安装时仅提示，不影响启动。
+    try:
+        from src.gui.material_icons import load_material_symbols_font
+
+        load_material_symbols_font()
+    except Exception:
+        pass
+
+    # 应用全局主题样式（菜单/tooltip/滚动条等全局 QSS）
+    try:
+        from src.gui.app_theme import apply_app_theme
+
+        apply_app_theme(app)
+    except Exception:
+        pass
+
     # v2.48.10: 初始化 TTS 服务（后台线程，避免健康检查阻塞 GUI 启动）
     _start_tts_init_async()
 
@@ -138,9 +152,13 @@ def main() -> None:
 
     session_file = data_dir / "session.txt"
     if _restore_session(session_file):
+        from src.gui.light_chat_window import LightChatWindow
+
         window = LightChatWindow()
         window.show()
         sys.exit(app.exec())
+
+    from src.gui.auth_manager import AuthManager
 
     auth_manager = AuthManager(illustration_path=str(data_dir / "images" / "login_illustration.png"))
 
@@ -162,6 +180,8 @@ def main() -> None:
             user_session.login(user, session_token)
         except Exception as e:
             handle_exception(e, logger, "保存会话失败")
+
+        from src.gui.light_chat_window import LightChatWindow
 
         window = LightChatWindow()
 

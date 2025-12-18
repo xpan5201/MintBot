@@ -85,6 +85,7 @@ from .material_design_enhanced import (
     get_elevation_shadow, get_typography_css
 )
 from .enhanced_animations import AnimationMixin
+from .theme_manager import is_anime_theme
 
 from src.utils.logger import get_logger
 
@@ -95,6 +96,10 @@ logger = get_logger(__name__)
 _SPACING_LG = int(MD3_ENHANCED_SPACING["lg"].removesuffix("px"))
 _SPACING_SM = int(MD3_ENHANCED_SPACING["sm"].removesuffix("px"))
 _SPACING_1 = int(MD3_ENHANCED_SPACING["1"].removesuffix("px"))
+
+# 圆角 token（保持主题可切换且避免散落 magic number）
+_BUBBLE_RADIUS = MD3_ENHANCED_RADIUS.get("2xl", "20px")
+_IMAGE_RADIUS = MD3_ENHANCED_RADIUS.get("xl", "16px")
 
 # 流式气泡高度更新节流（过高会导致“气泡扩张跟不上文本”，过低会导致频繁布局重算）
 STREAMING_HEIGHT_UPDATE_INTERVAL_MS = max(
@@ -108,29 +113,64 @@ BUBBLE_WRAP_DEBUG = os.getenv("MINTCHAT_GUI_BUBBLE_WRAP_DEBUG", "0").lower() not
     "off",
 }
 
-_MESSAGE_LABEL_QSS_USER = f"""
-    QLabel {{
-        background: {MD3_ENHANCED_COLORS['primary_container']};
-        color: {MD3_ENHANCED_COLORS['on_primary_container']};
-        border-radius: 20px;
-        padding: 12px 16px;
-        {get_typography_css('body_large')}
-        font-weight: 500;
-        line-height: 1.5;
-    }}
-"""
+if is_anime_theme():
+    _MESSAGE_LABEL_QSS_USER = f"""
+        QLabel {{
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:1,
+                stop:0 {MD3_ENHANCED_COLORS['primary_container']},
+                stop:1 {MD3_ENHANCED_COLORS['secondary_container']}
+            );
+            color: {MD3_ENHANCED_COLORS['on_primary_container']};
+            border-radius: {_BUBBLE_RADIUS};
+            border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
+            padding: 12px 16px;
+            {get_typography_css('body_large')}
+            font-weight: 500;
+            line-height: 1.5;
+        }}
+    """
+else:
+    _MESSAGE_LABEL_QSS_USER = f"""
+        QLabel {{
+            background: {MD3_ENHANCED_COLORS['primary_container']};
+            color: {MD3_ENHANCED_COLORS['on_primary_container']};
+            border-radius: {_BUBBLE_RADIUS};
+            padding: 12px 16px;
+            {get_typography_css('body_large')}
+            font-weight: 500;
+            line-height: 1.5;
+        }}
+    """
 
-_MESSAGE_LABEL_QSS_AI = f"""
-    QLabel {{
-        background: {MD3_ENHANCED_COLORS['surface_container_high']};
-        color: {MD3_ENHANCED_COLORS['on_surface']};
-        border-radius: 20px;
-        padding: 12px 16px;
-        {get_typography_css('body_large')}
-        line-height: 1.5;
-        border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
-    }}
-"""
+if is_anime_theme():
+    _MESSAGE_LABEL_QSS_AI = f"""
+        QLabel {{
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:0,
+                stop:0 {MD3_ENHANCED_COLORS['surface_container_high']},
+                stop:1 {MD3_ENHANCED_COLORS['surface_container_low']}
+            );
+            color: {MD3_ENHANCED_COLORS['on_surface']};
+            border-radius: {_BUBBLE_RADIUS};
+            padding: 12px 16px;
+            {get_typography_css('body_large')}
+            line-height: 1.5;
+            border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
+        }}
+    """
+else:
+    _MESSAGE_LABEL_QSS_AI = f"""
+        QLabel {{
+            background: {MD3_ENHANCED_COLORS['surface_container_high']};
+            color: {MD3_ENHANCED_COLORS['on_surface']};
+            border-radius: {_BUBBLE_RADIUS};
+            padding: 12px 16px;
+            {get_typography_css('body_large')}
+            line-height: 1.5;
+            border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
+        }}
+    """
 
 _TIME_LABEL_QSS = f"""
     QLabel {{
@@ -143,7 +183,7 @@ _TIME_LABEL_QSS = f"""
 _IMAGE_LABEL_QSS = f"""
     QLabel {{
         background: {MD3_ENHANCED_COLORS['surface_bright']};
-        border-radius: 16px;
+        border-radius: {_IMAGE_RADIUS};
         padding: 4px;
         border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
     }}
@@ -153,7 +193,7 @@ _IMAGE_LABEL_ERROR_QSS = f"""
     QLabel {{
         background: {MD3_ENHANCED_COLORS['error_container']};
         color: {MD3_ENHANCED_COLORS['on_error_container']};
-        border-radius: 16px;
+        border-radius: {_IMAGE_RADIUS};
         padding: 20px 30px;
         {get_typography_css('body_large')}
     }}
@@ -1049,7 +1089,7 @@ class LightStreamingMessageBubble(QWidget):
         try:
             # 计时器总是可用：即便 documentSizeChanged 不触发，也能通过 append_text/_ensure_text_wrap 手动调度
             if not hasattr(self, "_height_update_timer"):
-                self._height_update_timer = QTimer()
+                self._height_update_timer = QTimer(self)
                 self._height_update_timer.setSingleShot(True)
                 self._height_update_timer.timeout.connect(self._apply_pending_height)
 

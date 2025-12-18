@@ -34,16 +34,29 @@ class SettingsPanel(QWidget):
         super().__init__(parent)
 
         self.agent = agent
-        self.config_data = self._load_config()
+        self.config_data = {}
         self._opacity = 1.0
         self.user_avatar_preview = None
         self.ai_avatar_preview = None
         self._is_saving = False
         self._has_unsaved_changes = False
+        self._suppress_unsaved_changes = False
         self.memory_manager_window = None
+        self._pending_page_builds: set[int] = set()
+        self._page_titles = ["个人资料", "模型服务", "角色配置", "记忆系统", "系统配置"]
+        self._page_builders = [
+            self._create_profile_page,
+            self._create_llm_page,
+            self._create_agent_page,
+            self._create_memory_page,
+            self._create_system_page,
+        ]
+        self._page_built = [False for _ in self._page_builders]
 
         self.setup_ui()
-        self.load_settings()
+        self._reload_config_data()
+        self._ensure_page_built(0)
+        self._apply_config_to_widgets()
         self.setup_animations()
 
     @staticmethod
@@ -103,19 +116,15 @@ class SettingsPanel(QWidget):
             }}
         """)
 
-        # 创建各个设置页面
-        self.profile_page = self._create_profile_page()
-        self.llm_page = self._create_llm_page()
-        self.agent_page = self._create_agent_page()
-        self.memory_page = self._create_memory_page()
-        self.system_page = self._create_system_page()
+        # v2.50.x: 页面懒加载 - 初始仅创建占位页，切换时再构建真实页面，降低打开设置面板卡顿
+        self.profile_page = None
+        self.llm_page = None
+        self.agent_page = None
+        self.memory_page = None
+        self.system_page = None
 
-        # 添加到堆栈
-        self.content_stack.addWidget(self.profile_page)
-        self.content_stack.addWidget(self.llm_page)
-        self.content_stack.addWidget(self.agent_page)
-        self.content_stack.addWidget(self.memory_page)
-        self.content_stack.addWidget(self.system_page)
+        for title in list(getattr(self, "_page_titles", [])) or ["设置"]:
+            self.content_stack.addWidget(self._create_page_placeholder(title))
 
         main_layout.addWidget(self.content_stack, 1)  # 右侧内容区占据剩余空间
 
@@ -229,6 +238,152 @@ class SettingsPanel(QWidget):
 
         # 切换内容页面
         self.content_stack.setCurrentIndex(index)
+        if index < 0 or index >= len(getattr(self, "_page_builders", [])):
+            return
+        if not self._page_built[index]:
+            self._schedule_page_build(index)
+
+    def _create_page_placeholder(self, title: str) -> QWidget:
+        """创建懒加载占位页（轻量，避免动画造成额外开销）。"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(8)
+
+        label = QLabel(f"正在加载 {title}…")
+        label.setStyleSheet(
+            f"""
+            QLabel {{
+                color: {MD3_ENHANCED_COLORS['on_surface']};
+                {get_typography_css('title_medium')}
+                background: transparent;
+                font-weight: 600;
+            }}
+            """
+        )
+        hint = QLabel("首次打开该页面会稍慢，之后会更快。")
+        hint.setStyleSheet(
+            f"""
+            QLabel {{
+                color: {MD3_ENHANCED_COLORS['on_surface_variant']};
+                {get_typography_css('body_medium')}
+                background: transparent;
+            }}
+            """
+        )
+        hint.setWordWrap(True)
+
+        layout.addWidget(label, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(hint, alignment=Qt.AlignmentFlag.AlignHCenter)
+        return page
+
+    def _schedule_page_build(self, index: int) -> None:
+        """延迟构建页面，让 UI 先完成一次绘制（更顺滑）。"""
+        pending = getattr(self, "_pending_page_builds", None)
+        if pending is None:
+            self._pending_page_builds = set()
+            pending = self._pending_page_builds
+
+        if index in pending:
+            return
+        pending.add(index)
+        QTimer.singleShot(0, lambda idx=index: self._build_page_deferred(idx))
+
+    def _build_page_deferred(self, index: int) -> None:
+        try:
+            self._pending_page_builds.discard(index)
+        except Exception:
+            pass
+
+        if self._ensure_page_built(index):
+            # 页面刚构建完成，按当前 config_data 填充控件
+            try:
+                self._apply_config_to_widgets()
+            except Exception:
+                pass
+
+    def _ensure_page_built(self, index: int) -> bool:
+        """确保指定页面已构建并替换占位页。"""
+        builders = getattr(self, "_page_builders", [])
+        if index < 0 or index >= len(builders):
+            return False
+        if self._page_built[index]:
+            return True
+
+        builder = builders[index]
+        title = (getattr(self, "_page_titles", []) or ["设置"])[min(index, len(self._page_titles) - 1)]
+
+        current_widget = self.content_stack.currentWidget()
+        placeholder = self.content_stack.widget(index)
+        try:
+            page = builder()
+        except Exception as exc:
+            logger.error("构建设置页面失败: %s", exc, exc_info=True)
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.setContentsMargins(24, 24, 24, 24)
+            layout.setSpacing(8)
+            title_label = QLabel(f"{title} 加载失败")
+            title_label.setStyleSheet(
+                f"""
+                QLabel {{
+                    color: {MD3_ENHANCED_COLORS['error']};
+                    {get_typography_css('title_medium')}
+                    background: transparent;
+                    font-weight: 700;
+                }}
+                """
+            )
+            detail = QLabel(str(exc))
+            detail.setStyleSheet(
+                f"""
+                QLabel {{
+                    color: {MD3_ENHANCED_COLORS['on_surface_variant']};
+                    {get_typography_css('body_small')}
+                    background: transparent;
+                }}
+                """
+            )
+            detail.setWordWrap(True)
+            layout.addWidget(title_label, alignment=Qt.AlignmentFlag.AlignHCenter)
+            layout.addWidget(detail, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        # 用 insert+remove 的方式替换，保持 index 稳定
+        self.content_stack.insertWidget(index, page)
+        self.content_stack.removeWidget(placeholder)
+        try:
+            placeholder.deleteLater()
+        except Exception:
+            pass
+
+        self._page_built[index] = True
+        if current_widget is placeholder:
+            try:
+                self.content_stack.setCurrentWidget(page)
+            except Exception:
+                pass
+
+        # v2.51.x: 自动绑定“未保存”提示（对所有输入控件统一追踪）
+        try:
+            self._wire_unsaved_tracking(page)
+        except Exception:
+            pass
+
+        # 兼容旧属性名（便于外部引用/调试）
+        if index == 0:
+            self.profile_page = page
+        elif index == 1:
+            self.llm_page = page
+        elif index == 2:
+            self.agent_page = page
+        elif index == 3:
+            self.memory_page = page
+        elif index == 4:
+            self.system_page = page
+
+        return True
 
     def _create_icon_label(self, icon_name: str, text: str, font_size: int = 16) -> QLabel:
         """创建带MD3图标的标签 - v2.31.0 新增辅助方法"""
@@ -436,7 +591,9 @@ class SettingsPanel(QWidget):
         save_shadow.setBlurRadius(16)
         save_shadow.setXOffset(0)
         save_shadow.setYOffset(4)
-        save_shadow.setColor(QColor(103, 80, 164, 100))  # primary color with alpha
+        shadow_color = QColor(MD3_ENHANCED_COLORS["primary"])
+        shadow_color.setAlpha(100)
+        save_shadow.setColor(shadow_color)
         self.save_btn.setGraphicsEffect(save_shadow)
 
         self.save_btn.clicked.connect(self.save_settings)
@@ -1329,7 +1486,7 @@ class SettingsPanel(QWidget):
         """)
         layout.addWidget(title_label)
 
-        desc_label = QLabel("配置系统日志和数据路径")
+        desc_label = QLabel("配置界面主题、系统日志和数据路径")
         desc_label.setStyleSheet(f"""
             QLabel {{
                 {get_typography_css('body_medium')}
@@ -1353,6 +1510,38 @@ class SettingsPanel(QWidget):
 
         log_group.setLayout(log_layout)
         layout.addWidget(log_group)
+
+        # 界面主题组
+        theme_group = self._create_group(f"{MATERIAL_ICONS['masks']}  界面主题")
+        theme_container_layout = QVBoxLayout()
+        theme_container_layout.setSpacing(10)
+
+        theme_layout = QFormLayout()
+        theme_layout.setSpacing(12)
+        theme_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        self.gui_theme_combo = QComboBox()
+        self.gui_theme_combo.addItem("薄荷清新（默认）", "mint")
+        self.gui_theme_combo.addItem("二次元（动漫）", "anime")
+        self._style_combobox(self.gui_theme_combo)
+        theme_layout.addRow("主题风格:", self.gui_theme_combo)
+        theme_container_layout.addLayout(theme_layout)
+
+        theme_hint = QLabel("提示：切换主题需重启应用后生效")
+        theme_hint.setStyleSheet(
+            f"""
+            QLabel {{
+                {get_typography_css('body_small')}
+                color: {MD3_ENHANCED_COLORS['on_surface_variant']};
+                background: transparent;
+                padding-left: 8px;
+            }}
+            """
+        )
+        theme_container_layout.addWidget(theme_hint)
+
+        theme_group.setLayout(theme_container_layout)
+        layout.addWidget(theme_group)
 
         # 数据路径配置组
         path_group = self._create_group(f"{MATERIAL_ICONS['folder_open']}  数据路径")
@@ -1653,128 +1842,200 @@ class SettingsPanel(QWidget):
 
         deep_merge(self.config_data, user_settings)
 
-    def load_settings(self):
-        """加载设置到界面"""
-
+    def _reload_config_data(self) -> None:
+        """重新加载配置（全局配置 + 用户覆盖）。"""
         # 加载全局配置作为默认值
-        self.config_data = self._load_config()
+        self.config_data = self._load_config() or {}
 
         # 如果用户已登录，加载用户特定设置并覆盖
         if user_session.is_logged_in():
             try:
                 user_settings = user_session.get_settings()
                 if user_settings:
-                    # 合并用户设置到配置数据
                     self._merge_settings(user_settings)
             except Exception as e:
                 logger.info("加载用户设置失败: %s", e)
 
-        # LLM 配置
-        llm_config = self.config_data.get("LLM", {})
-        self.api_input.setText(llm_config.get("api", ""))
-        self.key_input.setText(llm_config.get("key", ""))
-        self.model_input.setText(llm_config.get("model", ""))
+    def _apply_config_to_widgets(self) -> None:
+        """将当前 config_data 应用到已创建的控件（懒加载页面可能尚未构建）。"""
+        self._suppress_unsaved_changes = True
+        try:
+            llm_config = self.config_data.get("LLM", {})
+            if hasattr(self, "api_input"):
+                self.api_input.setText(llm_config.get("api", ""))
+            if hasattr(self, "key_input"):
+                self.key_input.setText(llm_config.get("key", ""))
+            if hasattr(self, "model_input"):
+                self.model_input.setText(llm_config.get("model", ""))
 
-        extra_config = llm_config.get("extra_config", {})
-        if extra_config:
-            self.temperature_input.setValue(extra_config.get("temperature", 0.7))
+            extra_config = llm_config.get("extra_config", {})
+            if extra_config and hasattr(self, "temperature_input"):
+                self.temperature_input.setValue(extra_config.get("temperature", 0.7))
 
-        # Agent 配置
-        agent_config = self.config_data.get("Agent", {})
-        self.is_up_checkbox.setChecked(agent_config.get("is_up", True))
-        self.char_input.setText(agent_config.get("char", ""))
-        self.user_input.setText(agent_config.get("user", ""))
-        self.char_settings_input.setPlainText(agent_config.get("char_settings", ""))
-        self.char_personalities_input.setPlainText(agent_config.get("char_personalities", ""))
-        self.context_length_input.setValue(agent_config.get("context_length", 40))
+            agent_config = self.config_data.get("Agent", {})
+            if hasattr(self, "is_up_checkbox"):
+                self.is_up_checkbox.setChecked(agent_config.get("is_up", True))
+            if hasattr(self, "char_input"):
+                self.char_input.setText(agent_config.get("char", ""))
+            if hasattr(self, "user_input"):
+                self.user_input.setText(agent_config.get("user", ""))
+            if hasattr(self, "char_settings_input"):
+                self.char_settings_input.setPlainText(agent_config.get("char_settings", ""))
+            if hasattr(self, "char_personalities_input"):
+                self.char_personalities_input.setPlainText(agent_config.get("char_personalities", ""))
+            if hasattr(self, "context_length_input"):
+                self.context_length_input.setValue(agent_config.get("context_length", 40))
 
-        # 记忆系统配置
-        self.long_memory_checkbox.setChecked(agent_config.get("long_memory", True))
-        self.is_check_memorys_checkbox.setChecked(agent_config.get("is_check_memorys", True))
-        self.is_core_mem_checkbox.setChecked(agent_config.get("is_core_mem", True))
-        self.mem_thresholds_input.setValue(agent_config.get("mem_thresholds", 0.385))
+            # 记忆系统配置
+            if hasattr(self, "long_memory_checkbox"):
+                self.long_memory_checkbox.setChecked(agent_config.get("long_memory", True))
+            if hasattr(self, "is_check_memorys_checkbox"):
+                self.is_check_memorys_checkbox.setChecked(agent_config.get("is_check_memorys", True))
+            if hasattr(self, "is_core_mem_checkbox"):
+                self.is_core_mem_checkbox.setChecked(agent_config.get("is_core_mem", True))
+            if hasattr(self, "mem_thresholds_input"):
+                self.mem_thresholds_input.setValue(agent_config.get("mem_thresholds", 0.385))
 
-        # v2.30.36: 智能日记系统配置
-        self.smart_diary_checkbox.setChecked(agent_config.get("smart_diary_enabled", True))
-        self.daily_summary_checkbox.setChecked(agent_config.get("daily_summary_enabled", True))
-        self.diary_importance_threshold_input.setValue(agent_config.get("diary_importance_threshold", 0.6))
+            # v2.30.36: 智能日记系统配置
+            if hasattr(self, "smart_diary_checkbox"):
+                self.smart_diary_checkbox.setChecked(agent_config.get("smart_diary_enabled", True))
+            if hasattr(self, "daily_summary_checkbox"):
+                self.daily_summary_checkbox.setChecked(agent_config.get("daily_summary_enabled", True))
+            if hasattr(self, "diary_importance_threshold_input"):
+                self.diary_importance_threshold_input.setValue(
+                    agent_config.get("diary_importance_threshold", 0.6)
+                )
 
-        # 知识库配置
-        self.lore_books_checkbox.setChecked(agent_config.get("lore_books", True))
-        self.books_thresholds_input.setValue(agent_config.get("books_thresholds", 0.5))
-        self.scan_depth_input.setValue(agent_config.get("scan_depth", 4))
+            # 知识库配置
+            if hasattr(self, "lore_books_checkbox"):
+                self.lore_books_checkbox.setChecked(agent_config.get("lore_books", True))
+            if hasattr(self, "books_thresholds_input"):
+                self.books_thresholds_input.setValue(agent_config.get("books_thresholds", 0.5))
+            if hasattr(self, "scan_depth_input"):
+                self.scan_depth_input.setValue(agent_config.get("scan_depth", 4))
 
-        # 系统配置
-        self.log_level_combo.setCurrentText(self.config_data.get("log_level", "INFO"))
-        self.data_dir_input.setText(self.config_data.get("data_dir", "./data"))
-        self.embedding_model_input.setText(self.config_data.get("embedding_model", "BAAI/bge-large-zh-v1.5"))
+            # 系统配置
+            if hasattr(self, "log_level_combo"):
+                self.log_level_combo.setCurrentText(self.config_data.get("log_level", "INFO"))
+            if hasattr(self, "data_dir_input"):
+                self.data_dir_input.setText(self.config_data.get("data_dir", "./data"))
+            if hasattr(self, "embedding_model_input"):
+                self.embedding_model_input.setText(
+                    self.config_data.get("embedding_model", "BAAI/bge-large-zh-v1.5")
+                )
 
-        # v2.22.0 个人资料配置：加载头像
-        if user_session.is_logged_in():
-            user_avatar = user_session.get_user_avatar()
-            ai_avatar = user_session.get_ai_avatar()
-            self.user_avatar_input.setText(user_avatar)
-            self.ai_avatar_input.setText(ai_avatar)
+            gui_config = self.config_data.get("GUI") or self.config_data.get("gui") or {}
+            if hasattr(self, "gui_theme_combo") and isinstance(gui_config, dict):
+                theme = gui_config.get("theme", "mint")
+                for idx in range(self.gui_theme_combo.count()):
+                    if self.gui_theme_combo.itemData(idx) == theme:
+                        self.gui_theme_combo.setCurrentIndex(idx)
+                        break
+
+            # 头像（仅登录用户）
+            if user_session.is_logged_in():
+                if hasattr(self, "user_avatar_input"):
+                    self.user_avatar_input.setText(user_session.get_user_avatar())
+                if hasattr(self, "ai_avatar_input"):
+                    self.ai_avatar_input.setText(user_session.get_ai_avatar())
+        finally:
+            self._suppress_unsaved_changes = False
+
+    def load_settings(self):
+        """加载设置到界面"""
+        self._reload_config_data()
+        self._apply_config_to_widgets()
 
     def save_settings(self):
         """保存设置"""
+        self._is_saving = True
         try:
-            # 更新配置数据
+            # 更新配置数据（懒加载页面可能未构建：仅覆盖“已创建控件”的字段）
             if "LLM" not in self.config_data:
                 self.config_data["LLM"] = {}
             if "Agent" not in self.config_data:
                 self.config_data["Agent"] = {}
 
             # LLM 配置
-            self.config_data["LLM"]["api"] = self.api_input.text()
-            self.config_data["LLM"]["key"] = self.key_input.text()
-            self.config_data["LLM"]["model"] = self.model_input.text()
+            if hasattr(self, "api_input"):
+                self.config_data["LLM"]["api"] = self.api_input.text()
+            if hasattr(self, "key_input"):
+                self.config_data["LLM"]["key"] = self.key_input.text()
+            if hasattr(self, "model_input"):
+                self.config_data["LLM"]["model"] = self.model_input.text()
 
             if "extra_config" not in self.config_data["LLM"]:
                 self.config_data["LLM"]["extra_config"] = {}
-            self.config_data["LLM"]["extra_config"]["temperature"] = self.temperature_input.value()
+            if hasattr(self, "temperature_input"):
+                self.config_data["LLM"]["extra_config"]["temperature"] = self.temperature_input.value()
 
             # Agent 配置
-            self.config_data["Agent"]["is_up"] = self.is_up_checkbox.isChecked()
-            self.config_data["Agent"]["char"] = self.char_input.text()
-            self.config_data["Agent"]["user"] = self.user_input.text()
-            self.config_data["Agent"]["char_settings"] = self.char_settings_input.toPlainText()
-            self.config_data["Agent"]["char_personalities"] = self.char_personalities_input.toPlainText()
-            self.config_data["Agent"]["context_length"] = self.context_length_input.value()
+            if hasattr(self, "is_up_checkbox"):
+                self.config_data["Agent"]["is_up"] = self.is_up_checkbox.isChecked()
+            if hasattr(self, "char_input"):
+                self.config_data["Agent"]["char"] = self.char_input.text()
+            if hasattr(self, "user_input"):
+                self.config_data["Agent"]["user"] = self.user_input.text()
+            if hasattr(self, "char_settings_input"):
+                self.config_data["Agent"]["char_settings"] = self.char_settings_input.toPlainText()
+            if hasattr(self, "char_personalities_input"):
+                self.config_data["Agent"]["char_personalities"] = self.char_personalities_input.toPlainText()
+            if hasattr(self, "context_length_input"):
+                self.config_data["Agent"]["context_length"] = self.context_length_input.value()
 
             # 记忆系统配置
-            self.config_data["Agent"]["long_memory"] = self.long_memory_checkbox.isChecked()
-            self.config_data["Agent"]["is_check_memorys"] = self.is_check_memorys_checkbox.isChecked()
-            self.config_data["Agent"]["is_core_mem"] = self.is_core_mem_checkbox.isChecked()
-            self.config_data["Agent"]["mem_thresholds"] = self.mem_thresholds_input.value()
+            if hasattr(self, "long_memory_checkbox"):
+                self.config_data["Agent"]["long_memory"] = self.long_memory_checkbox.isChecked()
+            if hasattr(self, "is_check_memorys_checkbox"):
+                self.config_data["Agent"]["is_check_memorys"] = self.is_check_memorys_checkbox.isChecked()
+            if hasattr(self, "is_core_mem_checkbox"):
+                self.config_data["Agent"]["is_core_mem"] = self.is_core_mem_checkbox.isChecked()
+            if hasattr(self, "mem_thresholds_input"):
+                self.config_data["Agent"]["mem_thresholds"] = self.mem_thresholds_input.value()
 
             # v2.30.36: 智能日记系统配置
-            self.config_data["Agent"]["smart_diary_enabled"] = self.smart_diary_checkbox.isChecked()
-            self.config_data["Agent"]["daily_summary_enabled"] = self.daily_summary_checkbox.isChecked()
-            self.config_data["Agent"]["diary_importance_threshold"] = self.diary_importance_threshold_input.value()
+            if hasattr(self, "smart_diary_checkbox"):
+                self.config_data["Agent"]["smart_diary_enabled"] = self.smart_diary_checkbox.isChecked()
+            if hasattr(self, "daily_summary_checkbox"):
+                self.config_data["Agent"]["daily_summary_enabled"] = self.daily_summary_checkbox.isChecked()
+            if hasattr(self, "diary_importance_threshold_input"):
+                self.config_data["Agent"]["diary_importance_threshold"] = (
+                    self.diary_importance_threshold_input.value()
+                )
 
             # 知识库配置
-            self.config_data["Agent"]["lore_books"] = self.lore_books_checkbox.isChecked()
-            self.config_data["Agent"]["books_thresholds"] = self.books_thresholds_input.value()
-            self.config_data["Agent"]["scan_depth"] = self.scan_depth_input.value()
+            if hasattr(self, "lore_books_checkbox"):
+                self.config_data["Agent"]["lore_books"] = self.lore_books_checkbox.isChecked()
+            if hasattr(self, "books_thresholds_input"):
+                self.config_data["Agent"]["books_thresholds"] = self.books_thresholds_input.value()
+            if hasattr(self, "scan_depth_input"):
+                self.config_data["Agent"]["scan_depth"] = self.scan_depth_input.value()
 
             # 系统配置
-            self.config_data["log_level"] = self.log_level_combo.currentText()
-            self.config_data["data_dir"] = self.data_dir_input.text()
-            self.config_data["embedding_model"] = self.embedding_model_input.text()
+            if hasattr(self, "log_level_combo"):
+                self.config_data["log_level"] = self.log_level_combo.currentText()
+            if hasattr(self, "data_dir_input"):
+                self.config_data["data_dir"] = self.data_dir_input.text()
+            if hasattr(self, "embedding_model_input"):
+                self.config_data["embedding_model"] = self.embedding_model_input.text()
+            if hasattr(self, "gui_theme_combo"):
+                if "GUI" not in self.config_data or not isinstance(self.config_data.get("GUI"), dict):
+                    self.config_data["GUI"] = {}
+                theme_value = self.gui_theme_combo.currentData() or "mint"
+                self.config_data["GUI"]["theme"] = str(theme_value)
 
             # v2.22.0 保存头像设置
             if user_session.is_logged_in():
                 try:
                     # 保存用户头像
-                    user_avatar = self.user_avatar_input.text()
-                    if user_avatar:
+                    user_avatar = self.user_avatar_input.text() if hasattr(self, "user_avatar_input") else ""
+                    if user_avatar and hasattr(user_session, "update_user_avatar"):
                         user_session.update_user_avatar(user_avatar)
                         logger.info("用户头像已更新: %s", user_avatar)
 
                     # 保存AI助手头像
-                    ai_avatar = self.ai_avatar_input.text()
-                    if ai_avatar:
+                    ai_avatar = self.ai_avatar_input.text() if hasattr(self, "ai_avatar_input") else ""
+                    if ai_avatar and hasattr(user_session, "update_ai_avatar"):
                         user_session.update_ai_avatar(ai_avatar)
                         logger.info("AI助手头像已更新: %s", ai_avatar)
 
@@ -1786,14 +2047,23 @@ class SettingsPanel(QWidget):
 
             # 同时保存到全局配置文件（作为默认值）
             config_file = Path("config.yaml")
-            with open(config_file, "w", encoding="utf-8") as f:
-                yaml.dump(self.config_data, f, allow_unicode=True, default_flow_style=False)
+            tmp_file = config_file.with_name(config_file.name + ".tmp")
+            try:
+                with open(tmp_file, "w", encoding="utf-8") as f:
+                    yaml.safe_dump(self.config_data, f, allow_unicode=True, sort_keys=False)
+                tmp_file.replace(config_file)
+            finally:
+                try:
+                    if tmp_file.exists():
+                        tmp_file.unlink()
+                except Exception:
+                    pass
 
             # v2.24.0 显示成功消息 - 更友好的提示
             QMessageBox.information(
                 self,
                 "✅ 保存成功",
-                "设置已成功保存！\n\n部分设置需要重启应用后生效。"
+                "设置已成功保存！"
             )
 
             # v2.24.0 标记为已保存
@@ -1808,6 +2078,8 @@ class SettingsPanel(QWidget):
                 "❌ 保存失败",
                 f"保存设置时出错：\n\n{str(e)}\n\n请检查配置文件权限或联系管理员。"
             )
+        finally:
+            self._is_saving = False
 
     def _mark_as_saved(self):
         """标记为已保存 - v2.24.0 新增"""
@@ -1816,6 +2088,8 @@ class SettingsPanel(QWidget):
 
     def _mark_as_unsaved(self):
         """标记为未保存 - v2.24.0 新增"""
+        if self._is_saving or self._suppress_unsaved_changes:
+            return
         if not self._has_unsaved_changes:
             self._has_unsaved_changes = True
             self.unsaved_indicator.show()
@@ -1825,6 +2099,50 @@ class SettingsPanel(QWidget):
             fade_in.setStartValue(0.0)
             fade_in.setEndValue(1.0)
             fade_in.start()
+
+    def _wire_unsaved_tracking(self, root: QWidget) -> None:
+        """为页面内的输入控件绑定“未保存”状态追踪。"""
+        if root is None:
+            return
+
+        def _on_change(*_args) -> None:
+            self._mark_as_unsaved()
+
+        for widget in root.findChildren(QLineEdit):
+            try:
+                widget.textChanged.connect(_on_change)
+            except Exception:
+                pass
+
+        for widget in root.findChildren(QTextEdit):
+            try:
+                widget.textChanged.connect(_on_change)
+            except Exception:
+                pass
+
+        for widget in root.findChildren(QComboBox):
+            try:
+                widget.currentIndexChanged.connect(_on_change)
+            except Exception:
+                pass
+
+        for widget in root.findChildren(QSpinBox):
+            try:
+                widget.valueChanged.connect(_on_change)
+            except Exception:
+                pass
+
+        for widget in root.findChildren(QDoubleSpinBox):
+            try:
+                widget.valueChanged.connect(_on_change)
+            except Exception:
+                pass
+
+        for widget in root.findChildren(QCheckBox):
+            try:
+                widget.stateChanged.connect(_on_change)
+            except Exception:
+                pass
 
     def _update_avatar_preview(self, avatar_type: str):
         """更新头像预览 - v2.24.0 新增

@@ -9,15 +9,23 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGraphicsDropShadowEffect
 )
-from PyQt6.QtCore import Qt, QPoint, QRect, pyqtSignal
-from PyQt6.QtGui import QMouseEvent, QCursor, QPainter, QColor, QPainterPath, QFont
+from PyQt6.QtCore import (
+    Qt,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    pyqtSignal,
+    QEvent,
+    QPropertyAnimation,
+    QEasingCurve,
+    pyqtProperty,
+)
+from PyQt6.QtGui import QMouseEvent, QCursor, QColor, QPainter, QPen
 
 import os
 
-from .material_design_light import (
-    MD3_LIGHT_COLORS, MD3_RADIUS, get_light_elevation_shadow
-)
-from .material_icons import MATERIAL_ICONS
+from .material_design_light import MD3_LIGHT_COLORS, MD3_RADIUS
 
 WINDOW_SHADOW_ENABLED = os.getenv("MINTCHAT_GUI_WINDOW_SHADOW", "0").lower() not in {
     "0",
@@ -25,6 +33,160 @@ WINDOW_SHADOW_ENABLED = os.getenv("MINTCHAT_GUI_WINDOW_SHADOW", "0").lower() not
     "no",
     "off",
 }
+
+
+class MacWindowControlButton(QPushButton):
+    """macOS-style three-color window control button (close/minimize/maximize)."""
+
+    TYPE_CLOSE = "close"
+    TYPE_MINIMIZE = "minimize"
+    TYPE_MAXIMIZE = "maximize"
+
+    def __init__(
+        self,
+        button_type: str,
+        *,
+        size: int = 14,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._button_type = str(button_type)
+        self._size = int(size)
+        self._hover_t = 0.0
+        self._press_t = 0.0
+
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFixedSize(self._size, self._size)
+        self.setFlat(True)
+
+        self._hover_anim = QPropertyAnimation(self, b"hover_t", self)
+        self._hover_anim.setDuration(120)
+        self._hover_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._press_anim = QPropertyAnimation(self, b"press_t", self)
+        self._press_anim.setDuration(90)
+        self._press_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        if self._button_type == self.TYPE_CLOSE:
+            self.setToolTip("关闭")
+        elif self._button_type == self.TYPE_MINIMIZE:
+            self.setToolTip("最小化")
+        else:
+            self.setToolTip("最大化/还原")
+
+    @pyqtProperty(float)
+    def hover_t(self) -> float:
+        return float(self._hover_t)
+
+    @hover_t.setter
+    def hover_t(self, value: float) -> None:
+        self._hover_t = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    @pyqtProperty(float)
+    def press_t(self) -> float:
+        return float(self._press_t)
+
+    @press_t.setter
+    def press_t(self, value: float) -> None:
+        self._press_t = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def _start_anim(self, anim: QPropertyAnimation, end_value: float) -> None:
+        anim.stop()
+        if anim is self._hover_anim:
+            anim.setStartValue(float(self._hover_t))
+        else:
+            anim.setStartValue(float(self._press_t))
+        anim.setEndValue(float(end_value))
+        anim.start()
+
+    def enterEvent(self, event):  # noqa: N802 - Qt API naming
+        super().enterEvent(event)
+        self._start_anim(self._hover_anim, 1.0)
+
+    def leaveEvent(self, event):  # noqa: N802 - Qt API naming
+        super().leaveEvent(event)
+        self._start_anim(self._hover_anim, 0.0)
+
+    def mousePressEvent(self, event: QMouseEvent):  # noqa: N802 - Qt API naming
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._start_anim(self._press_anim, 1.0)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent):  # noqa: N802 - Qt API naming
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._start_anim(self._press_anim, 0.0)
+        super().mouseReleaseEvent(event)
+
+    def _lerp(self, a: int, b: int, t: float) -> int:
+        return int(round(a + (b - a) * t))
+
+    def _blend(self, c1: QColor, c2: QColor, t: float) -> QColor:
+        tt = max(0.0, min(1.0, float(t)))
+        return QColor(
+            self._lerp(c1.red(), c2.red(), tt),
+            self._lerp(c1.green(), c2.green(), tt),
+            self._lerp(c1.blue(), c2.blue(), tt),
+            self._lerp(c1.alpha(), c2.alpha(), tt),
+        )
+
+    def _colors(self) -> tuple[QColor, QColor, QColor, QColor]:
+        if self._button_type == self.TYPE_CLOSE:
+            return (
+                QColor("#FF5F57"),
+                QColor("#E2463F"),
+                QColor("#E0443E"),
+                QColor("#C53A34"),
+            )
+        if self._button_type == self.TYPE_MINIMIZE:
+            return (
+                QColor("#FFBD2E"),
+                QColor("#E1A116"),
+                QColor("#D79E29"),
+                QColor("#B98522"),
+            )
+        return (
+            QColor("#28C840"),
+            QColor("#1FA52D"),
+            QColor("#1FA52D"),
+            QColor("#178A24"),
+        )
+
+    def paintEvent(self, _event):  # noqa: N802 - Qt API naming
+        base, border, pressed, pressed_border = self._colors()
+        fill = self._blend(base, pressed, self._press_t)
+        stroke = self._blend(border, pressed_border, self._press_t)
+
+        rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
+        # Keep the visible dot close to macOS size while allowing a slightly larger hit box.
+        min_side = float(min(self.width(), self.height()))
+        dot_diameter = min(12.0, max(8.0, min_side - 1.0))
+        dot_inset = max(0.0, (min_side - dot_diameter) / 2.0)
+        press_inset = 0.8 * self._press_t
+        circle = rect.adjusted(
+            dot_inset + press_inset,
+            dot_inset + press_inset,
+            -(dot_inset + press_inset),
+            -(dot_inset + press_inset),
+        )
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        # Hover glow (lightweight feedback)
+        if self._hover_t > 0.01:
+            glow = QColor(fill)
+            glow.setAlpha(int(45 * self._hover_t))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(glow)
+            painter.drawEllipse(circle.adjusted(-2.0, -2.0, 2.0, 2.0))
+
+        painter.setPen(QPen(stroke, 1.0))
+        painter.setBrush(fill)
+        painter.drawEllipse(circle)
 
 
 class LightTitleBar(QWidget):
@@ -42,90 +204,59 @@ class LightTitleBar(QWidget):
     def setup_ui(self, title: str):
         """设置 UI"""
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 0, 8, 0)
-        layout.setSpacing(8)
+        layout.setContentsMargins(12, 0, 12, 0)
+        layout.setSpacing(0)
 
-        # 标题
+        button_size = 16
+        button_spacing = 11
+
+        controls = QWidget()
+        controls.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(button_spacing)
+
+        self.close_btn = MacWindowControlButton(
+            MacWindowControlButton.TYPE_CLOSE, size=button_size, parent=controls
+        )
+        self.close_btn.clicked.connect(self.close_clicked.emit)
+        controls_layout.addWidget(self.close_btn)
+
+        self.maximize_btn = MacWindowControlButton(
+            MacWindowControlButton.TYPE_MAXIMIZE, size=button_size, parent=controls
+        )
+        self.maximize_btn.clicked.connect(self.maximize_clicked.emit)
+        controls_layout.addWidget(self.maximize_btn)
+
+        self.minimize_btn = MacWindowControlButton(
+            MacWindowControlButton.TYPE_MINIMIZE, size=button_size, parent=controls
+        )
+        self.minimize_btn.clicked.connect(self.minimize_clicked.emit)
+        controls_layout.addWidget(self.minimize_btn)
+
+        controls_width = button_size * 3 + button_spacing * 2
+        controls.setFixedWidth(controls_width)
+
+        right_spacer = QWidget()
+        right_spacer.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        right_spacer.setFixedWidth(controls_width)
+
         self.title_label = QLabel(title)
-        self.title_label.setStyleSheet(f"""
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface']};
-                font-size: 16px;
-                font-weight: 500;
+                font-size: 14px;
+                font-weight: 600;
                 background: transparent;
-            }}
-        """)
-        layout.addWidget(self.title_label)
-
-        layout.addStretch()
-
-        # 窗口控制按钮 - 使用 Material Design 图标
-        # 设置 Material Symbols 字体
-        icon_font = QFont("Material Symbols Outlined")
-        icon_font.setPixelSize(18)
-
-        button_style = f"""
-            QPushButton {{
-                background: transparent;
-                border: none;
-                border-radius: {MD3_RADIUS['full']};
-                color: {MD3_LIGHT_COLORS['on_surface_variant']};
-                min-width: 32px;
-                max-width: 32px;
-                min-height: 32px;
-                max-height: 32px;
-            }}
-            QPushButton:hover {{
-                background: {MD3_LIGHT_COLORS['surface_container_high']};
-            }}
-            QPushButton:pressed {{
-                background: {MD3_LIGHT_COLORS['surface_container_highest']};
             }}
         """
+        )
 
-        # 最小化按钮
-        self.minimize_btn = QPushButton(MATERIAL_ICONS["minimize"])
-        self.minimize_btn.setFont(icon_font)
-        self.minimize_btn.setStyleSheet(button_style)
-        self.minimize_btn.setToolTip("最小化")
-        self.minimize_btn.clicked.connect(self.minimize_clicked.emit)
-        layout.addWidget(self.minimize_btn)
-
-        # 最大化按钮
-        self.maximize_btn = QPushButton(MATERIAL_ICONS["maximize"])
-        self.maximize_btn.setFont(icon_font)
-        self.maximize_btn.setStyleSheet(button_style)
-        self.maximize_btn.setToolTip("最大化")
-        self.maximize_btn.clicked.connect(self.maximize_clicked.emit)
-        layout.addWidget(self.maximize_btn)
-
-        # 关闭按钮
-        close_button_style = f"""
-            QPushButton {{
-                background: transparent;
-                border: none;
-                border-radius: {MD3_RADIUS['full']};
-                color: {MD3_LIGHT_COLORS['on_surface_variant']};
-                min-width: 32px;
-                max-width: 32px;
-                min-height: 32px;
-                max-height: 32px;
-            }}
-            QPushButton:hover {{
-                background: {MD3_LIGHT_COLORS['error']};
-                color: {MD3_LIGHT_COLORS['on_error']};
-            }}
-            QPushButton:pressed {{
-                background: #D32F2F;
-                color: {MD3_LIGHT_COLORS['on_error']};
-            }}
-        """
-        self.close_btn = QPushButton(MATERIAL_ICONS["close"])
-        self.close_btn.setFont(icon_font)
-        self.close_btn.setStyleSheet(close_button_style)
-        self.close_btn.setToolTip("关闭")
-        self.close_btn.clicked.connect(self.close_clicked.emit)
-        layout.addWidget(self.close_btn)
+        layout.addWidget(controls)
+        layout.addWidget(self.title_label, 1)
+        layout.addWidget(right_spacer)
 
         # 设置背景 - 使用淡薄荷绿
         self.setStyleSheet(f"""
@@ -176,12 +307,7 @@ class LightFramelessWindow(QWidget):
 
         # 容器 widget（用于圆角和背景）
         self.container = QWidget()
-        self.container.setStyleSheet(f"""
-            QWidget {{
-                background: {MD3_LIGHT_COLORS['gradient_light_mint']};
-                border-radius: {MD3_RADIUS['large']};
-            }}
-        """)
+        self._apply_window_chrome_style(is_maximized=False)
 
         container_layout = QVBoxLayout(self.container)
         container_layout.setContentsMargins(0, 0, 0, 0)
@@ -205,6 +331,45 @@ class LightFramelessWindow(QWidget):
 
         main_layout.addWidget(self.container)
 
+        self._apply_window_chrome_style(is_maximized=self.isMaximized())
+
+    def _apply_window_chrome_style(self, is_maximized: bool | None = None) -> None:
+        maximized = self.isMaximized() if is_maximized is None else bool(is_maximized)
+        radius = "0px" if maximized else MD3_RADIUS["large"]
+
+        try:
+            self.container.setStyleSheet(
+                f"""
+                QWidget {{
+                    background: {MD3_LIGHT_COLORS['gradient_light_mint']};
+                    border-radius: {radius};
+                }}
+                """
+            )
+        except Exception:
+            pass
+
+        try:
+            self.title_bar.setStyleSheet(
+                f"""
+                LightTitleBar {{
+                    background: {MD3_LIGHT_COLORS['primary_container']};
+                    border-top-left-radius: {radius};
+                    border-top-right-radius: {radius};
+                }}
+                """
+            )
+        except Exception:
+            pass
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        try:
+            if event.type() == QEvent.Type.WindowStateChange:
+                self._apply_window_chrome_style()
+        except Exception:
+            pass
+
     def add_shadow(self):
         """添加阴影效果"""
         if not WINDOW_SHADOW_ENABLED:
@@ -222,10 +387,12 @@ class LightFramelessWindow(QWidget):
 
     def toggle_maximize(self):
         """切换最大化状态"""
-        if self.isMaximized():
-            self.showNormal()
-        else:
+        maximized_next = not self.isMaximized()
+        if maximized_next:
             self.showMaximized()
+        else:
+            self.showNormal()
+        self._apply_window_chrome_style(is_maximized=maximized_next)
 
     def mousePressEvent(self, event: QMouseEvent):
         """鼠标按下事件"""

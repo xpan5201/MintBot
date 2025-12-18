@@ -31,7 +31,7 @@ class ChatWindowOptimizer:
         self._auto_scroll_predicate = auto_scroll_predicate
         
         # 批量渲染器
-        self.batch_renderer = BatchRenderer(interval_ms=16)
+        self.batch_renderer = BatchRenderer(interval_ms=16, parent=scroll_area)
         
         # 内存管理器
         self.memory_manager = None

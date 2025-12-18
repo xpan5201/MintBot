@@ -1,7 +1,7 @@
 """GUI性能优化模块（虚拟滚动、消息池、GPU加速、批量更新、懒加载、内存管理）"""
 
 from PyQt6.QtWidgets import QWidget, QScrollArea, QVBoxLayout
-from PyQt6.QtCore import Qt, QTimer, QRect
+from PyQt6.QtCore import Qt, QTimer, QRect, QObject, QCoreApplication
 from PyQt6.QtGui import QPainter
 from typing import List, Dict, Optional, Callable
 import time
@@ -205,13 +205,14 @@ class BatchRenderer:
     - 提升渲染性能
     """
 
-    def __init__(self, interval_ms: int = 16):
+    def __init__(self, interval_ms: int = 16, parent: Optional[QObject] = None):
         """初始化批量渲染器
 
         Args:
             interval_ms: 批量间隔（毫秒），默认 16ms（60fps）
         """
         self.interval_ms = interval_ms
+        self._timer_parent: Optional[QObject] = parent or QCoreApplication.instance()
         self.pending_updates: List[Callable] = []
         self.timer: Optional[QTimer] = None
 
@@ -224,7 +225,10 @@ class BatchRenderer:
         self.pending_updates.append(callback)
 
         if self.timer is None:
-            self.timer = QTimer()
+            if self._timer_parent is not None:
+                self.timer = QTimer(self._timer_parent)
+            else:
+                self.timer = QTimer()
             self.timer.timeout.connect(self._flush_updates)
             self.timer.setSingleShot(True)
 
