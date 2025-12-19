@@ -67,6 +67,8 @@ pywin32>=311  # Windows平台支持
 
 # GUI (PyQt6) - 最新稳定版
 PyQt6>=6.8.0
+# Optional: Live2D（QOpenGLWidget 渲染面板使用）
+live2d-py>=0.5.4
 
 # LangSmith (Optional) - 最新版本
 langsmith>=0.2.11

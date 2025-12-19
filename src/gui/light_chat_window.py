@@ -5,6 +5,8 @@ from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QMainWindow,
+    QDockWidget,
     QPushButton,
     QAbstractScrollArea,
     QScrollArea,
@@ -22,6 +24,7 @@ from PyQt6.QtCore import (
     pyqtSignal,
     pyqtProperty,
     QPropertyAnimation,
+    QVariantAnimation,
     QEasingCurve,
     QTimer,
     QPoint,
@@ -29,7 +32,7 @@ from PyQt6.QtCore import (
     QRectF,
     QEvent,
 )
-from PyQt6.QtGui import QFont, QColor, QPixmap, QPainter, QPen, QBrush, QFontMetrics
+from PyQt6.QtGui import QFont, QColor, QLinearGradient, QPixmap, QPainter, QPen, QBrush, QFontMetrics
 from pathlib import Path
 from functools import lru_cache
 from typing import Any, Optional
@@ -403,21 +406,21 @@ class CharacterStatusIsland(QWidget):
         self._details_effect = effect
 
         self._height_anim = QPropertyAnimation(self, b"island_height", self)
-        self._height_anim.setDuration(200)
-        self._height_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._height_anim.setDuration(240)
+        self._height_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
         self._details_height_anim = QPropertyAnimation(self.details, b"maximumHeight", self)
-        self._details_height_anim.setDuration(180)
-        self._details_height_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._details_height_anim.setDuration(220)
+        self._details_height_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
         self._details_opacity_anim = QPropertyAnimation(effect, b"opacity", self)
-        self._details_opacity_anim.setDuration(140)
-        self._details_opacity_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._details_opacity_anim.setDuration(180)
+        self._details_opacity_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
         self._details_opacity_anim.finished.connect(self._maybe_hide_details)
 
         self._details_fade_timer = QTimer(self)
         self._details_fade_timer.setSingleShot(True)
-        self._details_fade_timer.setInterval(90)
+        self._details_fade_timer.setInterval(80)
         self._details_fade_timer.timeout.connect(self._start_details_fade_in)
 
         self._collapse_timer = QTimer(self)
@@ -556,9 +559,46 @@ class CharacterStatusIsland(QWidget):
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
+            radius = max(8, int(self._radius_px))
+
+            # Subtle depth: a soft inner shadow near the bottom edge.
+            try:
+                shadow_rect = QRectF(rect)
+                shadow_rect.translate(0.0, 1.6)
+                shadow_rect.adjust(1.4, 1.4, -1.4, -1.4)
+                shadow_color = QColor(0, 0, 0, 16 if self._expanded else 10)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(shadow_color))
+                painter.drawRoundedRect(shadow_rect, max(6, radius - 2), max(6, radius - 2))
+            except Exception:
+                pass
+
+            # Background gradient for a more "island" feel.
+            try:
+                base = QColor(self._bg_color)
+                top = QColor(base)
+                bottom = QColor(base)
+                top = top.lighter(106 if self._expanded else 103)
+                bottom = bottom.darker(102 if self._expanded else 100)
+                grad = QLinearGradient(0.0, 0.0, 0.0, float(max(1, self.height())))
+                grad.setColorAt(0.0, top)
+                grad.setColorAt(1.0, bottom)
+                painter.setBrush(QBrush(grad))
+            except Exception:
+                painter.setBrush(QBrush(self._bg_color))
+
             painter.setPen(QPen(self._border_color, 1.0))
-            painter.setBrush(QBrush(self._bg_color))
-            painter.drawRoundedRect(rect, self._radius_px, self._radius_px)
+            painter.drawRoundedRect(rect, radius, radius)
+
+            # A tiny top highlight line (gives a glassy pill vibe).
+            try:
+                highlight = QColor(255, 255, 255, 120 if self._expanded else 90)
+                painter.setPen(QPen(highlight, 1.0))
+                hi_rect = QRectF(rect)
+                hi_rect.adjust(1.6, 1.6, -1.6, -1.6)
+                painter.drawRoundedRect(hi_rect, max(6, radius - 2), max(6, radius - 2))
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -723,6 +763,18 @@ class CharacterStatusIsland(QWidget):
         # Collapse
         self._apply_style(hovered=False)
 
+        # Shrink immediately while the details fade out; feels more "dynamic island".
+        try:
+            self._height_anim.stop()
+            self._height_anim.setStartValue(int(self.height() or self._expanded_height))
+            self._height_anim.setEndValue(self._collapsed_height)
+            self._height_anim.start()
+        except Exception:
+            try:
+                self.setFixedHeight(self._collapsed_height)
+            except Exception:
+                pass
+
         try:
             details_visible = bool(self.details.isVisible())
         except Exception:
@@ -737,8 +789,17 @@ class CharacterStatusIsland(QWidget):
             return
 
         try:
-            # Fade out first, then shrink (in _maybe_hide_details) for smoother collapse.
-            self._details_opacity_anim.setDuration(120)
+            # Fade out while shrinking; also collapse the bar region to avoid content jitter.
+            try:
+                self._details_height_anim.stop()
+                start_h = int(self.details.maximumHeight() or 0)
+                self._details_height_anim.setStartValue(start_h)
+                self._details_height_anim.setEndValue(0)
+                self._details_height_anim.start()
+            except Exception:
+                pass
+
+            self._details_opacity_anim.setDuration(160)
             self._details_opacity_anim.setStartValue(opacity)
             self._details_opacity_anim.setEndValue(0.0)
             self._details_opacity_anim.start()
@@ -759,16 +820,6 @@ class CharacterStatusIsland(QWidget):
                 self.details.setMaximumHeight(0)
             except Exception:
                 pass
-            try:
-                self._height_anim.stop()
-                self._height_anim.setStartValue(int(self.height() or self._expanded_height))
-                self._height_anim.setEndValue(self._collapsed_height)
-                self._height_anim.start()
-            except Exception:
-                try:
-                    self.setFixedHeight(self._collapsed_height)
-                except Exception:
-                    pass
 
     def enterEvent(self, event):  # noqa: N802 - Qt API naming
         super().enterEvent(event)
@@ -789,8 +840,14 @@ class CharacterStatusIsland(QWidget):
 class LightChatWindow(LightFramelessWindow):
     """浅色主题聊天窗口 - v2.15.0 优化版"""
 
+    lipsync_playback_started = pyqtSignal(object, float, float)
+
     def __init__(self):
         super().__init__("MintChat - 猫娘女仆智能体")
+        try:
+            self.lipsync_playback_started.connect(self._on_lipsync_playback_started)
+        except Exception:
+            pass
 
         # Agent：惰性/后台初始化（避免启动阻塞 GUI 主线程）
         self.agent = None
@@ -821,6 +878,9 @@ class LightChatWindow(LightFramelessWindow):
 
         # 自动滚动锁：用户上滑查看历史时不强制拉回底部
         self._auto_scroll_enabled = True
+
+        # Live2D: debounce lightweight reactions to avoid spamming motions during rapid UI updates.
+        self._live2d_last_react_ms = 0.0
 
         # 表情选择器
         self.emoji_picker = None
@@ -999,7 +1059,8 @@ class LightChatWindow(LightFramelessWindow):
         self.messages_widget = QWidget()
         try:
             self.messages_widget.setObjectName("messagesColumn")
-            self.messages_widget.setMaximumWidth(820)
+            self._messages_column_max_width = 820
+            self.messages_widget.setMaximumWidth(int(self._messages_column_max_width))
         except Exception:
             pass
 
@@ -1028,7 +1089,7 @@ class LightChatWindow(LightFramelessWindow):
         self.character_island = CharacterStatusIsland(
             ai_avatar,
             "小雪糕",
-            max_width=560,
+            max_width=420,
             parent=self.scroll_area.viewport(),
         )
         try:
@@ -1069,8 +1130,7 @@ class LightChatWindow(LightFramelessWindow):
         except Exception:
             pass
         QTimer.singleShot(0, self._position_message_overlays)
-
-        chat_layout.addWidget(self.scroll_area, 1)
+        QTimer.singleShot(0, self._update_messages_column_width)
 
         # v2.30.12: 监听滚动事件，实现滚动到顶部自动加载更多
         scrollbar = self.scroll_area.verticalScrollBar()
@@ -1079,6 +1139,22 @@ class LightChatWindow(LightFramelessWindow):
         # 比在每个 chunk 都主动滚动更稳定且更省资源。
         scrollbar.rangeChanged.connect(self._on_scroll_range_changed)
         self._is_loading_more = False  # 防止重复加载
+
+        # Soft edge blur while scrolling: makes bubbles fade/blur at viewport boundaries.
+        self._edge_blur_overlay = None
+        try:
+            from .scroll_edge_blur_overlay import ScrollEdgeBlurOverlay
+
+            self._edge_blur_overlay = ScrollEdgeBlurOverlay(
+                scroll_area=self.scroll_area, parent=self.scroll_area.viewport()
+            )
+            try:
+                self._edge_blur_overlay.setGeometry(self.scroll_area.viewport().rect())
+            except Exception:
+                pass
+            self._edge_blur_overlay.show()
+        except Exception:
+            self._edge_blur_overlay = None
 
         # 输入区域 - ChatGPT Web 风格输入卡片（按钮与预览内聚到 EnhancedInputWidget）
         input_area = QWidget()
@@ -1089,7 +1165,7 @@ class LightChatWindow(LightFramelessWindow):
             pass
 
         input_layout = QHBoxLayout(input_area)
-        input_layout.setContentsMargins(24, 16, 24, 20)
+        input_layout.setContentsMargins(14, 12, 14, 16)
         input_layout.setSpacing(0)
 
         # 保留 input_area 引用（用于后续布局/状态控制）
@@ -1097,7 +1173,7 @@ class LightChatWindow(LightFramelessWindow):
 
         self.enhanced_input = EnhancedInputWidget()
         try:
-            self.enhanced_input.setMaximumWidth(820)
+            self.enhanced_input.setMaximumWidth(int(getattr(self, "_messages_column_max_width", 820)))
         except Exception:
             pass
         self.enhanced_input.send_requested.connect(self._on_enhanced_send)
@@ -1106,9 +1182,11 @@ class LightChatWindow(LightFramelessWindow):
             self.enhanced_input.content_changed.connect(lambda: self._set_send_enabled(True))
         except Exception:
             pass
-        input_layout.addStretch(1)
-        input_layout.addWidget(self.enhanced_input, 1)
-        input_layout.addStretch(1)
+        try:
+            self.enhanced_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        except Exception:
+            pass
+        input_layout.addWidget(self.enhanced_input, 1, Qt.AlignmentFlag.AlignHCenter)
 
         # 向后兼容引用
         self.input_text = self.enhanced_input.input_text
@@ -1127,12 +1205,155 @@ class LightChatWindow(LightFramelessWindow):
         except Exception:
             pass
 
-        chat_layout.addWidget(input_area)
+        # Center column: messages (top) + input (bottom) share the same parent,
+        # and sit between sidebar and Live2D.
+        center_column = QWidget()
+        center_column.setObjectName("chatCenterColumn")
+        center_column.setStyleSheet("background: transparent;")
+        center_layout = QVBoxLayout(center_column)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(0)
+        center_layout.addWidget(self.scroll_area, 1)
+        center_layout.addWidget(input_area, 0)
+
+        # Dock-hosted layout: center column (left) + Live2D (right).
+        self.live2d_panel = None
+        try:
+            dock_host = QMainWindow(chat_content)
+            # IMPORTANT: QMainWindow tends to keep `Qt.Window` flags even when parented in PyQt.
+            # Force it to behave like a normal child widget so it can be managed by layouts.
+            dock_host.setWindowFlags(Qt.WindowType.Widget)
+            dock_host.setObjectName("messagesDockHost")
+            dock_host.setDockNestingEnabled(False)
+            dock_host.setStyleSheet(
+                """
+                QMainWindow#messagesDockHost { background: transparent; }
+                QDockWidget { background: transparent; border: none; }
+                QMainWindow::separator {
+                    background: transparent;
+                    width: 18px;
+                }
+                QMainWindow::separator:hover {
+                    background: rgba(255, 105, 180, 0.10);
+                }
+                """
+            )
+            dock_host.setCentralWidget(center_column)
+
+            # Live2D panel is optional, but if initialization fails we still show a placeholder
+            # (instead of silently hiding it) so users can see the actionable error.
+            try:
+                try:
+                    project_root = Path(__file__).resolve().parents[2]
+                except Exception:
+                    project_root = Path.cwd()
+
+                # Use the original model3.json; Live2D widget will generate an ASCII-only
+                # cache wrapper if the model folder contains non-ASCII expressions/motions.
+                raw_model = project_root / "live2d" / "Blue_cat" / "Blue cat.model3.json"
+                model_path = raw_model if raw_model.exists() else None
+                if model_path is None:
+                    try:
+                        candidates = list((project_root / "live2d").rglob("*.model3.json"))
+                        model_path = candidates[0] if candidates else None
+                    except Exception:
+                        model_path = None
+
+                logger.info("Initializing Live2D panel (model=%s)", model_path)
+
+                try:
+                    from .live2d_panel import Live2DPanel
+
+                    self.live2d_panel = Live2DPanel(model_path=model_path)
+                except Exception as exc:
+                    logger.error("Live2D panel init failed: %s", exc, exc_info=True)
+                    fallback = QWidget()
+                    fallback.setObjectName("live2dFallbackPanel")
+                    try:
+                        # Match Live2DPanel sizing so the dock never collapses to "nothing".
+                        fallback.setMinimumWidth(320)
+                        fallback.setMaximumWidth(560)
+                    except Exception:
+                        pass
+                    fallback.setStyleSheet(
+                        f"""
+                        QWidget#live2dFallbackPanel {{
+                            background: {MD3_ENHANCED_COLORS.get('surface_container_low', '#FFF7FB')};
+                            border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
+                            border-radius: {MD3_ENHANCED_RADIUS['extra_large']};
+                        }}
+                        """
+                    )
+                    fb_layout = QVBoxLayout(fallback)
+                    fb_layout.setContentsMargins(14, 14, 14, 14)
+                    fb_layout.setSpacing(10)
+                    title = QLabel("Live2D")
+                    title.setStyleSheet(
+                        f"""
+                        QLabel {{
+                            color: {MD3_ENHANCED_COLORS['on_surface']};
+                            {get_typography_css('title_medium')}
+                            font-weight: 760;
+                            background: transparent;
+                        }}
+                        """
+                    )
+                    msg = QLabel(f"Live2D 初始化失败，请查看日志。\n\n{type(exc).__name__}: {exc}")
+                    msg.setWordWrap(True)
+                    msg.setStyleSheet(
+                        f"""
+                        QLabel {{
+                            color: {MD3_ENHANCED_COLORS['on_surface_variant']};
+                            {get_typography_css('body_small')}
+                            background: transparent;
+                        }}
+                        """
+                    )
+                    fb_layout.addWidget(title, 0)
+                    fb_layout.addWidget(msg, 1)
+                    self.live2d_panel = fallback
+
+                dock = QDockWidget("", dock_host)
+                dock.setObjectName("live2dDock")
+                dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
+                dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+                dock.setTitleBarWidget(QWidget())
+                dock.setWidget(self.live2d_panel)
+                dock_host.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+                self._messages_dock_host = dock_host
+                self._live2d_dock = dock
+                try:
+                    sig = getattr(self.live2d_panel, "collapse_requested", None)
+                    if sig is not None:
+                        sig.connect(self._on_live2d_collapse_requested)
+                except Exception:
+                    pass
+                # A slightly wider default looks much better for Live2D.
+                try:
+                    dock_host.resizeDocks([dock], [420], Qt.Orientation.Horizontal)
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.error("Live2D dock host init failed: %s", exc, exc_info=True)
+                self.live2d_panel = None
+
+            chat_layout.addWidget(dock_host, 1)
+        except Exception:
+            # Fallback layout: no dock host; still keep the 3-column structure.
+            fallback = QWidget()
+            fallback.setStyleSheet("background: transparent;")
+            fb_layout = QHBoxLayout(fallback)
+            fb_layout.setContentsMargins(0, 0, 0, 0)
+            fb_layout.setSpacing(0)
+            fb_layout.addWidget(center_column, 1)
+            if self.live2d_panel is not None:
+                fb_layout.addWidget(self.live2d_panel, 0)
+            chat_layout.addWidget(fallback, 1)
 
         # 将聊天区域添加到 StackedWidget
         self.stacked_widget.addWidget(chat_area)
 
-        # 设置面板改为懒加载：避免启动即构建大体量 UI（settings_panel.py 较重）
+        # 设置面板改为懒加载：避免启动即构建大体量 UI（roleplay_settings_panel.py）
         self.settings_panel = None
 
         # 默认显示聊天区域
@@ -1418,6 +1639,13 @@ class LightChatWindow(LightFramelessWindow):
                 self._schedule_messages_geometry_update()
                 if enable_entry_animation:
                     bubble.show_with_animation()
+
+        # Live2D: subtle reaction on message add (skip bulk/history loads).
+        if not bulk_loading:
+            try:
+                self._maybe_live2d_react("user_send" if is_user else "assistant_reply")
+            except Exception:
+                pass
 
         # 保存到数据库和缓存
         if save_to_db:
@@ -2198,6 +2426,12 @@ class LightChatWindow(LightFramelessWindow):
         # 解锁输入
         self._set_send_enabled(True)
 
+        # Live2D: react once per completed assistant response.
+        try:
+            self._maybe_live2d_react("assistant_reply")
+        except Exception:
+            pass
+
         # 清理滚动定时器
         if hasattr(self, "_scroll_timer"):
             try:
@@ -2208,6 +2442,46 @@ class LightChatWindow(LightFramelessWindow):
 
         # 最终滚动到底部
         QTimer.singleShot(100, self._scroll_to_bottom)
+
+    def _maybe_live2d_react(self, kind: str) -> None:
+        """Trigger a light Live2D reaction if the panel is available and visible."""
+        panel = getattr(self, "live2d_panel", None)
+        if panel is None:
+            return
+        try:
+            if bool(getattr(panel, "is_collapsed", False)):
+                return
+        except Exception:
+            pass
+
+        gl = None
+        try:
+            gl = getattr(panel, "gl", None)
+        except Exception:
+            gl = None
+        if gl is None:
+            return
+
+        try:
+            if not panel.isVisible():
+                return
+        except Exception:
+            pass
+
+        # Simple debounce: avoid firing too many reactions during rapid message operations.
+        try:
+            now_ms = time.time() * 1000.0
+            last = float(getattr(self, "_live2d_last_react_ms", 0.0) or 0.0)
+            if now_ms - last < 650.0:
+                return
+            self._live2d_last_react_ms = now_ms
+        except Exception:
+            pass
+
+        try:
+            gl.trigger_reaction(str(kind or "manual"))
+        except Exception:
+            pass
 
     def _handle_stream_chunk(self, chunk: str) -> None:
         """处理流式输出块：过滤、创建气泡、入队渲染、TTS。"""
@@ -3399,7 +3673,7 @@ class LightChatWindow(LightFramelessWindow):
         """设置按钮点击"""
         # 懒加载设置面板：首次打开时才创建，减少启动时的 UI 构建开销
         if self.settings_panel is None:
-            from .settings_panel import SettingsPanel
+            from .roleplay_settings_panel import SettingsPanel
 
             self.settings_panel = SettingsPanel(agent=self.agent)
             self.settings_panel.back_clicked.connect(self._on_settings_back)
@@ -4817,9 +5091,116 @@ class LightChatWindow(LightFramelessWindow):
                 et = event.type()
                 if et in {QEvent.Type.Resize, QEvent.Type.Show}:
                     QTimer.singleShot(0, self._position_message_overlays)
+                    QTimer.singleShot(0, self._update_messages_column_width)
         except Exception:
             pass
         return super().eventFilter(obj, event)
+
+    def _update_messages_column_width(self) -> None:
+        """Reduce excessive whitespace by adapting the message column width to the viewport."""
+        viewport = getattr(self, "_overlay_viewport", None)
+        messages_widget = getattr(self, "messages_widget", None)
+        if viewport is None or messages_widget is None:
+            return
+
+        try:
+            vw = max(0, int(viewport.width()))
+        except Exception:
+            vw = 0
+
+        # Keep some breathing room on both sides but allow the column to grow on wide windows.
+        # Wider columns reduce the "too much whitespace" feel (especially with Live2D on the right).
+        target = vw - 48
+        target = max(900, min(1400, int(target)))
+
+        current = getattr(self, "_messages_column_max_width", None)
+        if current is not None and int(current) == int(target):
+            return
+
+        self._messages_column_max_width = int(target)
+        try:
+            messages_widget.setMaximumWidth(int(target))
+        except Exception:
+            pass
+
+        # Keep the input card aligned with the message reading width for a cleaner layout.
+        enhanced_input = getattr(self, "enhanced_input", None)
+        if enhanced_input is not None:
+            try:
+                enhanced_input.setMaximumWidth(int(target))
+            except Exception:
+                pass
+
+    def _on_live2d_collapse_requested(self, collapsed: bool) -> None:
+        host = getattr(self, "_messages_dock_host", None)
+        dock = getattr(self, "_live2d_dock", None)
+        if host is None or dock is None:
+            return
+
+        target = 72 if bool(collapsed) else 420
+        panel = getattr(self, "live2d_panel", None)
+        # Keep a small min width during the animation to avoid jumpy expansion.
+        try:
+            if panel is not None and hasattr(panel, "apply_collapsed_constraints"):
+                panel.apply_collapsed_constraints()
+        except Exception:
+            pass
+        try:
+            current = int(dock.width())
+        except Exception:
+            current = int(target)
+
+        if current <= 0:
+            current = int(target)
+
+        if int(current) == int(target):
+            try:
+                self._update_messages_column_width()
+            except Exception:
+                pass
+            return
+
+        # Smooth dock resize for a less "jumpy" collapse/expand.
+        try:
+            anim = getattr(self, "_live2d_dock_resize_anim", None)
+            if anim is not None:
+                try:
+                    anim.stop()
+                except Exception:
+                    pass
+
+            anim = QVariantAnimation(self)
+            anim.setStartValue(int(current))
+            anim.setEndValue(int(target))
+            anim.setDuration(180)
+            anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+
+            def _on_value_changed(v) -> None:
+                try:
+                    host.resizeDocks([dock], [int(v)], Qt.Orientation.Horizontal)
+                except Exception:
+                    pass
+
+            def _on_finished() -> None:
+                try:
+                    if (not bool(collapsed)) and panel is not None and hasattr(panel, "apply_expanded_constraints"):
+                        panel.apply_expanded_constraints()
+                except Exception:
+                    pass
+                try:
+                    self._update_messages_column_width()
+                except Exception:
+                    pass
+
+            anim.valueChanged.connect(_on_value_changed)
+            anim.finished.connect(_on_finished)
+            self._live2d_dock_resize_anim = anim
+            anim.start()
+        except Exception:
+            try:
+                host.resizeDocks([dock], [int(target)], Qt.Orientation.Horizontal)
+            except Exception:
+                pass
 
     def _position_message_overlays(self) -> None:
         """让“原子岛”等 overlay 始终固定在消息显示框顶部居中。"""
@@ -4828,11 +5209,20 @@ class LightChatWindow(LightFramelessWindow):
         if viewport is None or island is None:
             return
 
+        # Edge blur overlay: match the viewport rect and stay below the status island.
+        try:
+            blur_overlay = getattr(self, "_edge_blur_overlay", None)
+            if blur_overlay is not None:
+                blur_overlay.setGeometry(viewport.rect())
+                blur_overlay.raise_()
+        except Exception:
+            pass
+
         try:
             margin_x = 24
             margin_top = 12
             available = max(0, int(viewport.width()) - margin_x * 2)
-            max_w = 560
+            max_w = 420
             try:
                 max_w = int(island.maximumWidth() or max_w)
             except Exception:
@@ -4840,8 +5230,8 @@ class LightChatWindow(LightFramelessWindow):
             target_w = min(max_w, available) if available > 0 else 0
             if target_w <= 0:
                 return
-            if target_w < 320 and available >= 320:
-                target_w = 320
+            if target_w < 260 and available >= 260:
+                target_w = 260
             island.setFixedWidth(target_w)
             x = max(0, (int(viewport.width()) - target_w) // 2)
             y = max(0, int(margin_top))
@@ -5284,6 +5674,10 @@ class LightChatWindow(LightFramelessWindow):
                 default_volume=settings.tts.default_volume,
                 max_queue_size=settings.tts.max_queue_size,
             )
+            try:
+                self._setup_live2d_lipsync_bridge()
+            except Exception:
+                pass
 
             # 创建流式文本处理器
             # v2.48.13: 将最小句子长度从 5 降低到 3，避免短句（如“好啊！”、“嗯。”）被过滤掉导致 TTS 丢句
@@ -5300,6 +5694,218 @@ class LightChatWindow(LightFramelessWindow):
         except Exception as e:
             logger.error("TTS 系统初始化失败: %s", e)
             self.tts_enabled = False
+
+    def _setup_live2d_lipsync_bridge(self) -> None:
+        """Bridge TTS audio playback to Live2D mouth movement (VTuber-style lip sync).
+
+        - Audio playback happens on AudioPlayer's worker thread.
+        - Qt UI updates must happen on the GUI thread.
+        We therefore emit a Qt signal on playback start and drive a lightweight GUI-timer.
+        """
+
+        timer = getattr(self, "_lipsync_timer", None)
+        if timer is None:
+            idle_ms = 40
+            active_ms = 16
+            self._lipsync_idle_interval_ms = int(idle_ms)
+            self._lipsync_active_interval_ms = int(active_ms)
+            self._lipsync_env: list[float] = []
+            self._lipsync_step_s = 1.0 / 60.0
+            self._lipsync_start_t = 0.0
+            self._lipsync_active = False
+            self._lipsync_last_level = 0.0
+            self._lipsync_last_idx = -1
+
+            timer = QTimer(self)
+            timer.setTimerType(Qt.TimerType.PreciseTimer)
+            timer.setInterval(int(idle_ms))
+            timer.timeout.connect(self._on_lipsync_tick)
+            timer.start()
+            self._lipsync_timer = timer
+
+        player = getattr(self, "audio_player", None)
+        if player is None:
+            return
+
+        if getattr(self, "_lipsync_audio_player", None) is player:
+            return
+
+        register = getattr(player, "register_playback_start_observer", None)
+        if not callable(register):
+            return
+
+        try:
+            register(self._emit_lipsync_playback_started)
+            self._lipsync_audio_player = player
+        except Exception:
+            pass
+
+    def _emit_lipsync_playback_started(self, envelope: list[float], step_s: float, start_monotonic: float) -> None:
+        """Audio thread callback -> emit a queued signal to the GUI thread."""
+        if bool(getattr(self, "_closing", False)):
+            return
+        try:
+            self.lipsync_playback_started.emit(envelope, float(step_s), float(start_monotonic))
+        except Exception:
+            pass
+
+    def _on_lipsync_playback_started(self, envelope: object, step_s: float, start_monotonic: float) -> None:
+        """GUI thread: store envelope + wake the lipsync timer immediately."""
+        if bool(getattr(self, "_closing", False)):
+            return
+        try:
+            raw = envelope or []
+            if not isinstance(raw, (list, tuple)):
+                raw = list(raw)
+            env = [float(x) for x in raw]
+        except Exception:
+            env = []
+        if not env:
+            return
+
+        try:
+            step = float(step_s)
+        except Exception:
+            step = 1.0 / 60.0
+        step = max(1e-3, min(0.2, step))
+        try:
+            start_t = float(start_monotonic)
+        except Exception:
+            start_t = time.monotonic()
+
+        self._lipsync_env = env
+        self._lipsync_step_s = step
+        self._lipsync_start_t = start_t
+        self._lipsync_active = True
+        self._lipsync_last_idx = -1
+
+        timer = getattr(self, "_lipsync_timer", None)
+        if timer is not None:
+            try:
+                timer.setInterval(int(getattr(self, "_lipsync_active_interval_ms", 16)))
+            except Exception:
+                pass
+        self._on_lipsync_tick()
+
+    def _get_live2d_gl_for_lipsync(self):
+        panel = getattr(self, "live2d_panel", None)
+        if panel is None:
+            return None
+        try:
+            if bool(getattr(panel, "is_collapsed", False)):
+                return None
+        except Exception:
+            pass
+        try:
+            if not panel.isVisible():
+                return None
+        except Exception:
+            pass
+
+        gl = getattr(panel, "gl", None)
+        if gl is None:
+            return None
+        try:
+            if hasattr(gl, "is_ready") and not bool(gl.is_ready):
+                return None
+        except Exception:
+            pass
+        try:
+            if hasattr(gl, "is_paused") and bool(gl.is_paused):
+                return None
+        except Exception:
+            pass
+        return gl
+
+    def _on_lipsync_tick(self) -> None:
+        if bool(getattr(self, "_closing", False)):
+            return
+
+        timer = getattr(self, "_lipsync_timer", None)
+        idle_ms = int(getattr(self, "_lipsync_idle_interval_ms", 40))
+        active_ms = int(getattr(self, "_lipsync_active_interval_ms", 16))
+
+        gl = self._get_live2d_gl_for_lipsync()
+
+        env = getattr(self, "_lipsync_env", []) or []
+        active = bool(getattr(self, "_lipsync_active", False)) and bool(env)
+
+        if not active:
+            try:
+                if timer is not None and timer.interval() != idle_ms:
+                    timer.setInterval(idle_ms)
+            except Exception:
+                pass
+
+            last = float(getattr(self, "_lipsync_last_level", 0.0) or 0.0)
+            if gl is not None and last > 0.01:
+                try:
+                    gl.set_lipsync_level(0.0)
+                except Exception:
+                    pass
+            self._lipsync_last_level = 0.0
+            self._lipsync_last_idx = -1
+            return
+
+        try:
+            step_s = float(getattr(self, "_lipsync_step_s", 1.0 / 60.0) or 1.0 / 60.0)
+        except Exception:
+            step_s = 1.0 / 60.0
+        step_s = max(1e-3, step_s)
+        try:
+            start_t = float(getattr(self, "_lipsync_start_t", 0.0) or 0.0)
+        except Exception:
+            start_t = 0.0
+
+        elapsed = max(0.0, time.monotonic() - start_t) if start_t else 0.0
+        idx = int(elapsed / step_s) if step_s > 0 else int(elapsed * 60.0)
+
+        if idx >= len(env):
+            self._lipsync_active = False
+            self._lipsync_env = []
+            self._lipsync_last_level = 0.0
+            self._lipsync_last_idx = -1
+            try:
+                if timer is not None and timer.interval() != idle_ms:
+                    timer.setInterval(idle_ms)
+            except Exception:
+                pass
+            if gl is not None:
+                try:
+                    gl.set_lipsync_level(0.0)
+                except Exception:
+                    pass
+            return
+
+        try:
+            level = float(env[idx])
+        except Exception:
+            level = 0.0
+
+        # Noise gate: prevents tiny residuals from keeping the mouth slightly open.
+        if level < 0.01:
+            level = 0.0
+
+        desired_ms = active_ms if gl is not None else idle_ms
+        try:
+            if timer is not None and timer.interval() != desired_ms:
+                timer.setInterval(desired_ms)
+        except Exception:
+            pass
+
+        last_idx = int(getattr(self, "_lipsync_last_idx", -1))
+        last_level = float(getattr(self, "_lipsync_last_level", 0.0) or 0.0)
+        if idx == last_idx and abs(level - last_level) < 0.002:
+            return
+
+        self._lipsync_last_idx = idx
+        self._lipsync_last_level = level
+
+        if gl is not None:
+            try:
+                gl.set_lipsync_level(level)
+            except Exception:
+                pass
 
     def _synthesize_tts_async(self, text: str):
         """异步合成 TTS 音频 (v2.48.13 优化版，单线程队列顺序播放，参考 MoeChat)"""

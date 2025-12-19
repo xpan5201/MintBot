@@ -65,5 +65,8 @@ dmypy.json
 *.sqlite
 temp/
 cache/
+out/
 
 GPT-SoVITS-v2pro-20250604-nvidia50/
+
+live2d/Blue_cat/

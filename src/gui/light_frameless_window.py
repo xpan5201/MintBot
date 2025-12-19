@@ -163,7 +163,8 @@ class MacWindowControlButton(QPushButton):
         rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
         # Keep the visible dot close to macOS size while allowing a slightly larger hit box.
         min_side = float(min(self.width(), self.height()))
-        dot_diameter = min(12.0, max(8.0, min_side - 1.0))
+        # Slightly larger dots than the default (requested), while keeping a comfortable hit box.
+        dot_diameter = min(13.2, max(9.0, min_side - 1.0))
         dot_inset = max(0.0, (min_side - dot_diameter) / 2.0)
         press_inset = 0.8 * self._press_t
         circle = rect.adjusted(
@@ -207,8 +208,9 @@ class LightTitleBar(QWidget):
         layout.setContentsMargins(12, 0, 12, 0)
         layout.setSpacing(0)
 
-        button_size = 16
-        button_spacing = 11
+        # A touch larger & more spaced (closer to the provided mock).
+        button_size = 18
+        button_spacing = 14
 
         controls = QWidget()
         controls.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)

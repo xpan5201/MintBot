@@ -12,7 +12,7 @@ sys.path.insert(0, str(project_root))
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
-from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
+from PyQt6.QtCore import Qt, qInstallMessageHandler, QtMsgType
 
 from src.version import __version__, print_version_info
 from src.auth.auth_service import AuthService

@@ -9,9 +9,10 @@
 
 import io
 import threading
+import time
 from collections import deque
 from pathlib import Path
-from typing import Optional, Deque, Tuple
+from typing import Callable, Optional, Deque, Tuple
 
 # 使用 sounddevice 作为播放器
 try:
@@ -53,6 +54,7 @@ class AudioPlayer:
         self._stop_event = threading.Event()
         self._worker: Optional[threading.Thread] = None
         self._max_queue_size = max(0, int(max_queue_size))
+        self._on_playback_start: list[Callable[[list[float], float, float], None]] = []
 
         if not _has_sounddevice:
             logger.warning(
@@ -90,6 +92,13 @@ class AudioPlayer:
                         getattr(data, "shape", (0,))[0],
                         samplerate,
                     )
+                    try:
+                        env, step_s = self._compute_level_envelope(data, samplerate, fps=60)
+                        if env:
+                            start_t = time.monotonic()
+                            self._emit_playback_start(env, step_s, start_t)
+                    except Exception:
+                        pass
                     sd.play(data, samplerate)
                     self._is_playing = True
                     sd.wait()
@@ -103,6 +112,88 @@ class AudioPlayer:
             sd.stop()
         except Exception:
             pass
+
+    def register_playback_start_observer(self, callback: Callable[[list[float], float, float], None]) -> None:
+        """Register a callback invoked when a queued audio segment actually starts playing.
+
+        Args:
+            callback: called as (envelope, step_seconds, start_monotonic)
+        """
+        if not callable(callback):
+            return
+        try:
+            self._on_playback_start.append(callback)
+        except Exception:
+            pass
+
+    def _emit_playback_start(self, envelope: list[float], step_s: float, start_t: float) -> None:
+        callbacks = None
+        try:
+            callbacks = list(self._on_playback_start)
+        except Exception:
+            callbacks = None
+        if not callbacks:
+            return
+        for cb in callbacks:
+            try:
+                cb(list(envelope), float(step_s), float(start_t))
+            except Exception:
+                pass
+
+    def _compute_level_envelope(self, data, samplerate: int, *, fps: int = 60) -> tuple[list[float], float]:
+        """Compute a coarse RMS envelope (0-1) for lip-sync/visualizers.
+
+        This is intentionally lightweight and vectorized; it returns ~fps values per second.
+        """
+        try:
+            import numpy as np  # type: ignore[import-not-found]
+        except Exception:
+            return ([], 1.0 / float(max(1, int(fps))))
+
+        try:
+            sr = max(1, int(samplerate))
+        except Exception:
+            sr = 44100
+        step = max(1, int(sr / float(max(1, int(fps)))))
+        step_s = float(step) / float(sr)
+
+        try:
+            x = data
+            if x is None:
+                return ([], step_s)
+            if hasattr(x, "ndim") and int(getattr(x, "ndim", 1)) > 1:
+                try:
+                    x = np.mean(x, axis=1)
+                except Exception:
+                    x = x[:, 0]
+            x = np.asarray(x, dtype=np.float32)
+            if x.size <= 0:
+                return ([], step_s)
+        except Exception:
+            return ([], step_s)
+
+        n = int(x.shape[0])
+        blocks = int(n // step)
+        if blocks <= 0:
+            try:
+                rms = float(np.sqrt(np.mean(np.square(x))) or 0.0)
+            except Exception:
+                rms = 0.0
+            v = 1.0 if rms > 0.02 else 0.0
+            return ([float(v)], step_s)
+
+        try:
+            trimmed = x[: blocks * step]
+            frames = trimmed.reshape(blocks, step)
+            rms = np.sqrt(np.mean(np.square(frames), axis=1))
+            # Robust normalization: 95th percentile keeps occasional spikes from squashing everything.
+            denom = float(np.percentile(rms, 95) + 1e-6)
+            env = np.clip(rms / denom, 0.0, 1.0)
+            # Gentle compression so quiet speech still moves, loud speech doesn't over-open.
+            env = np.power(env, 0.65)
+            return (env.astype(np.float32).tolist(), step_s)
+        except Exception:
+            return ([], step_s)
 
     def _enqueue_audio(self, data, samplerate: int) -> int:
         """将解码后的音频推入播放队列。"""
@@ -291,4 +382,3 @@ def get_audio_player(
             _audio_player.set_volume(default_volume)
 
     return _audio_player
-

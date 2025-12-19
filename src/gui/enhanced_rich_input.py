@@ -137,7 +137,7 @@ class RichTextInput(QTextEdit):
             QTextEdit {{
                 background: transparent;
                 border: none;
-                padding: 10px 6px;
+                padding: 10px 3px;
                 font-size: 15px;
                 color: {MD3_ENHANCED_COLORS['on_surface']};
                 line-height: 1.5;
@@ -460,6 +460,7 @@ class ChatComposerIconButton(QPushButton):
 
         self._hover_t = 0.0
         self._press_t = 0.0
+        self._active = False
 
         self.setToolTip(tooltip)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -479,6 +480,15 @@ class ChatComposerIconButton(QPushButton):
         self._press_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def set_icon(self, icon: str) -> None:
+        """Update the Material Symbols icon name (repaint-only)."""
+        self._icon = str(icon or "")
+        self.update()
+
+    def set_active(self, active: bool) -> None:
+        self._active = bool(active)
+        self.update()
 
     @pyqtProperty(float)
     def hover_t(self) -> float:
@@ -574,6 +584,24 @@ class ChatComposerIconButton(QPushButton):
             if self._hover_t > 0.5 and enabled:
                 icon_color = QColor(MD3_ENHANCED_COLORS["on_surface"])
 
+            # Active (toggled) state: slightly stronger outline + subtle tint.
+            if self._active and enabled:
+                try:
+                    tint = QColor(MD3_ENHANCED_COLORS.get("primary", MD3_ENHANCED_COLORS["on_surface"]))
+                    tint.setAlpha(26)
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(tint)
+                    painter.drawEllipse(circle)
+
+                    outline2 = QColor(MD3_ENHANCED_COLORS.get("primary", MD3_ENHANCED_COLORS["on_surface"]))
+                    outline2.setAlpha(210)
+                    painter.setPen(QPen(outline2, 1.2))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawEllipse(circle)
+                    icon_color = QColor(MD3_ENHANCED_COLORS.get("primary", MD3_ENHANCED_COLORS["on_surface"]))
+                except Exception:
+                    pass
+
         painter.setPen(QPen(icon_color, 1.0))
         painter.setFont(self._icon_font)
         painter.drawText(circle, Qt.AlignmentFlag.AlignCenter, self._icon)
@@ -618,7 +646,7 @@ class EnhancedInputWidget(QWidget):
         self.card.installEventFilter(self)
 
         card_layout = QVBoxLayout(self.card)
-        card_layout.setContentsMargins(12, 8, 12, 8)
+        card_layout.setContentsMargins(8, 8, 8, 8)
         card_layout.setSpacing(4)
 
         # 文件预览区域（默认隐藏，位于输入框内部顶部，类似 ChatGPT Web）
@@ -681,13 +709,13 @@ class EnhancedInputWidget(QWidget):
         # 底部输入行：+ | 输入框 | mic | send
         input_row = QHBoxLayout()
         input_row.setContentsMargins(0, 0, 0, 0)
-        input_row.setSpacing(8)
+        input_row.setSpacing(6)
 
         self.plus_btn = ChatComposerIconButton(
             "add",
             "更多",
-            size=44,
-            icon_size=22,
+            size=38,
+            icon_size=19,
             variant=ChatComposerIconButton.VARIANT_GHOST,
         )
         input_row.addWidget(self.plus_btn, 0, Qt.AlignmentFlag.AlignBottom)
@@ -703,8 +731,8 @@ class EnhancedInputWidget(QWidget):
         self.mic_btn = ChatComposerIconButton(
             "mic",
             "语音输入（开发中）",
-            size=44,
-            icon_size=22,
+            size=38,
+            icon_size=19,
             variant=ChatComposerIconButton.VARIANT_GHOST,
         )
         input_row.addWidget(self.mic_btn, 0, Qt.AlignmentFlag.AlignBottom)
@@ -712,8 +740,8 @@ class EnhancedInputWidget(QWidget):
         self.send_btn = ChatComposerIconButton(
             "send",
             "发送",
-            size=44,
-            icon_size=22,
+            size=38,
+            icon_size=19,
             variant=ChatComposerIconButton.VARIANT_FILLED,
         )
         self.send_btn.clicked.connect(self.input_text.send_requested.emit)
