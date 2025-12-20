@@ -7,7 +7,8 @@ widget/module.
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtWidgets import QApplication, QToolTip
 
 from .material_design_enhanced import MD3_ENHANCED_COLORS, MD3_ENHANCED_RADIUS, get_typography_css
 from .theme_manager import get_active_theme_name, THEME_ANIME
@@ -20,12 +21,17 @@ def build_global_stylesheet() -> str:
     # Keep this QSS minimal: global styles should not fight with per-widget styles.
     qss = f"""
         QToolTip {{
-            background: {c['surface_container_highest']};
+            /* Use background-color instead of background to avoid platform-specific tooltip palette issues. */
+            background-color: {c['surface_container_highest']};
             color: {c['on_surface']};
             border: 1px solid {c['outline_variant']};
             border-radius: {r['md']};
             padding: 8px 10px;
             {get_typography_css('label_medium')}
+        }}
+        QToolTip QLabel {{
+            background: transparent;
+            color: {c['on_surface']};
         }}
 
         QMenu {{
@@ -109,4 +115,18 @@ def apply_app_theme(app: QApplication) -> None:
         return
 
     app.setStyleSheet(build_global_stylesheet())
+    _apply_tooltip_palette()
 
+
+def _apply_tooltip_palette() -> None:
+    """Force a readable tooltip palette even when OS theme/palette is dark."""
+    try:
+        c = MD3_ENHANCED_COLORS
+        tooltip_bg = QColor(c["surface_container_highest"])
+        tooltip_fg = QColor(c["on_surface"])
+        palette = QPalette()
+        palette.setColor(QPalette.ColorRole.ToolTipBase, tooltip_bg)
+        palette.setColor(QPalette.ColorRole.ToolTipText, tooltip_fg)
+        QToolTip.setPalette(palette)
+    except Exception:
+        return

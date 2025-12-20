@@ -208,6 +208,7 @@ class Live2DGlWidget(QOpenGLWidget):
         self._lipsync_last_boost_t = 0.0
         self._param_setter_supports_weight: bool | None = None
         self._param_supported: dict[str, bool] = {}
+        self._param_index_cache: dict[str, int] = {}
 
         # "VTuber" idle layer: subtle motion + blinking + occasional expressions.
         # Implemented best-effort on top of the model without requiring a dedicated motion set.
@@ -232,6 +233,7 @@ class Live2DGlWidget(QOpenGLWidget):
         self._vtuber_gesture_bz = 0.0
         self._vtuber_gesture_ex = 0.0
         self._vtuber_gesture_ey = 0.0
+        self._vtuber_eye_open_last: float | None = None
 
         # Smooth pose state (prevents robotic "teleporting" between targets).
         self._pose_angle_x = 0.0
@@ -262,13 +264,21 @@ class Live2DGlWidget(QOpenGLWidget):
         self._saccade_from_y = 0.0
         self._saccade_to_x = 0.0
         self._saccade_to_y = 0.0
+        self._idle_drag_next_t = 0.0
+        self._micro_params_next_t = self._vtuber_t0
         self._user_scale_mul = 1.0
         self._user_offset_x = 0.0
         self._user_offset_y = 0.0
         self._drag_pos: QPointF | None = None
+        self._drag_smooth_pos: QPointF | None = None
+        self._drag_smooth_t = 0.0
         self._panning = False
         self._pan_button: Qt.MouseButton | None = None
         self._pan_last_pos: QPointF | None = None
+        self._pan_candidate = False
+        self._pan_candidate_pos: QPointF | None = None
+        self._pan_candidate_threshold_px = 6.0
+        self._view_apply_pending = False
         self._last_viewport_px: tuple[int, int] = (0, 0)
 
         # Normal FPS target: keep it conservative for a side panel, but smooth enough for
@@ -291,6 +301,11 @@ class Live2DGlWidget(QOpenGLWidget):
         self.setMouseTracking(True)
         self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
         try:
+            # Allow dragging `.model3.json` into the panel to switch characters quickly.
+            self.setAcceptDrops(True)
+        except Exception:
+            pass
+        try:
             self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         except Exception:
             pass
@@ -305,6 +320,11 @@ class Live2DGlWidget(QOpenGLWidget):
         try:
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
             self.setAutoFillBackground(False)
+        except Exception:
+            pass
+        try:
+            # Prefer partial updates for slightly lower compositor overhead on some platforms.
+            self.setUpdateBehavior(QOpenGLWidget.UpdateBehavior.PartialUpdate)
         except Exception:
             pass
 
@@ -575,6 +595,16 @@ class Live2DGlWidget(QOpenGLWidget):
         except Exception:
             now = 0.0
 
+        # Coalesce expensive view updates: apply at most once per frame even if mouse events fire at 500+ Hz.
+        try:
+            if self._view_apply_pending:
+                self._view_apply_pending = False
+                ww, hh = self._last_viewport_px
+                if ww > 0 and hh > 0:
+                    self._apply_default_view(ww, hh)
+        except Exception:
+            pass
+
         # Feed pointer/idle movement to Live2D once per frame (instead of per mouse event).
         # This keeps interaction smooth without overwhelming the UI thread on high-frequency mice,
         # and also enables a subtle "VTuber" idle motion when the user isn't interacting.
@@ -658,8 +688,6 @@ class Live2DGlWidget(QOpenGLWidget):
     def mouseMoveEvent(self, event):  # noqa: N802 - Qt API naming
         if not self._ready or self._model is None:
             return super().mouseMoveEvent(event)
-        if self._interaction_locked:
-            return super().mouseMoveEvent(event)
         try:
             pos: QPointF = event.position()
             if self._panning and self._pan_last_pos is not None:
@@ -670,6 +698,12 @@ class Live2DGlWidget(QOpenGLWidget):
                     w = max(1.0, float(self.width()))
                     h = max(1.0, float(self.height()))
                     k = 1.4
+                    try:
+                        zoom = float(self._user_scale_mul)
+                    except Exception:
+                        zoom = 1.0
+                    zoom = max(0.55, min(2.2, zoom))
+                    k /= max(0.6, zoom)
                     self._user_offset_x += float(delta.x()) / w * k
                     self._user_offset_y += float(delta.y()) / h * k
                     # Clamp to a sane range to avoid losing the model.
@@ -677,11 +711,30 @@ class Live2DGlWidget(QOpenGLWidget):
                     self._user_offset_y = max(-0.8, min(0.6, self._user_offset_y))
                 except Exception:
                     pass
-                ww, hh = self._last_viewport_px
-                if ww > 0 and hh > 0:
-                    self._apply_default_view(ww, hh)
+                self._request_view_apply()
                 event.accept()
                 return
+
+            # Left drag pan (when unlocked): delay pan until the cursor moves enough so simple clicks
+            # still trigger Tap animations.
+            if (
+                (not self._interaction_locked)
+                and self._pan_candidate
+                and (event.buttons() & Qt.MouseButton.LeftButton)
+                and (self._pan_candidate_pos is not None)
+            ):
+                try:
+                    dx = float(pos.x() - self._pan_candidate_pos.x())
+                    dy = float(pos.y() - self._pan_candidate_pos.y())
+                    thr = float(self._pan_candidate_threshold_px)
+                    if (dx * dx + dy * dy) >= (thr * thr):
+                        self._pan_candidate = False
+                        self._pan_candidate_pos = None
+                        self._start_pan(pos, Qt.MouseButton.LeftButton)
+                        event.accept()
+                        return
+                except Exception:
+                    pass
 
             # Store the latest pointer pos; `paintGL` will feed it to the model once per frame.
             self._drag_pos = pos
@@ -704,53 +757,41 @@ class Live2DGlWidget(QOpenGLWidget):
         try:
             self._boost_fps()
             pos: QPointF = event.position()
-            x = float(pos.x())
-            y = float(pos.y())
 
-            # View pan: Right-drag (or Alt+Left-drag).
-            try:
-                if not self._interaction_locked:
+            # View pan: Right-drag (or Alt+Left-drag) when unlocked.
+            if not self._interaction_locked:
+                try:
                     if event.button() == Qt.MouseButton.RightButton or (
                         event.button() == Qt.MouseButton.LeftButton
                         and (event.modifiers() & Qt.KeyboardModifier.AltModifier)
                     ):
-                        self._panning = True
-                        self._pan_button = event.button()
-                        self._pan_last_pos = pos
-                        self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+                        self._start_pan(pos, event.button())
                         event.accept()
                         return
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
-            # Tap feedback: prefer "TapHead" group if exists; otherwise random idle motion.
-            group = None
-            try:
-                motions = self._model.GetMotionGroups() if hasattr(self._model, "GetMotionGroups") else {}
-                if isinstance(motions, dict) and "TapHead" in motions:
-                    group = "TapHead"
-                elif isinstance(motions, dict) and "TapBody" in motions:
-                    group = "TapBody"
-            except Exception:
-                group = None
-
-            if group:
+                # Left press becomes a pan candidate (move beyond threshold => pan); otherwise Tap on release.
                 try:
-                    self._model.StartRandomMotion(group, 3)
+                    if event.button() == Qt.MouseButton.LeftButton:
+                        self._pan_candidate = True
+                        self._pan_candidate_pos = pos
+                        self._drag_pos = pos
+                        event.accept()
+                        return
                 except Exception:
                     pass
             else:
+                # Locked: keep click interactions, disable only drag/zoom.
                 try:
-                    self._model.StartRandomMotion("Idle", 1)
+                    if event.button() == Qt.MouseButton.LeftButton:
+                        self._pan_candidate = True
+                        self._pan_candidate_pos = pos
+                        self._drag_pos = pos
+                        event.accept()
+                        return
                 except Exception:
                     pass
-
-            # Optional: expression on click (if API exists on this model type).
-            try:
-                if hasattr(self._model, "SetRandomExpression"):
-                    self._model.SetRandomExpression()
-            except Exception:
-                pass
         except Exception:
             pass
         return super().mousePressEvent(event)
@@ -765,6 +806,19 @@ class Live2DGlWidget(QOpenGLWidget):
                     return
         except Exception:
             pass
+
+        # Tap action: only when the pointer didn't become a pan gesture.
+        try:
+            if event.button() == Qt.MouseButton.LeftButton and self._pan_candidate:
+                self._pan_candidate = False
+                self._pan_candidate_pos = None
+                self.trigger_reaction("manual")
+                event.accept()
+                return
+        except Exception:
+            # Always clear candidate state.
+            self._pan_candidate = False
+            self._pan_candidate_pos = None
         return super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):  # noqa: N802 - Qt API naming
@@ -783,14 +837,64 @@ class Live2DGlWidget(QOpenGLWidget):
             factor = pow(1.12, steps)
             self._user_scale_mul *= float(factor)
             self._user_scale_mul = max(0.55, min(2.2, self._user_scale_mul))
-            ww, hh = self._last_viewport_px
-            if ww > 0 and hh > 0:
-                self._apply_default_view(ww, hh)
-            self.update()
+            self._request_view_apply()
             event.accept()
             return
         except Exception:
             return super().wheelEvent(event)
+
+    def dragEnterEvent(self, event):  # noqa: N802 - Qt API naming
+        try:
+            mime = event.mimeData()
+            if mime is None or not mime.hasUrls():
+                return super().dragEnterEvent(event)
+            for url in mime.urls():
+                try:
+                    local = str(url.toLocalFile() or "")
+                    if not local:
+                        continue
+                    p = Path(local)
+                except Exception:
+                    continue
+                model = self._find_dropped_model_json(p)
+                if model is not None:
+                    event.acceptProposedAction()
+                    return
+        except Exception:
+            pass
+        return super().dragEnterEvent(event)
+
+    def dropEvent(self, event):  # noqa: N802 - Qt API naming
+        try:
+            mime = event.mimeData()
+            if mime is None or not mime.hasUrls():
+                return super().dropEvent(event)
+            chosen: Path | None = None
+            for url in mime.urls():
+                try:
+                    local = str(url.toLocalFile() or "")
+                    if not local:
+                        continue
+                    p = Path(local)
+                except Exception:
+                    continue
+                chosen = self._find_dropped_model_json(p)
+                if chosen is not None:
+                    break
+            if chosen is None:
+                return super().dropEvent(event)
+
+            self.set_model(chosen)
+            try:
+                from src.gui.notifications import Toast, show_toast
+
+                show_toast(self.window(), f"已加载 Live2D：{chosen.name}", Toast.TYPE_SUCCESS, duration=1800)
+            except Exception:
+                pass
+            event.acceptProposedAction()
+            return
+        except Exception:
+            return super().dropEvent(event)
 
     # -------------------------
     # Internals
@@ -851,6 +955,7 @@ class Live2DGlWidget(QOpenGLWidget):
         self._param_setter = None
         self._param_setter_supports_weight = None
         self._param_supported = {}
+        self._param_index_cache = {}
         self._lipsync_supported = None
         try:
             t0 = time.monotonic()
@@ -876,6 +981,9 @@ class Live2DGlWidget(QOpenGLWidget):
         self._vtuber_gesture_bz = 0.0
         self._vtuber_gesture_ex = 0.0
         self._vtuber_gesture_ey = 0.0
+        self._vtuber_eye_open_last = None
+        self._idle_drag_next_t = 0.0
+        self._micro_params_next_t = t0
         if self._live2d is None:
             self._set_error("未检测到 live2d-py。")
             return
@@ -1201,55 +1309,110 @@ class Live2DGlWidget(QOpenGLWidget):
         if model is None:
             return
         if self._panning:
+            self._drag_smooth_pos = None
+            self._drag_smooth_t = 0.0
             return
 
-        # 1) User pointer interaction (when unlocked) takes precedence.
+        # 1) User pointer interaction takes precedence (even when locked; lock only disables pan/zoom).
         hovering = False
         try:
             hovering = bool(self.underMouse())
         except Exception:
             hovering = False
 
-        if (not self._interaction_locked) and hovering and (self._drag_pos is not None):
+        if hovering and (self._drag_pos is not None):
             try:
-                pos = self._drag_pos
-                model.Drag(float(pos.x()), float(pos.y()))
+                target = self._drag_pos
+                use = target
+
+                try:
+                    now_f = float(now)
+                except Exception:
+                    now_f = 0.0
+                if now_f:
+                    if self._drag_smooth_pos is None or self._drag_smooth_t <= 0.0:
+                        self._drag_smooth_pos = QPointF(float(target.x()), float(target.y()))
+                        self._drag_smooth_t = now_f
+                    else:
+                        dt = max(0.0, min(0.25, now_f - float(self._drag_smooth_t)))
+                        self._drag_smooth_t = now_f
+                        tau = 0.075
+                        try:
+                            alpha = 1.0 - math.exp(-dt / tau)
+                        except Exception:
+                            alpha = 0.22
+                        alpha = max(0.05, min(0.9, float(alpha)))
+                        sp = self._drag_smooth_pos
+                        sx = float(sp.x()) + (float(target.x()) - float(sp.x())) * alpha
+                        sy = float(sp.y()) + (float(target.y()) - float(sp.y())) * alpha
+                        self._drag_smooth_pos = QPointF(sx, sy)
+                    use = self._drag_smooth_pos or target
+
+                model.Drag(float(use.x()), float(use.y()))
             except Exception:
                 pass
         else:
+            self._drag_smooth_pos = None
+            self._drag_smooth_t = 0.0
             # 2) VTuber idle motion: a gentle "follow" point wobble.
             if bool(getattr(self, "_vtuber_enabled", True)):
+                should_drag = True
                 try:
-                    ww = max(1.0, float(self.width()))
-                    hh = max(1.0, float(self.height()))
-                    t0 = float(getattr(self, "_vtuber_t0", 0.0) or 0.0)
-                    t = max(0.0, float(now) - t0) if now and t0 else 0.0
-                    tau = 2.0 * math.pi
-
-                    base_x = ww * 0.52
-                    base_y = hh * 0.34
-
-                    amp_x = ww * 0.055
-                    amp_y = hh * 0.050
-
-                    wobble_x = math.sin(tau * 0.16 * t) + 0.35 * math.sin(tau * 0.47 * t + 0.4)
-                    wobble_y = math.sin(tau * 0.13 * t + 1.2) + 0.28 * math.sin(tau * 0.41 * t + 2.1)
-
-                    x = base_x + amp_x * wobble_x
-                    y = base_y + amp_y * wobble_y
-
-                    # Speaking bob: tiny head bob tied to lip-sync intensity.
-                    lv_seen = float(getattr(self, "_lipsync_value", 0.0) or 0.0)
-                    if lv_seen > 0.01:
-                        bob = hh * 0.018 * min(1.0, lv_seen)
-                        x += (ww * 0.010 * lv_seen) * math.sin(tau * 0.9 * t + 0.8)
-                        y += bob * (0.55 + 0.45 * math.sin(tau * 1.1 * t))
-
-                    x = max(0.0, min(ww, x))
-                    y = max(0.0, min(hh, y))
-                    model.Drag(float(x), float(y))
+                    now_f = float(now)
                 except Exception:
+                    now_f = 0.0
+                if not now_f:
+                    should_drag = False
+                else:
+                    try:
+                        lv_seen = float(getattr(self, "_lipsync_value", 0.0) or 0.0)
+                    except Exception:
+                        lv_seen = 0.0
+                    interval_s = 0.04 if lv_seen > 0.02 else 0.085
+                    try:
+                        next_t = float(getattr(self, "_idle_drag_next_t", 0.0) or 0.0)
+                    except Exception:
+                        next_t = 0.0
+                    if now_f < next_t:
+                        should_drag = False
+                    else:
+                        self._idle_drag_next_t = now_f + float(interval_s)
+
+                if not should_drag:
+                    # Skip `Drag` this frame but still allow periodic motion/expression scheduling below.
                     pass
+                else:
+                    try:
+                        ww = max(1.0, float(self.width()))
+                        hh = max(1.0, float(self.height()))
+                        t0 = float(getattr(self, "_vtuber_t0", 0.0) or 0.0)
+                        t = max(0.0, float(now) - t0) if now and t0 else 0.0
+                        tau = 2.0 * math.pi
+
+                        base_x = ww * 0.52
+                        base_y = hh * 0.34
+
+                        amp_x = ww * 0.055
+                        amp_y = hh * 0.050
+
+                        wobble_x = math.sin(tau * 0.16 * t) + 0.35 * math.sin(tau * 0.47 * t + 0.4)
+                        wobble_y = math.sin(tau * 0.13 * t + 1.2) + 0.28 * math.sin(tau * 0.41 * t + 2.1)
+
+                        x = base_x + amp_x * wobble_x
+                        y = base_y + amp_y * wobble_y
+
+                        # Speaking bob: tiny head bob tied to lip-sync intensity.
+                        lv_seen = float(getattr(self, "_lipsync_value", 0.0) or 0.0)
+                        if lv_seen > 0.01:
+                            bob = hh * 0.018 * min(1.0, lv_seen)
+                            x += (ww * 0.010 * lv_seen) * math.sin(tau * 0.9 * t + 0.8)
+                            y += bob * (0.55 + 0.45 * math.sin(tau * 1.1 * t))
+
+                        x = max(0.0, min(ww, x))
+                        y = max(0.0, min(hh, y))
+                        model.Drag(float(x), float(y))
+                    except Exception:
+                        pass
 
         # Periodic auto motion/expression to keep the model feeling alive.
         if bool(getattr(self, "_vtuber_enabled", True)) and now:
@@ -1481,6 +1644,33 @@ class Live2DGlWidget(QOpenGLWidget):
             ):
                 self._set_param_cached(setter, pid, float(val), w)
 
+            # Micro facial movement: update at a lower cadence to save CPU while keeping the
+            # avatar feeling alive (only when we can blend via weights).
+            if supports_weight and now_f:
+                try:
+                    due = now_f >= float(getattr(self, "_micro_params_next_t", 0.0) or 0.0)
+                except Exception:
+                    due = True
+                if due:
+                    self._micro_params_next_t = now_f + 0.09  # ~11Hz
+                    try:
+                        brow = 0.12 * math.sin(tau * 0.07 * t + 1.1) + 0.03 * math.sin(tau * 0.19 * t)
+                        brow += 0.02 * float(getattr(self, "_noise_ay", 0.0) or 0.0)
+                        brow = max(-1.0, min(1.0, float(brow)))
+                        self._set_param_cached(setter, "ParamBrowLY", brow, 0.28)
+                        self._set_param_cached(setter, "ParamBrowRY", brow, 0.28)
+                    except Exception:
+                        pass
+                    try:
+                        lv2 = float(getattr(self, "_lipsync_value", 0.0) or 0.0)
+                    except Exception:
+                        lv2 = 0.0
+                    try:
+                        eye_smile = max(0.0, min(1.0, 0.10 + 0.55 * lv2))
+                        self._set_param_cached(setter, "ParamEyeSmile", float(eye_smile), 0.22)
+                    except Exception:
+                        pass
+
     def _apply_vtuber_blink(self, now: float, setter) -> None:
         if self._vtuber_blink_supported is False:
             return
@@ -1531,18 +1721,19 @@ class Live2DGlWidget(QOpenGLWidget):
                     self._vtuber_blink_next_t = now_f + random.uniform(2.4, 5.2)
                 open_v = 1.0
 
+        # Avoid writing eye-open every frame when fully open (saves per-frame param calls).
+        try:
+            last = getattr(self, "_vtuber_eye_open_last", None)
+            if last is not None and self._vtuber_blink_end_t <= 0.0 and abs(float(open_v) - float(last)) < 0.01:
+                return
+        except Exception:
+            pass
+        self._vtuber_eye_open_last = float(open_v)
+
         # Apply blink to common parameters. Some models use only one eye parameter; try both.
         ok = 0
-        try:
-            setter("ParamEyeLOpen", float(open_v), 1.0)
-            ok += 1
-        except Exception:
-            pass
-        try:
-            setter("ParamEyeROpen", float(open_v), 1.0)
-            ok += 1
-        except Exception:
-            pass
+        ok += 1 if self._set_param_cached(setter, "ParamEyeLOpen", float(open_v), 1.0) else 0
+        ok += 1 if self._set_param_cached(setter, "ParamEyeROpen", float(open_v), 1.0) else 0
         if ok <= 0:
             self._vtuber_blink_supported = False
         else:
@@ -1583,14 +1774,30 @@ class Live2DGlWidget(QOpenGLWidget):
 
         # Common Cubism 3 params:
         # - ParamMouthOpenY: [0..1] open amount
-        # - ParamMouthForm: [-1..1] smile/frown; keep a gentle default
+        # - ParamMouthForm: [-1..1] smile/frown; optionally blend lightly if setter supports weight
         try:
             setter("ParamMouthOpenY", float(self._lipsync_value), 1.0)
         except Exception:
             self._lipsync_supported = False
             return
-        # Do not force `ParamMouthForm` here: expressions often control mouth shape.
-        # For lip-sync we only need the open amount; keeping form free makes expressions visible.
+        # Keep `ParamMouthForm` mostly free so expressions remain visible. When the setter supports
+        # weights, we can blend a tiny smile during speech to look more "alive".
+        try:
+            supports_weight = bool(getattr(self, "_param_setter_supports_weight", False))
+        except Exception:
+            supports_weight = False
+        if supports_weight:
+            try:
+                lv = float(getattr(self, "_lipsync_value", 0.0) or 0.0)
+            except Exception:
+                lv = 0.0
+            # 0.25..0.65 mild smile range while speaking.
+            form = 0.25 + 0.40 * max(0.0, min(1.0, float(lv)))
+            form = max(-1.0, min(1.0, float(form)))
+            try:
+                self._set_param_cached(setter, "ParamMouthForm", float(form), 0.35)
+            except Exception:
+                pass
 
     def _discover_param_setter(self):
         """Best-effort discover a parameter setter on the current live2d-py model."""
@@ -1623,7 +1830,58 @@ class Live2DGlWidget(QOpenGLWidget):
 
         test_id = "ParamMouthOpenY"
 
-        # 1) Direct setter by id.
+        # 1) Index based (prefer: avoids per-frame id lookups once indices are cached).
+        for obj in objs:
+            try:
+                get_idx = getattr(obj, "GetParameterIndex", None)
+                set_by_idx = getattr(obj, "SetParameterValueByIndex", None)
+                if not callable(get_idx) or not callable(set_by_idx):
+                    continue
+                idx = int(get_idx(test_id))
+                try:
+                    set_by_idx(idx, 0.0)
+                    self._param_setter_supports_weight = False
+                    cache = self._param_index_cache
+                    sentinel = object()
+
+                    def _setter(pid: str, v: float, w: float = 1.0, *, _get=get_idx, _set=set_by_idx) -> None:
+                        key = str(pid or "")
+                        if not key:
+                            raise KeyError("empty param id")
+                        cached = cache.get(key, sentinel)
+                        if cached is sentinel:
+                            i = int(_get(key))
+                            if i < 0:
+                                raise KeyError(key)
+                            cache[key] = int(i)
+                            cached = i
+                        _set(int(cached), float(v))
+
+                    return _setter
+                except TypeError:
+                    set_by_idx(idx, 0.0, 1.0)
+                    self._param_setter_supports_weight = True
+                    cache = self._param_index_cache
+                    sentinel = object()
+
+                    def _setter(pid: str, v: float, w: float = 1.0, *, _get=get_idx, _set=set_by_idx) -> None:
+                        key = str(pid or "")
+                        if not key:
+                            raise KeyError("empty param id")
+                        cached = cache.get(key, sentinel)
+                        if cached is sentinel:
+                            i = int(_get(key))
+                            if i < 0:
+                                raise KeyError(key)
+                            cache[key] = int(i)
+                            cached = i
+                        _set(int(cached), float(v), float(w))
+
+                    return _setter
+            except Exception:
+                continue
+
+        # 2) Direct setter by id.
         for obj in objs:
             for name in ("SetParameterValueById", "SetParameterValueByID", "SetParameterValue"):
                 try:
@@ -1645,32 +1903,6 @@ class Live2DGlWidget(QOpenGLWidget):
                 except Exception:
                     continue
 
-        # 2) Index based.
-        for obj in objs:
-            try:
-                get_idx = getattr(obj, "GetParameterIndex", None)
-                set_by_idx = getattr(obj, "SetParameterValueByIndex", None)
-                if not callable(get_idx) or not callable(set_by_idx):
-                    continue
-                idx = int(get_idx(test_id))
-                try:
-                    set_by_idx(idx, 0.0)
-                    self._param_setter_supports_weight = False
-                    return lambda pid, v, w=1.0, _obj=obj, _get_idx=get_idx, _set=set_by_idx: _set(
-                        int(_get_idx(pid)),
-                        float(v),
-                    )
-                except TypeError:
-                    set_by_idx(idx, 0.0, 1.0)
-                    self._param_setter_supports_weight = True
-                    return lambda pid, v, w=1.0, _obj=obj, _get_idx=get_idx, _set=set_by_idx: _set(
-                        int(_get_idx(pid)),
-                        float(v),
-                        float(w),
-                    )
-            except Exception:
-                continue
-
         return None
 
     def _end_pan(self) -> None:
@@ -1682,6 +1914,47 @@ class Live2DGlWidget(QOpenGLWidget):
                 self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
         except Exception:
             pass
+        self._pan_candidate = False
+        self._pan_candidate_pos = None
+
+    def _start_pan(self, pos: QPointF, button: Qt.MouseButton) -> None:
+        if self._interaction_locked:
+            return
+        self._pan_candidate = False
+        self._pan_candidate_pos = None
+        self._panning = True
+        self._pan_button = button
+        self._pan_last_pos = pos
+        try:
+            self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+        except Exception:
+            pass
+        self._boost_fps()
+
+    def _request_view_apply(self) -> None:
+        self._view_apply_pending = True
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _find_dropped_model_json(self, src: Path) -> Path | None:
+        try:
+            p = Path(src)
+        except Exception:
+            return None
+        if not p.exists():
+            return None
+        if p.is_file():
+            if p.suffix.lower() == ".json" and p.name.lower().endswith(".model3.json"):
+                return p
+            return None
+        # Directory: pick the first `.model3.json` in that directory (no recursion).
+        try:
+            models = sorted(p.glob("*.model3.json"))
+        except Exception:
+            models = []
+        return models[0] if models else None
 
     def _boost_fps(self, duration_ms: int = 1200) -> None:
         if self._paused or not self._ready:

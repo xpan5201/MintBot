@@ -158,19 +158,16 @@ class PersistentTTSAudioCache:
     # --------------------------------------------------------------------- #
     def get(self, key: str) -> Optional[bytes]:
         """读取缓存"""
+        # 先在锁内读取元信息，避免长时间持锁进行磁盘 I/O
         with self._lock:
             entry = self._entries.get(key)
             if not entry:
                 self._stats["misses"] += 1
                 return None
 
-            file_path = self.audio_dir / entry.filename
-            if not file_path.exists():
-                # 不记录文件缺失日志，减少日志输出
-                self._entries.pop(key, None)
-                self._save_index()
-                self._stats["misses"] += 1
-                return None
+            filename = entry.filename
+            compressed = bool(entry.compressed)
+            file_path = self.audio_dir / filename
 
             if self._is_expired(entry):
                 # 不记录过期日志，减少日志输出
@@ -180,32 +177,51 @@ class PersistentTTSAudioCache:
                 self._save_index()
                 return None
 
-            try:
-                data = file_path.read_bytes()
-                if entry.compressed:
+        # 锁外做磁盘读取/解压，降低并发读写阻塞
+        if not file_path.exists():
+            with self._lock:
+                current = self._entries.get(key)
+                if current and current.filename == filename:
+                    self._entries.pop(key, None)
+                    self._save_index()
+                self._stats["misses"] += 1
+            return None
+
+        try:
+            data = file_path.read_bytes()
+            if compressed:
+                data = gzip.decompress(data)
+        except (gzip.BadGzipFile, EOFError) as exc:
+            logger.warning("TTS 缓存文件损坏（压缩格式错误），移除条目: %s", exc)
+            with self._lock:
+                current = self._entries.get(key)
+                if current and current.filename == filename:
+                    self._remove_entry(file_path, current)
+                    self._save_index()
+                self._stats["misses"] += 1
+            return None
+        except (OSError, IOError) as exc:
+            logger.warning("读取 TTS 磁盘缓存失败，移除条目: %s", exc)
+            with self._lock:
+                current = self._entries.get(key)
+                if current and current.filename == filename:
+                    self._entries.pop(key, None)
                     try:
-                        data = gzip.decompress(data)
-                    except (gzip.BadGzipFile, EOFError) as e:
-                        logger.warning("TTS 缓存文件损坏（压缩格式错误），移除条目: %s", e)
-                        self._remove_entry(file_path, entry)
-                        self._save_index()
-                        self._stats["misses"] += 1
-                        return None
-            except (OSError, IOError) as exc:
-                logger.warning("读取 TTS 磁盘缓存失败，移除条目: %s", exc)
-                self._entries.pop(key, None)
-                try:
-                    file_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                self._save_index()
+                        file_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    self._save_index()
+                self._stats["misses"] += 1
+            return None
+
+        with self._lock:
+            current = self._entries.get(key)
+            if not current or current.filename != filename:
                 self._stats["misses"] += 1
                 return None
-
-            entry.timestamp = self._now()
-            entry.hits += 1
-            self._entries[key] = entry
-            self._save_index()
+            current.timestamp = self._now()
+            current.hits += 1
+            self._entries[key] = current
             self._stats["hits"] += 1
             return data
 

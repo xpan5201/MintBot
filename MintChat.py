@@ -32,6 +32,7 @@ GUI_ANIMATIONS_ENABLED = os.getenv("MINTCHAT_GUI_ANIMATIONS", "0").lower() not i
     "off",
 }
 _tts_init_started = False
+_main_window = None  # Keep a strong reference to the main window (prevents GC-induced "flash quit").
 
 
 def _start_tts_init_async() -> None:
@@ -120,6 +121,10 @@ def main() -> None:
     app.setApplicationName("MintChat")
     app.setApplicationVersion(__version__)
     app.setOrganizationName("MintChat")
+    try:
+        app.aboutToQuit.connect(lambda: logger.info("GUI 即将退出（aboutToQuit）"))
+    except Exception:
+        pass
 
     font = QFont("Microsoft YaHei UI", 10)
     app.setFont(font)
@@ -154,9 +159,17 @@ def main() -> None:
     if _restore_session(session_file):
         from src.gui.light_chat_window import LightChatWindow
 
+        global _main_window
         window = LightChatWindow()
+        _main_window = window
+        try:
+            setattr(app, "_mintchat_main_window", window)
+        except Exception:
+            pass
         window.show()
-        sys.exit(app.exec())
+        exit_code = int(app.exec())
+        logger.info("GUI 已退出（exit_code=%s）", exit_code)
+        sys.exit(exit_code)
 
     from src.gui.auth_manager import AuthManager
 
@@ -183,7 +196,13 @@ def main() -> None:
 
         from src.gui.light_chat_window import LightChatWindow
 
+        global _main_window
         window = LightChatWindow()
+        _main_window = window
+        try:
+            setattr(app, "_mintchat_main_window", window)
+        except Exception:
+            pass
 
         if not GUI_ANIMATIONS_ENABLED:
             auth_manager.close()
@@ -196,7 +215,7 @@ def main() -> None:
         auth_opacity_effect = QGraphicsOpacityEffect(auth_manager)
         auth_manager.setGraphicsEffect(auth_opacity_effect)
 
-        auth_fade_out = QPropertyAnimation(auth_opacity_effect, b"opacity")
+        auth_fade_out = QPropertyAnimation(auth_opacity_effect, b"opacity", auth_manager)
         auth_fade_out.setDuration(300)
         auth_fade_out.setStartValue(1.0)
         auth_fade_out.setEndValue(0.0)
@@ -208,7 +227,9 @@ def main() -> None:
     auth_manager.show()
 
     try:
-        sys.exit(app.exec())
+        exit_code = int(app.exec())
+        logger.info("GUI 已退出（exit_code=%s）", exit_code)
+        sys.exit(exit_code)
     except KeyboardInterrupt:
         logger.info("程序被用户中断")
         sys.exit(0)

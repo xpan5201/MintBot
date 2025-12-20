@@ -2577,6 +2577,10 @@ class LightChatWindow(LightFramelessWindow):
             return True
         if "ToolSelectionResponse" in text:
             return True
+        # 路由标签数组（例如：["local_search","map_guide"]}）通常不含 "tool" 字样
+        # 这里用非常轻量的启发式触发过滤器，避免流式过程中“先看到脏文本，最后才被收尾过滤”。
+        if '["' in text and "]" in text and "_" in text:
+            return True
         return ("tool" in text) or ("Tool" in text)
 
     def _split_large_text(self, text: str, max_len: int = 1024):
@@ -4573,9 +4577,116 @@ class LightChatWindow(LightFramelessWindow):
         # 注意：消息已经在发送时实时保存到数据库，这里不需要额外操作
         pass
 
+    def _deferred_cleanup_widget_tree(self, root: QWidget, *, budget_ms: int = 8) -> None:
+        """分帧清理 widget 树，避免一次性遍历大量消息导致 UI 卡顿。"""
+        try:
+            children = [w for w in root.findChildren(QWidget) if w is not root]
+        except Exception:
+            try:
+                root.deleteLater()
+            except Exception:
+                pass
+            return
+
+        # 反向遍历更符合“先清理叶子节点”的释放顺序
+        pending = list(reversed(children))
+
+        def step() -> None:
+            try:
+                start = time.perf_counter()
+                while pending and (time.perf_counter() - start) * 1000.0 < float(budget_ms):
+                    w = pending.pop()
+                    try:
+                        cleanup = getattr(w, "cleanup", None)
+                        if callable(cleanup):
+                            cleanup()
+                    except Exception:
+                        pass
+            finally:
+                if pending:
+                    QTimer.singleShot(0, step)
+                else:
+                    try:
+                        root.deleteLater()
+                    except Exception:
+                        pass
+
+        QTimer.singleShot(0, step)
+
+    def _fast_reset_messages_column(self) -> None:
+        """快速重置消息列容器，避免大量 takeAt()/deleteLater() 造成卡顿/未响应。"""
+        old_widget = getattr(self, "messages_widget", None)
+        outer = getattr(self, "messages_outer_widget", None)
+        if old_widget is None or outer is None:
+            return
+
+        try:
+            old_widget.setParent(None)
+            old_widget.hide()
+        except Exception:
+            pass
+
+        # 创建新的消息列容器（保持与初始化一致的样式与边距）
+        new_widget = QWidget()
+        try:
+            new_widget.setObjectName("messagesColumn")
+        except Exception:
+            pass
+        try:
+            max_width = int(getattr(self, "_messages_column_max_width", 820))
+            new_widget.setMaximumWidth(max_width)
+        except Exception:
+            pass
+
+        new_layout = QVBoxLayout(new_widget)
+        try:
+            new_layout.setContentsMargins(
+                0, CharacterStatusIsland.COLLAPSED_HEIGHT + 20, 0, 16
+            )
+        except Exception:
+            new_layout.setContentsMargins(0, 20, 0, 16)
+        new_layout.setSpacing(8)
+        new_layout.addStretch()
+
+        outer_layout = outer.layout()
+        if outer_layout is not None:
+            try:
+                outer_layout.removeWidget(old_widget)
+            except Exception:
+                pass
+            try:
+                # 结构是 stretch - widget - stretch；尽量插回中间位置
+                outer_layout.insertWidget(1, new_widget, 0)
+            except Exception:
+                try:
+                    outer_layout.addWidget(new_widget, 0)
+                except Exception:
+                    pass
+
+        self.messages_widget = new_widget
+        self.messages_layout = new_layout
+        self._history_loading_widget = None
+
+        # 延迟清理旧树，避免阻塞主线程
+        self._deferred_cleanup_widget_tree(old_widget)
+
     def _clear_messages(self):
         """清空消息区域 - v2.19.2 修复版：正确清理资源"""
-        # 移除所有消息气泡
+        # 快速路径：大量历史消息时，逐个 takeAt() 容易导致窗口“未响应”
+        try:
+            message_count = max(0, int(self.messages_layout.count()) - 1)
+        except Exception:
+            message_count = 0
+
+        if message_count >= 120:
+            try:
+                self._fast_reset_messages_column()
+                return
+            except Exception:
+                # fallback 到原始清理逻辑
+                pass
+
+        # 慢路径：消息较少时，逐个清理即可
         while self.messages_layout.count() > 1:  # 保留最后的 stretch
             item = self.messages_layout.takeAt(0)
             if item.widget():
@@ -5568,6 +5679,14 @@ class LightChatWindow(LightFramelessWindow):
             if hasattr(self, "thread_pool"):
                 self.thread_pool.waitForDone(1000)  # 等待最多1秒
 
+            # 10. 关闭 TTS runtime（放在线程池收尾之后，避免提前关闭导致任务卡死）
+            try:
+                from src.multimodal.tts_runtime import shutdown_tts_runtime
+
+                shutdown_tts_runtime(timeout_s=1.0)
+            except Exception:
+                pass
+
             logger.info("资源清理完成")
         except Exception as e:
             from src.utils.exceptions import handle_exception
@@ -5922,6 +6041,14 @@ class LightChatWindow(LightFramelessWindow):
         # 即使前面的过滤有遗漏，这里也会再次过滤
         if self._needs_tool_filter(text):
             text = self._filter_tool_info_safe(text)
+
+        # 角色扮演动作/神态描写（括号内）不需要朗读：仅影响 TTS，不影响 UI 显示文本
+        try:
+            from src.multimodal.tts_text import strip_stage_directions
+
+            text = strip_stage_directions(text)
+        except Exception:
+            pass
 
         # 如果过滤后为空或只包含空白，直接返回
         if not text or not text.strip():

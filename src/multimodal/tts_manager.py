@@ -257,7 +257,8 @@ class TTSManager:
         # 注意：磁盘缓存操作是同步的，需要在异步锁外执行，避免阻塞事件循环
         if self._disk_cache is not None:
             try:
-                disk_audio = self._disk_cache.get(cache_key)
+                loop = asyncio.get_running_loop()
+                disk_audio = await loop.run_in_executor(None, self._disk_cache.get, cache_key)
                 if disk_audio is not None:
                     self._stats["cache_hits"] += 1
                     # 回灌到内存缓存，以加快后续访问
@@ -297,7 +298,7 @@ class TTSManager:
         if self._disk_cache is not None:
             try:
                 # 使用线程池执行同步的磁盘写入操作
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
                     None,
                     self._disk_cache.set,

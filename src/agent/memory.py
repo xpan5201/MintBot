@@ -6,11 +6,12 @@
 
 from __future__ import annotations
 
+from collections import deque
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional, Sequence, TypedDict, Literal
+from typing import Any, Deque, Dict, Iterable, List, Optional, Sequence, TypedDict, Literal
 
 from src.config.settings import settings
 from src.utils.logger import get_logger
@@ -96,10 +97,26 @@ class ShortTermMemory:
         Args:
             k: 保留的最近消息数量
         """
-        self.k = k
-        self.messages: List[_ChatMessage] = []
+        self.k = max(0, int(k))
+        # 每轮对话包含用户和助手消息：默认容量为 k * 2；k<=0 时不限制（向后兼容）。
+        limit = self.k * 2
+        maxlen = limit if limit > 0 else None
+        self.messages: Deque[_ChatMessage] = deque(maxlen=maxlen)
         self._lock = Lock()
+        self._version = 0
+        self._cached_dicts_version = -1
+        self._cached_dicts: Optional[tuple[Dict[str, str], ...]] = None
         logger.info("短期记忆初始化完成，保留最近 %d 条消息", k)
+
+    @property
+    def version(self) -> int:
+        """短期记忆版本号（每次写入/清空都会递增）。"""
+        with self._lock:
+            return int(self._version)
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self.messages)
 
     def add_message(self, role: str, content: str) -> None:
         """
@@ -113,13 +130,24 @@ class ShortTermMemory:
             logger.warning("未知的消息角色: %s", role)
             return
 
-        msg: _ChatMessage = {"role": role, "content": content}
+        self.add_messages(((role, content),))
+
+    def add_messages(self, messages: Iterable[tuple[str, str]]) -> None:
+        """批量添加消息（减少锁竞争，并保证同一轮对话的原子性）。"""
+        pending: list[_ChatMessage] = []
+        for role, content in messages:
+            if role not in {"user", "assistant", "system"}:
+                logger.warning("未知的消息角色: %s", role)
+                continue
+            pending.append({"role": role, "content": content})
+        if not pending:
+            return
+
         with self._lock:
-            self.messages.append(msg)
-            # 保持窗口大小：每轮对话包含用户和助手消息
-            limit = self.k * 2
-            if limit > 0 and len(self.messages) > limit:
-                self.messages = self.messages[-limit:]
+            self.messages.extend(pending)
+            self._version += 1
+            self._cached_dicts_version = -1
+            self._cached_dicts = None
 
     def get_messages(self) -> List[_ChatMessage]:
         """
@@ -139,12 +167,23 @@ class ShortTermMemory:
             List[Dict[str, str]]: 消息列表
         """
         with self._lock:
-            return [dict(item) for item in self.messages]
+            cached = self._cached_dicts
+            if cached is not None and self._cached_dicts_version == self._version:
+                return list(cached)
+
+            # 每条消息仅包含 role/content 两个字段：构造一次并缓存，减少重复分配。
+            built = tuple({"role": item["role"], "content": item["content"]} for item in self.messages)
+            self._cached_dicts = built
+            self._cached_dicts_version = self._version
+            return list(built)
 
     def clear(self) -> None:
         """清空短期记忆"""
         with self._lock:
-            self.messages = []
+            self.messages.clear()
+            self._version += 1
+            self._cached_dicts_version = -1
+            self._cached_dicts = None
         logger.info("短期记忆已清空")
 
 
@@ -584,15 +623,13 @@ class MemoryManager:
         self._auto_consolidate_count = 0
         self._auto_consolidate_lock = Lock()
         self._auto_consolidate_running = False
-        # 短期记忆版本号：用于构建上下文缓存的可靠失效键
-        self._short_term_version = 0
 
         logger.info("记忆管理器初始化完成 (用户ID: %s)", user_id or "全局")
 
     @property
     def short_term_version(self) -> int:
         """短期记忆版本号（每次 add_interaction/clear_all 都会递增）。"""
-        return int(self._short_term_version)
+        return int(getattr(self.short_term, "version", 0))
 
     def add_interaction(
         self,
@@ -611,9 +648,7 @@ class MemoryManager:
             importance: 重要性分数 (0-1)，如果未提供则自动评估
         """
         # 添加到短期记忆（快速路径）
-        self.short_term.add_message("user", user_message)
-        self.short_term.add_message("assistant", assistant_message)
-        self._short_term_version += 1
+        self.short_term.add_messages((("user", user_message), ("assistant", assistant_message)))
 
         # 添加到长期记忆
         if save_to_long_term and self.long_term:
@@ -1000,7 +1035,7 @@ class MemoryManager:
             Dict[str, Any]: 统计信息
         """
         stats = {
-            "short_term_count": len(self.short_term.get_messages()),
+            "short_term_count": len(self.short_term),
             "short_term_capacity": self.short_term.k * 2,
         }
 
@@ -1046,7 +1081,6 @@ class MemoryManager:
     def clear_all(self) -> None:
         """清空所有记忆"""
         self.short_term.clear()
-        self._short_term_version += 1
         if self.long_term:
             self.long_term.clear()
         logger.info("所有记忆已清空")

@@ -4,11 +4,12 @@ TTS 合成后台任务（线程池复用，减少频繁创建 QThread 的开销�
 
 from __future__ import annotations
 
-import asyncio
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any
 
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
 
+from src.multimodal.tts_runtime import get_tts_runtime
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,13 +32,32 @@ class TTSSynthesisTask(QRunnable):
         self.text = text
         self.signals = TTSSynthesisSignals()
 
+    def _guess_timeout_s(self) -> float | None:
+        try:
+            config = getattr(self.tts_manager, "config", None)
+            timeout_s = getattr(config, "request_timeout", None) if config else None
+            if timeout_s is None:
+                return None
+            timeout_v = float(timeout_s)
+            if timeout_v <= 0:
+                return None
+            # 留一点余量给 run_coroutine_threadsafe + 合成后处理
+            return timeout_v + 5.0
+        except Exception:
+            return None
+
     def run(self) -> None:  # pragma: no cover - QRunnable
         try:
-            audio_data = asyncio.run(self.tts_manager.synthesize_text(self.text))
+            audio_data = get_tts_runtime().run(
+                self.tts_manager.synthesize_text(self.text),
+                timeout=self._guess_timeout_s(),
+            )
             if audio_data:
                 self.signals.audio_ready.emit(audio_data)
             else:
                 self.signals.error.emit("TTS 合成返回空结果")
+        except FuturesTimeoutError:
+            self.signals.error.emit("TTS 合成超时")
         except Exception as exc:
             logger.error("TTS 合成失败: %s", exc, exc_info=False)
             self.signals.error.emit(f"TTS 合成失败: {exc}")

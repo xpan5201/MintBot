@@ -9,6 +9,7 @@ GPT-SoVITS TTS 客户端模块
 """
 
 import asyncio
+import threading
 import time
 from typing import Any, Dict, Optional, Tuple, Union
 
@@ -101,6 +102,7 @@ class GPTSoVITSClient:
         self._circuit_lock = asyncio.Lock()  # 熔断器并发安全锁
 
         # 统计信息
+        self._stats_lock = threading.Lock()
         self._stats: Dict[str, Union[int, float]] = {
             "total_requests": 0,
             "successful_requests": 0,
@@ -245,15 +247,17 @@ class GPTSoVITSClient:
         
         # 去除首尾空白，但保留内部空白
         text = text.strip()
-        
-        self._stats["total_requests"] += 1
+
+        with self._stats_lock:
+            self._stats["total_requests"] += 1
         start_time = time.time()
 
         if await self._is_circuit_open():
             async with self._circuit_lock:
                 remaining = max(0.0, self._circuit_open_until - time.time())
-            self._stats["failed_requests"] += 1
-            self._stats["circuit_short_circuits"] += 1
+            with self._stats_lock:
+                self._stats["failed_requests"] += 1
+                self._stats["circuit_short_circuits"] += 1
             logger.warning(
                 "TTS 客户端熔断中 (剩余 %.1fs)，跳过文本: %s",
                 remaining,
@@ -329,9 +333,10 @@ class GPTSoVITSClient:
                             continue
                         break
                     
-                    self._stats["successful_requests"] += 1
-                    self._stats["last_latency_ms"] = elapsed_ms
-                    self._stats["total_latency_ms"] += elapsed_ms
+                    with self._stats_lock:
+                        self._stats["successful_requests"] += 1
+                        self._stats["last_latency_ms"] = elapsed_ms
+                        self._stats["total_latency_ms"] += elapsed_ms
                     await self._record_success()
                     return response.content
                 else:
@@ -346,7 +351,8 @@ class GPTSoVITSClient:
                         break
 
             except httpx.TimeoutException:
-                self._stats["total_retries"] += 1
+                with self._stats_lock:
+                    self._stats["total_retries"] += 1
                 # 仅在最后一次尝试失败时记录警告，减少日志噪音
                 if attempt == self.max_retries - 1:
                     logger.warning(f"TTS 请求超时 (已重试 {self.max_retries} 次)")
@@ -357,7 +363,8 @@ class GPTSoVITSClient:
                     await asyncio.sleep(wait_time)
 
             except httpx.ConnectError as e:
-                self._stats["total_retries"] += 1
+                with self._stats_lock:
+                    self._stats["total_retries"] += 1
                 # 仅在最后一次尝试失败时记录错误
                 if attempt == self.max_retries - 1:
                     logger.error(f"TTS 连接失败: {e}")
@@ -370,7 +377,8 @@ class GPTSoVITSClient:
 
             except httpx.ReadError as e:
                 # v3.4.0: 优化错误信息处理，ReadError 通常是响应流中断，不一定是服务器断开
-                self._stats["total_retries"] += 1
+                with self._stats_lock:
+                    self._stats["total_retries"] += 1
                 error_str = str(e).strip() if e else f"响应读取中断（{type(e).__name__}）"
                 if not error_str or error_str == "":
                     error_str = "响应读取中断（可能是网络波动或响应超时）"
@@ -388,7 +396,8 @@ class GPTSoVITSClient:
 
             except httpx.WriteError as e:
                 # v3.4.0: 优化错误信息处理
-                self._stats["total_retries"] += 1
+                with self._stats_lock:
+                    self._stats["total_retries"] += 1
                 error_str = str(e).strip() if e else f"连接写入错误（{type(e).__name__}）"
                 if attempt == self.max_retries - 1:
                     logger.error(f"TTS 连接写入错误: {error_str}")
@@ -400,7 +409,8 @@ class GPTSoVITSClient:
 
             except httpx.PoolTimeout as e:
                 # 处理连接池超时
-                self._stats["total_retries"] += 1
+                with self._stats_lock:
+                    self._stats["total_retries"] += 1
                 if attempt == self.max_retries - 1:
                     logger.warning(f"TTS 连接池超时: {e}")
                 failure_reason = f"pool-timeout: {e}"
@@ -410,7 +420,8 @@ class GPTSoVITSClient:
 
             except Exception as e:
                 # v3.4.0: 优化通用异常处理
-                self._stats["total_retries"] += 1
+                with self._stats_lock:
+                    self._stats["total_retries"] += 1
                 error_type = type(e).__name__
                 error_str = str(e).strip() if e else f"{error_type}（连接异常）"
                 
@@ -443,7 +454,8 @@ class GPTSoVITSClient:
                         wait_time = 2 ** attempt
                         await asyncio.sleep(wait_time)
 
-        self._stats["failed_requests"] += 1
+        with self._stats_lock:
+            self._stats["failed_requests"] += 1
         await self._record_failure()
         # 统一记录最终失败信息，避免重复日志
         logger.error(
@@ -501,7 +513,8 @@ class GPTSoVITSClient:
         Returns:
             Dict[str, int]: 统计信息字典
         """
-        stats = self._stats.copy()
+        with self._stats_lock:
+            stats = self._stats.copy()
         successful = stats.get("successful_requests", 0) or 0
         stats["avg_latency_ms"] = (
             stats["total_latency_ms"] / successful if successful else 0.0
@@ -510,16 +523,17 @@ class GPTSoVITSClient:
 
     def reset_stats(self) -> None:
         """重置统计信息"""
-        self._stats = {
-            "total_requests": 0,
-            "successful_requests": 0,
-            "failed_requests": 0,
-            "total_retries": 0,
-            "total_latency_ms": 0.0,
-            "last_latency_ms": 0.0,
-            "circuit_open_events": 0,
-            "circuit_short_circuits": 0,
-        }
+        with self._stats_lock:
+            self._stats = {
+                "total_requests": 0,
+                "successful_requests": 0,
+                "failed_requests": 0,
+                "total_retries": 0,
+                "total_latency_ms": 0.0,
+                "last_latency_ms": 0.0,
+                "circuit_open_events": 0,
+                "circuit_short_circuits": 0,
+            }
         # 不记录统计信息重置日志
 
     # ------------------------------------------------------------------ #
@@ -549,7 +563,8 @@ class GPTSoVITSClient:
 
             self._circuit_failure_count = 0
             self._circuit_open_until = time.time() + self._circuit_cooldown
-            self._stats["circuit_open_events"] += 1
+            with self._stats_lock:
+                self._stats["circuit_open_events"] += 1
             logger.warning(
                 "TTS 客户端触发熔断：未来 %.1fs 内不再向 GPT-SoVITS 发起请求",
                 self._circuit_cooldown,

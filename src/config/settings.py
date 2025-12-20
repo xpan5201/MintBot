@@ -680,6 +680,31 @@ class AgentConfig(BaseModel):
         ge=1,
         description="LLM 执行线程池大小",
     )
+    llm_first_chunk_timeout_s: float = Field(
+        default=18.0,
+        gt=0.0,
+        description="LLM 流式首包超时（秒）",
+    )
+    llm_idle_chunk_timeout_s: float = Field(
+        default=30.0,
+        gt=0.0,
+        description="LLM 流式增量空闲超时（秒）",
+    )
+    llm_total_timeout_s: float = Field(
+        default=120.0,
+        gt=0.0,
+        description="LLM 总超时（秒，包含工具执行）",
+    )
+    llm_stream_disable_after_failures: int = Field(
+        default=2,
+        ge=1,
+        description="连续流式失败达到该次数后临时禁用 streaming",
+    )
+    llm_stream_disable_cooldown_s: float = Field(
+        default=60.0,
+        ge=0.0,
+        description="临时禁用 streaming 的冷却时间（秒）。0 表示仅本次禁用，下次对话自动恢复。",
+    )
     stream_executor_workers: int = Field(
         default=2,
         ge=1,
@@ -699,6 +724,35 @@ class AgentConfig(BaseModel):
         default=30.0,
         gt=0.0,
         description="工具执行默认超时时间（秒）",
+    )
+    tool_output_max_chars: int = Field(
+        default=12000,
+        ge=0,
+        description="工具执行结果最大字符数（避免 prompt 膨胀导致超时），0 表示不限制",
+    )
+    tool_direct_grace_s: float = Field(
+        default=1.5,
+        ge=0.0,
+        description="工具结果直出等待 LLM 继续输出的宽限时间（秒）",
+    )
+    tool_selector_enabled: bool = Field(
+        default=True,
+        description="启用 LLM 工具筛选中间件（会额外调用一次 LLM）",
+    )
+    tool_selector_timeout_s: float = Field(
+        default=4.0,
+        gt=0.0,
+        description="LLM 工具筛选调用超时（秒）。超时将跳过筛选，避免阻塞流式输出。",
+    )
+    tool_selector_disable_cooldown_s: float = Field(
+        default=300.0,
+        ge=0.0,
+        description="工具筛选失败/超时后的熔断时间（秒）。0 表示仅本次跳过，不熔断。",
+    )
+    tool_selector_min_tools: int = Field(
+        default=16,
+        ge=0,
+        description="当工具数量小于该值时跳过 LLM 工具筛选（性能优化）",
     )
     context_cache_max_entries: int = Field(
         default=16,

@@ -48,7 +48,9 @@ class AudioPlayer:
         """
         self._volume: float = max(0.0, min(1.0, float(default_volume)))
         self._is_playing: bool = False
-        self._queue: Deque[Tuple[object, int]] = deque()
+        # 播放队列：避免在 UI/调用线程做 WAV 解码，统一在 worker 线程解码/播放
+        # item = (wav_bytes, volume_snapshot)
+        self._queue: Deque[Tuple[bytes, float]] = deque()
         self._queue_lock = threading.Lock()
         self._queue_event = threading.Event()
         self._stop_event = threading.Event()
@@ -84,9 +86,27 @@ class AudioPlayer:
                     if not self._queue:
                         self._queue_event.clear()
                         break
-                    data, samplerate = self._queue.popleft()
+                    audio_bytes, volume_snapshot = self._queue.popleft()
 
                 try:
+                    # 解码 WAV（在 worker 线程，避免阻塞 UI）
+                    try:
+                        with sf.SoundFile(io.BytesIO(audio_bytes)) as f:
+                            data = f.read(dtype="float32")
+                            samplerate = int(f.samplerate)
+                    except Exception as exc:
+                        logger.error("解析音频数据失败: %s", exc, exc_info=False)
+                        continue
+
+                    if not hasattr(data, "size") or data.size == 0:
+                        continue
+
+                    if volume_snapshot != 1.0:
+                        try:
+                            data = data * float(volume_snapshot)
+                        except Exception:
+                            pass
+
                     logger.debug(
                         "AudioPlayer 播放队列出队: %d 帧, 采样率=%d",
                         getattr(data, "shape", (0,))[0],
@@ -195,10 +215,10 @@ class AudioPlayer:
         except Exception:
             return ([], step_s)
 
-    def _enqueue_audio(self, data, samplerate: int) -> int:
-        """将解码后的音频推入播放队列。"""
+    def _enqueue_audio(self, audio_bytes: bytes, volume_snapshot: float) -> int:
+        """将 WAV bytes 推入播放队列（worker 线程内解码/播放）。"""
         with self._queue_lock:
-            self._queue.append((data, samplerate))
+            self._queue.append((audio_bytes, float(volume_snapshot)))
             if self._max_queue_size and len(self._queue) > self._max_queue_size:
                 overflow = len(self._queue) - self._max_queue_size
                 for _ in range(overflow):
@@ -245,29 +265,12 @@ class AudioPlayer:
             logger.warning("音频数据为空，跳过播放")
             return False
 
-        try:
-            # 解析音频数据
-            with sf.SoundFile(io.BytesIO(audio_data)) as f:
-                data = f.read(dtype="float32")
-                samplerate = f.samplerate
-        except Exception as e:
-            logger.error(f"解析音频数据失败: {e}", exc_info=True)
-            return False
-
-        if not hasattr(data, "size") or data.size == 0:
-            logger.warning("解析后的音频数据为空，跳过播放")
-            return False
-
-        # 应用音量
-        if self._volume != 1.0:
-            data = data * self._volume
-
-        queue_len = self._enqueue_audio(data, samplerate)
+        volume_snapshot = float(self._volume)
+        queue_len = self._enqueue_audio(audio_data, volume_snapshot)
         logger.debug(
-            "音频加入播放队列: %d 帧, 采样率=%d, 音量=%.2f, 队列长度=%d",
-            data.shape[0],
-            samplerate,
-            self._volume,
+            "音频加入播放队列: bytes=%d, 音量=%.2f, 队列长度=%d",
+            len(audio_data),
+            volume_snapshot,
             queue_len,
         )
         return True
