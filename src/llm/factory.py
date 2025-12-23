@@ -162,7 +162,7 @@ def _build_openai_llm(
     # 兼容不同版本的参数名（base_url/openai_api_base）
     try:
         return ChatOpenAI(**kwargs)
-    except TypeError as exc:
+    except TypeError:
         if "base_url" in kwargs:
             fallback_kwargs = dict(kwargs)
             base = fallback_kwargs.pop("base_url", None)

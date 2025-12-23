@@ -8,8 +8,12 @@ MintChat 快速启动脚本
 这是一个简化的启动脚本，直接启动基础对话，无需交互式菜单。
 """
 
+import os
 import sys
 from pathlib import Path
+
+project_root = Path(__file__).resolve().parent.parent
+os.chdir(project_root)
 
 
 def main():
@@ -21,10 +25,10 @@ def main():
     print()
     
     # 检查 Python 版本
-    if sys.version_info < (3, 12):
+    if sys.version_info < (3, 13):
         print("[错误] Python 版本过低")
         print(f"当前版本: {sys.version_info.major}.{sys.version_info.minor}")
-        print("需要版本: 3.12+")
+        print("需要版本: 3.13+")
         print()
         return 1
     
@@ -34,10 +38,16 @@ def main():
         print("[错误] config.yaml 文件不存在")
         print()
         print("请先运行以下命令创建配置文件:")
-        print("  python start.py")
+        if sys.platform == "win32":
+            print("  .\\.venv\\Scripts\\python.exe scripts/start.py")
+        else:
+            print("  ./.venv/bin/python scripts/start.py")
         print()
         print("或手动复制:")
-        print("  cp config.yaml.example config.yaml")
+        if sys.platform == "win32":
+            print("  copy config.yaml.example config.yaml")
+        else:
+            print("  cp config.yaml.example config.yaml")
         print()
         return 1
     
@@ -47,8 +57,8 @@ def main():
     except ImportError:
         print("[错误] 依赖未安装")
         print()
-        print("请运行以下命令安装依赖:")
-        print("  pip install -r requirements.txt")
+        print("请运行以下命令同步依赖:")
+        print("  uv sync --locked --no-install-project")
         print()
         return 1
     
@@ -60,7 +70,7 @@ def main():
     
     try:
         # 导入并运行
-        sys.path.insert(0, str(Path(__file__).parent))
+        sys.path.insert(0, str(project_root))
         from examples.basic_chat import main as chat_main
         chat_main()
         return 0

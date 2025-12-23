@@ -6,7 +6,7 @@
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QListWidget, QListWidgetItem, QLineEdit,
+    QPushButton, QListWidget, QListWidgetItem,
     QMessageBox, QInputDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal

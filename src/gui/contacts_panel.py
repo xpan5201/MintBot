@@ -20,7 +20,7 @@ v2.18.0 优化内容：
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QLineEdit, QDialog, QPushButton, QTextEdit, QScrollArea, QGraphicsDropShadowEffect,
+    QLineEdit, QDialog, QPushButton,
     QMenu, QInputDialog, QMessageBox, QFileDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve, pyqtProperty
@@ -31,7 +31,7 @@ from pathlib import Path
 from .material_design_light import MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION, MD3_STATE_LAYERS
 from .material_design_enhanced import (
     MD3_ENHANCED_COLORS, MD3_ENHANCED_SPACING, MD3_ENHANCED_RADIUS,
-    MD3_ENHANCED_DURATION, MD3_ENHANCED_EASING, MD3_ENHANCED_STATE_LAYERS,
+    MD3_ENHANCED_DURATION, MD3_ENHANCED_EASING,
     get_typography_css
 )
 from .material_icons import MaterialIconButton, MATERIAL_ICONS

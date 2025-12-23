@@ -101,10 +101,10 @@ def main():
         print("❌ 修复失败")
         print()
         print("手动修复:")
-        print("  conda activate mintchat")
-        print("  pip install --upgrade setuptools")
+        print("  uv sync --locked --no-install-project")
+        print("  uv pip install --upgrade setuptools")
         print()
-    
+     
     return 0 if success else 1
 
 

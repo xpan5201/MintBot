@@ -8,11 +8,13 @@
 日期: 2025-11-18
 """
 
+from contextlib import nullcontext
 from typing import List, Optional
 import time
 
 from src.utils.logger import get_logger
 from src.utils.embedding_cache import EmbeddingCache
+from src.utils.torch_optim import apply_torch_optimizations
 
 logger = get_logger(__name__)
 
@@ -25,7 +27,7 @@ except ImportError:
     SENTENCE_TRANSFORMERS_AVAILABLE = False
     logger.warning(
         "sentence-transformers 未安装，本地 embedding 功能不可用。"
-        "安装方法: pip install sentence-transformers"
+        "安装方法: uv sync --locked --no-install-project"
     )
 
 # 尝试导入 torch 用于 GPU 检测
@@ -57,6 +59,36 @@ def get_optimal_device() -> str:
         return "cpu"
 
 
+def _suggest_batch_size(device: str) -> int:
+    """
+    Suggest a batch size for SentenceTransformer.encode.
+
+    Heuristic:
+        - CPU: smaller batch to reduce latency / memory
+        - CUDA: scale with VRAM size (conservative defaults to avoid OOM)
+    """
+    if device != "cuda":
+        return 16
+    if not TORCH_AVAILABLE:
+        return 32
+    try:
+        if not torch.cuda.is_available():
+            return 32
+        total_bytes = int(torch.cuda.get_device_properties(0).total_memory)
+        total_gb = total_bytes / (1024**3)
+        if total_gb >= 24:
+            return 128
+        if total_gb >= 16:
+            return 96
+        if total_gb >= 12:
+            return 64
+        if total_gb >= 8:
+            return 48
+        return 32
+    except Exception:
+        return 32
+
+
 class LocalEmbeddings:
     """本地 Embedding 模型包装器（支持GPU加速）"""
 
@@ -81,7 +113,7 @@ class LocalEmbeddings:
         if not SENTENCE_TRANSFORMERS_AVAILABLE:
             raise ImportError(
                 "sentence-transformers 未安装，无法使用本地 embedding 功能。"
-                "安装方法: pip install sentence-transformers"
+                "安装方法: uv sync --locked --no-install-project"
             )
 
         # 智能设备选择
@@ -105,6 +137,8 @@ class LocalEmbeddings:
         start_time = time.perf_counter()
 
         try:
+            if device == "cuda":
+                apply_torch_optimizations(verbose=True)
             self.model = SentenceTransformer(model_name, device=device)
             load_time = (time.perf_counter() - start_time) * 1000
 
@@ -161,15 +195,21 @@ class LocalEmbeddings:
 
             try:
                 # GPU加速优化：使用批量处理
-                batch_size = 32 if self.device == "cuda" else 16
+                batch_size = _suggest_batch_size(self.device)
 
-                embeddings = self.model.encode(
-                    uncached_texts,
-                    convert_to_numpy=True,
-                    show_progress_bar=False,
-                    batch_size=batch_size,  # GPU加速批量处理
-                    normalize_embeddings=True,  # 归一化提升检索精度
+                ctx = (
+                    torch.inference_mode()
+                    if TORCH_AVAILABLE and hasattr(torch, "inference_mode")
+                    else nullcontext()
                 )
+                with ctx:
+                    embeddings = self.model.encode(
+                        uncached_texts,
+                        convert_to_numpy=True,
+                        show_progress_bar=False,
+                        batch_size=batch_size,  # GPU加速批量处理
+                        normalize_embeddings=True,  # 归一化提升检索精度
+                    )
                 embeddings_list = [emb.tolist() for emb in embeddings]
 
                 # 保存到缓存
@@ -187,7 +227,7 @@ class LocalEmbeddings:
                 self.total_time_ms += elapsed_ms
 
                 # 显示GPU加速信息
-                device_info = f"GPU加速" if self.device == "cuda" else "CPU"
+                device_info = "GPU加速" if self.device == "cuda" else "CPU"
                 logger.debug(
                     f"生成 {len(uncached_texts)} 个 embeddings ({device_info}): {elapsed_ms:.2f}ms "
                     f"({elapsed_ms / len(uncached_texts):.2f}ms/个, batch_size={batch_size})"
@@ -221,12 +261,18 @@ class LocalEmbeddings:
         start_time = time.perf_counter()
 
         try:
-            embedding = self.model.encode(
-                text,
-                convert_to_numpy=True,
-                show_progress_bar=False,
-                normalize_embeddings=True,  # 归一化提升检索精度
+            ctx = (
+                torch.inference_mode()
+                if TORCH_AVAILABLE and hasattr(torch, "inference_mode")
+                else nullcontext()
             )
+            with ctx:
+                embedding = self.model.encode(
+                    text,
+                    convert_to_numpy=True,
+                    show_progress_bar=False,
+                    normalize_embeddings=True,  # 归一化提升检索精度
+                )
             embedding_list = embedding.tolist()
 
             # 保存到缓存
@@ -239,7 +285,7 @@ class LocalEmbeddings:
             self.total_time_ms += elapsed_ms
 
             # 显示GPU加速信息
-            device_info = f"GPU加速" if self.device == "cuda" else "CPU"
+            device_info = "GPU加速" if self.device == "cuda" else "CPU"
             logger.debug(f"生成 1 个 embedding ({device_info}): {elapsed_ms:.2f}ms")
 
             return embedding_list

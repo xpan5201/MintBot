@@ -9,7 +9,7 @@ v2.30.6 新增
 import psutil
 import threading
 import time
-from typing import Dict, List, Callable, Optional
+from typing import List, Callable, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
 

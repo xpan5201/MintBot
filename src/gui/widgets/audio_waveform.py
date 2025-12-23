@@ -12,9 +12,8 @@
 """
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPainter, QColor, QPen, QLinearGradient, QFont
-import random
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont
 import io
 import wave
 from typing import List

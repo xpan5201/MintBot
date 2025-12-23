@@ -15,10 +15,10 @@
 """
 
 import hashlib
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from datetime import datetime
 from threading import Lock
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from src.utils.logger import get_logger
 
@@ -139,17 +139,32 @@ class MemoryDeduplicator:
     3. 保留最重要的版本
     """
 
-    def __init__(self, similarity_threshold: float = 0.85):
+    def __init__(
+        self,
+        similarity_threshold: float = 0.85,
+        *,
+        max_seen_hashes: int = 50_000,
+    ):
         """
         初始化去重器
 
         Args:
             similarity_threshold: 相似度阈值 (0-1)
+            max_seen_hashes: 维护的哈希数量上限（0 表示不限制）
         """
         self.similarity_threshold = similarity_threshold
+        self._lock = Lock()
+        self._max_seen_hashes = int(max_seen_hashes)
+        self._hash_queue: Optional[deque[str]] = (
+            deque(maxlen=self._max_seen_hashes) if self._max_seen_hashes > 0 else None
+        )
         self.seen_hashes: Set[str] = set()
 
-        logger.info(f"记忆去重器初始化完成，相似度阈值: {similarity_threshold}")
+        logger.info(
+            "记忆去重器初始化完成，相似度阈值: %.2f, max_seen_hashes=%s",
+            similarity_threshold,
+            self._max_seen_hashes if self._max_seen_hashes > 0 else "unlimited",
+        )
 
     def get_content_hash(self, content: str) -> str:
         """获取内容哈希"""
@@ -157,10 +172,66 @@ class MemoryDeduplicator:
         normalized = "".join(content.split()).lower()
         return hashlib.md5(normalized.encode()).hexdigest()
 
+    def contains_hash(self, content_hash: str) -> bool:
+        if not content_hash:
+            return False
+        with self._lock:
+            return content_hash in self.seen_hashes
+
+    def add_hash(self, content_hash: str) -> bool:
+        """添加哈希；若已存在返回 False。"""
+        if not content_hash:
+            return False
+        with self._lock:
+            if content_hash in self.seen_hashes:
+                return False
+            self.seen_hashes.add(content_hash)
+            if self._hash_queue is not None:
+                evicted = None
+                if len(self._hash_queue) == self._hash_queue.maxlen:
+                    evicted = self._hash_queue[0]
+                self._hash_queue.append(content_hash)
+                if evicted is not None and evicted != content_hash:
+                    self.seen_hashes.discard(evicted)
+            return True
+
+    def add_hashes(self, hashes: Iterable[str]) -> int:
+        """批量添加哈希，返回实际新增数量。"""
+        added = 0
+        with self._lock:
+            for content_hash in hashes:
+                if not content_hash or content_hash in self.seen_hashes:
+                    continue
+                self.seen_hashes.add(content_hash)
+                if self._hash_queue is not None:
+                    evicted = None
+                    if len(self._hash_queue) == self._hash_queue.maxlen:
+                        evicted = self._hash_queue[0]
+                    self._hash_queue.append(content_hash)
+                    if evicted is not None and evicted != content_hash:
+                        self.seen_hashes.discard(evicted)
+                added += 1
+        return added
+
+    def check_and_add(self, content: str) -> bool:
+        """检查是否重复并在非重复时记录；True=新，False=重复。"""
+        content_hash = self.get_content_hash(content)
+        with self._lock:
+            if content_hash in self.seen_hashes:
+                return False
+            self.seen_hashes.add(content_hash)
+            if self._hash_queue is not None:
+                evicted = None
+                if len(self._hash_queue) == self._hash_queue.maxlen:
+                    evicted = self._hash_queue[0]
+                self._hash_queue.append(content_hash)
+                if evicted is not None and evicted != content_hash:
+                    self.seen_hashes.discard(evicted)
+            return True
+
     def is_duplicate(self, content: str) -> bool:
         """检查是否重复"""
-        content_hash = self.get_content_hash(content)
-        return content_hash in self.seen_hashes
+        return self.contains_hash(self.get_content_hash(content))
 
     def add_memory(self, content: str) -> bool:
         """
@@ -169,12 +240,7 @@ class MemoryDeduplicator:
         Returns:
             bool: True表示是新记忆，False表示重复
         """
-        content_hash = self.get_content_hash(content)
-        if content_hash in self.seen_hashes:
-            return False
-
-        self.seen_hashes.add(content_hash)
-        return True
+        return self.check_and_add(content)
 
     def calculate_similarity(self, text1: str, text2: str) -> float:
         """
@@ -519,6 +585,7 @@ class MemoryOptimizer:
         enable_deduplication: bool = True,
         enable_consolidation: bool = True,
         enable_character_scoring: bool = True,
+        dedup_max_hashes: int = 50_000,
         user_id: Optional[int] = None,
     ):
         """
@@ -529,13 +596,16 @@ class MemoryOptimizer:
             enable_deduplication: 是否启用去重
             enable_consolidation: 是否启用巩固
             enable_character_scoring: 是否启用角色一致性评分
+            dedup_max_hashes: 去重器保留的哈希数量上限（0 表示不限制）
             user_id: 用户ID
         """
         self.user_id = user_id
 
         # 初始化组件
         self.cache = MemoryCache() if enable_cache else None
-        self.deduplicator = MemoryDeduplicator() if enable_deduplication else None
+        self.deduplicator = (
+            MemoryDeduplicator(max_seen_hashes=dedup_max_hashes) if enable_deduplication else None
+        )
         self.consolidator = MemoryConsolidator() if enable_consolidation else None
         self.character_scorer = CharacterConsistencyScorer() if enable_character_scoring else None
 
@@ -571,11 +641,10 @@ class MemoryOptimizer:
 
         # 1. 检查去重
         if self.deduplicator:
-            if self.deduplicator.is_duplicate(content):
+            if not self.deduplicator.check_and_add(content):
                 self.stats["duplicates_removed"] += 1
                 logger.debug("检测到重复记忆")
                 return None
-            self.deduplicator.add_memory(content)
 
         # 2. 构建记忆对象
         if metadata is None:

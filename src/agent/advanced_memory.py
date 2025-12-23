@@ -91,7 +91,6 @@ try:
     from src.agent.performance_optimizer import (
         MultiLevelCache,
         AsyncProcessor,
-        ChromaDBOptimizer,
     )
     HAS_PERFORMANCE_OPTIMIZER = True
 except ImportError:
@@ -128,6 +127,9 @@ class CoreMemory:
             self.vectorstore = None
             return
 
+        self.user_id = user_id
+        self.collection_name = "core_memory"
+
         # 支持用户特定路径
         if persist_directory:
             persist_dir = persist_directory
@@ -136,10 +138,12 @@ class CoreMemory:
         else:
             persist_dir = str(Path(settings.data_dir) / "memory" / "core_memory")
 
+        self.persist_directory = str(Path(persist_dir))
+
         # 使用统一的ChromaDB初始化函数（v2.30.27: 支持本地 embedding 和缓存）
         self.vectorstore = create_chroma_vectorstore(
-            collection_name="core_memory",
-            persist_directory=persist_dir,
+            collection_name=self.collection_name,
+            persist_directory=self.persist_directory,
             use_local_embedding=settings.use_local_embedding,
             enable_cache=settings.enable_embedding_cache,
         )
@@ -214,7 +218,7 @@ class CoreMemory:
                     continue
 
                 # 类别过滤（v2.48.5: 使用海象运算符优化）
-                if category and (doc_category := doc.metadata.get("category")) != category:
+                if category and doc.metadata.get("category") != category:
                     continue
 
                 memories.append({
@@ -246,6 +250,99 @@ class CoreMemory:
             logger.error(f"获取核心记忆失败: {e}")
             return []
 
+    def clear_all(self) -> bool:
+        """清空核心记忆（删除 collection 并重建）。"""
+        if self.vectorstore is None:
+            return False
+
+        try:
+            self.vectorstore.delete_collection()
+            self.vectorstore = create_chroma_vectorstore(
+                collection_name=self.collection_name,
+                persist_directory=self.persist_directory,
+                use_local_embedding=settings.use_local_embedding,
+                enable_cache=settings.enable_embedding_cache,
+            )
+            if self.vectorstore is None:
+                logger.error("核心记忆已删除，但向量库重新初始化失败")
+                return False
+            logger.info("核心记忆已清空")
+            return True
+        except Exception as e:
+            logger.error(f"清空核心记忆失败: {e}")
+            return False
+
+    def import_records(
+        self,
+        records: List[Dict[str, Any]],
+        *,
+        overwrite: bool = False,
+        batch_size: int = 128,
+    ) -> int:
+        """
+        导入核心记忆记录（来自导出包的 advanced_memory.core_memory.items）。
+
+        - overwrite=True 时会先清空现有 core_memory，并尽量保留原 ids
+        - overwrite=False 时不清空，忽略原 ids，并写入 metadata.original_id
+        """
+        if self.vectorstore is None:
+            return 0
+        if not records:
+            return 0
+
+        if overwrite:
+            if not self.clear_all():
+                return 0
+            if self.vectorstore is None:
+                return 0
+
+        texts: List[str] = []
+        metadatas: List[Dict[str, Any]] = []
+        ids: List[str] = []
+
+        for item in records:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if not content:
+                continue
+            meta = dict(item.get("metadata") or {})
+            meta.setdefault("type", "core_memory")
+
+            if overwrite:
+                from uuid import uuid4
+                ids.append(str(item.get("id") or uuid4().hex))
+            else:
+                original_id = item.get("id")
+                if original_id:
+                    meta.setdefault("original_id", str(original_id))
+
+            texts.append(str(content))
+            metadatas.append(meta)
+
+        if not texts:
+            return 0
+
+        imported = 0
+        batch_size = max(1, int(batch_size))
+
+        for offset in range(0, len(texts), batch_size):
+            chunk_texts = texts[offset: offset + batch_size]
+            chunk_metas = metadatas[offset: offset + batch_size]
+            try:
+                if overwrite:
+                    chunk_ids = ids[offset: offset + batch_size]
+                    self.vectorstore.add_texts(texts=chunk_texts, metadatas=chunk_metas, ids=chunk_ids)
+                else:
+                    self.vectorstore.add_texts(texts=chunk_texts, metadatas=chunk_metas)
+                imported += len(chunk_texts)
+            except Exception as e:
+                logger.error(f"导入核心记忆批次失败: {e}")
+
+        if imported:
+            logger.info(f"导入核心记忆完成: {imported} 条 (overwrite={overwrite})")
+        return imported
+
 
 class DiaryMemory:
     """
@@ -275,6 +372,9 @@ class DiaryMemory:
             self.diary_file = None
             return
 
+        self.user_id = user_id
+        self.collection_name = "diary_memory"
+
         # 支持用户特定路径
         if persist_directory:
             persist_dir = persist_directory
@@ -283,17 +383,18 @@ class DiaryMemory:
         else:
             persist_dir = str(Path(settings.data_dir) / "memory" / "diary")
 
-        Path(persist_dir).mkdir(parents=True, exist_ok=True)
+        self.persist_directory = str(Path(persist_dir))
+        Path(self.persist_directory).mkdir(parents=True, exist_ok=True)
 
         # JSON 文件存储日记（便于时间检索）
-        self.diary_file = Path(persist_dir) / "diary.json"
+        self.diary_file = Path(self.persist_directory) / "diary.json"
         if not self.diary_file.exists():
             self.diary_file.write_text("[]", encoding="utf-8")
 
         # 向量数据库（用于语义检索）- 使用统一的初始化函数（v2.30.27: 支持本地 embedding 和缓存）
         self.vectorstore = create_chroma_vectorstore(
-            collection_name="diary_memory",
-            persist_directory=persist_dir,
+            collection_name=self.collection_name,
+            persist_directory=self.persist_directory,
             use_local_embedding=settings.use_local_embedding,
             enable_cache=settings.enable_embedding_cache,
         )
@@ -789,6 +890,158 @@ class DiaryMemory:
             )
             self._diary_cache = list(diaries)
 
+    def clear_all(self) -> bool:
+        """清空日记（JSON + 向量库），并重建 collection。"""
+        if self.vectorstore is None or not self.diary_file:
+            return False
+
+        try:
+            self._write_diaries([])
+            self.vectorstore.delete_collection()
+            self.vectorstore = create_chroma_vectorstore(
+                collection_name=self.collection_name,
+                persist_directory=self.persist_directory,
+                use_local_embedding=settings.use_local_embedding,
+                enable_cache=settings.enable_embedding_cache,
+            )
+            self.daily_conversations = []
+            self.last_summary_date = None
+            self._last_diary_ts = None
+            logger.info("日记已清空")
+            return self.vectorstore is not None
+        except Exception as e:
+            logger.error(f"清空日记失败: {e}")
+            return False
+
+    def import_entries(
+        self,
+        entries: List[Dict[str, Any]],
+        *,
+        overwrite: bool = False,
+        batch_size: int = 128,
+    ) -> int:
+        """
+        导入日记条目（来自导出包的 advanced_memory.diary.items）。
+
+        说明：
+        - 以 diary.json 为事实来源；导入后会重建向量库，确保语义检索可用。
+        - overwrite=True 时会先清空现有日记。
+        """
+        if self.vectorstore is None or not self.diary_file:
+            return 0
+        if not entries:
+            return 0
+
+        existing = [] if overwrite else self._get_diaries()
+        existing_count = len(existing)
+
+        normalized: List[Dict[str, Any]] = []
+        for raw in entries:
+            if not isinstance(raw, dict):
+                continue
+            content = raw.get("content")
+            if not content:
+                continue
+
+            ts_value = raw.get("timestamp") or ""
+            ts = self._safe_parse_datetime(str(ts_value)) if ts_value else datetime.now()
+            if ts == datetime.min:
+                ts = datetime.now()
+
+            people = raw.get("people") or []
+            if not isinstance(people, list):
+                people = []
+
+            try:
+                importance = float(raw.get("importance", 0.5) or 0.5)
+            except Exception:
+                importance = 0.5
+            importance = max(0.0, min(1.0, importance))
+
+            normalized.append(
+                {
+                    "content": str(content),
+                    "timestamp": ts.isoformat(),
+                    "date": ts.strftime("%Y-%m-%d"),
+                    "time": ts.strftime("%H:%M:%S"),
+                    "emotion": str(raw.get("emotion") or "neutral"),
+                    "topic": str(raw.get("topic") or "general"),
+                    "importance": importance,
+                    "people": people,
+                    "location": raw.get("location") or "",
+                    "time_info": raw.get("time_info") or "",
+                    "event": raw.get("event") or "",
+                }
+            )
+
+        if not normalized:
+            return 0
+
+        diaries = existing + normalized
+        diaries = self._prune_diaries(diaries)
+        self._write_diaries(diaries)
+
+        # 重建向量库，避免旧内容残留/重复
+        try:
+            self.vectorstore.delete_collection()
+        except Exception as exc:
+            logger.debug("清空日记向量库失败（可忽略）: %s", exc)
+
+        self.vectorstore = create_chroma_vectorstore(
+            collection_name=self.collection_name,
+            persist_directory=self.persist_directory,
+            use_local_embedding=settings.use_local_embedding,
+            enable_cache=settings.enable_embedding_cache,
+        )
+        if self.vectorstore is None:
+            logger.warning("日记向量库重建失败：已导入 JSON，但语义检索不可用")
+            return len(normalized) if overwrite else max(0, len(diaries) - existing_count)
+
+        texts: List[str] = []
+        metadatas: List[Dict[str, Any]] = []
+        for entry in diaries:
+            content = entry.get("content", "")
+            if not content:
+                continue
+            ts = self._safe_parse_datetime(str(entry.get("timestamp", "")))
+            if ts == datetime.min:
+                ts = datetime.now()
+            people = entry.get("people") or []
+            if not isinstance(people, list):
+                people = []
+            metadatas.append(
+                {
+                    "timestamp": ts.isoformat(),
+                    "date": ts.strftime("%Y-%m-%d"),
+                    "type": "diary",
+                    "emotion": entry.get("emotion", "neutral"),
+                    "topic": entry.get("topic", "general"),
+                    "importance": entry.get("importance", 0.5),
+                    "people": json.dumps(people, ensure_ascii=False) if people else "[]",
+                    "location": entry.get("location") or "",
+                    "time_info": entry.get("time_info") or "",
+                    "event": entry.get("event") or "",
+                }
+            )
+            texts.append(str(content))
+
+        imported_vs = 0
+        batch_size = max(1, int(batch_size))
+        for offset in range(0, len(texts), batch_size):
+            chunk_texts = texts[offset: offset + batch_size]
+            chunk_metas = metadatas[offset: offset + batch_size]
+            try:
+                self.vectorstore.add_texts(texts=chunk_texts, metadatas=chunk_metas)
+                imported_vs += len(chunk_texts)
+            except Exception as e:
+                logger.error(f"导入日记向量库批次失败: {e}")
+
+        imported = len(diaries) if overwrite else max(0, len(diaries) - existing_count)
+        logger.info(
+            f"导入日记完成: json_total={len(diaries)}, vectorstore_added={imported_vs}, overwrite={overwrite}"
+        )
+        return imported
+
     @staticmethod
     def _safe_parse_datetime(value: str) -> datetime:
         try:
@@ -1033,8 +1286,8 @@ class DiaryMemory:
             f"情感分布: {emotion_summary}\n"
             f"话题分布: {topic_summary}\n"
             f"平均重要性: {avg_importance:.2f}\n\n"
-            f"今天的高光时刻：\n" + ("\n".join(highlight_lines) if highlight_lines else "（暂无）") + "\n\n"
-            f"今天是美好的一天，期待明天继续和主人聊天喵~ 💕"
+            "今天的高光时刻：\n" + ("\n".join(highlight_lines) if highlight_lines else "（暂无）") + "\n\n"
+            "今天是美好的一天，期待明天继续和主人聊天喵~ 💕"
         )
 
         # 保存总结为日记（强制保存）
@@ -1346,7 +1599,7 @@ class DiaryMemory:
                     continue
 
                 # v2.48.5: 使用海象运算符优化重要性过滤
-                if min_importance is not None and (doc_importance := doc.metadata.get("importance", 0.0)) < min_importance:
+                if min_importance is not None and doc.metadata.get("importance", 0.0) < min_importance:
                     continue
 
                 memories.append({
@@ -1632,9 +1885,24 @@ class LoreBook:
         # v2.30.43: 初始化知识图谱系统
         self.knowledge_graph = None
 
-        if HAS_KNOWLEDGE_GRAPH:
-            self.knowledge_graph = KnowledgeGraph()
+        if HAS_KNOWLEDGE_GRAPH and getattr(settings.agent, "knowledge_graph_enabled", True):
+            self.knowledge_graph = KnowledgeGraph(
+                autosave=bool(getattr(settings.agent, "knowledge_graph_autosave", True)),
+                rule_max_ids_per_keyword=getattr(settings.agent, "knowledge_graph_rule_max_ids_per_keyword", 200),
+                rule_max_keyword_links_per_node=getattr(
+                    settings.agent, "knowledge_graph_rule_max_keyword_links_per_node", 12
+                ),
+                rule_category_anchor_count=getattr(settings.agent, "knowledge_graph_rule_category_anchor_count", 2),
+                rule_max_relations=getattr(settings.agent, "knowledge_graph_rule_max_relations", 100_000),
+                rule_shared_keywords_desc_limit=getattr(
+                    settings.agent, "knowledge_graph_rule_shared_keywords_desc_limit", 12
+                ),
+                save_pretty_json=bool(getattr(settings.agent, "knowledge_graph_save_pretty_json", True)),
+                save_sort=bool(getattr(settings.agent, "knowledge_graph_save_sort", True)),
+            )
             logger.info("知识图谱系统已启用")
+        elif HAS_KNOWLEDGE_GRAPH:
+            logger.info("知识图谱系统已禁用（Agent.knowledge_graph_enabled=false）")
 
         # v2.30.44: 初始化性能优化器
         self.multi_cache = None
@@ -1713,6 +1981,70 @@ class LoreBook:
             logger.warning(f"知识质量较低: {assessment['quality_score']:.2f}")
 
         logger.info(f"知识质量评分: {assessment['quality_score']:.2f}")
+
+    # ==================== 知识图谱增量同步（v2.30.43+ 增强） ====================
+
+    def _kg_auto_update_enabled(self) -> bool:
+        if not self.knowledge_graph:
+            return False
+        return bool(getattr(settings.agent, "knowledge_graph_auto_update", True))
+
+    def _kg_submit(self, func, *args, **kwargs) -> None:
+        """按配置选择同步/异步执行知识图谱更新任务。"""
+        if not self.knowledge_graph:
+            return
+
+        if getattr(settings.agent, "knowledge_graph_auto_update_async", True) and self.async_processor:
+            try:
+                self.async_processor.submit(func, *args, **kwargs)
+                return
+            except Exception as exc:
+                logger.debug("提交知识图谱后台任务失败，回退为同步执行: %s", exc)
+
+        try:
+            func(*args, **kwargs)
+        except Exception as exc:
+            logger.debug("知识图谱增量更新失败（可忽略）: %s", exc)
+
+    def _kg_upsert_entry(self, entry: Dict[str, Any]) -> None:
+        if not self._kg_auto_update_enabled() or not self.knowledge_graph:
+            return
+
+        update_edges = bool(getattr(settings.agent, "knowledge_graph_auto_update_edges", True))
+
+        def _do() -> None:
+            self.knowledge_graph.upsert_knowledge_entry(entry, update_edges=update_edges)
+
+        self._kg_submit(_do)
+
+    def _kg_upsert_entries(self, entries: List[Dict[str, Any]]) -> None:
+        if not self._kg_auto_update_enabled() or not self.knowledge_graph or not entries:
+            return
+
+        update_edges = bool(getattr(settings.agent, "knowledge_graph_auto_update_edges", True))
+
+        def _do() -> None:
+            self.knowledge_graph.upsert_knowledge_entries(entries, update_edges=update_edges)
+
+        self._kg_submit(_do)
+
+    def _kg_delete_node(self, lore_id: str) -> None:
+        if not self._kg_auto_update_enabled() or not self.knowledge_graph or not lore_id:
+            return
+
+        def _do() -> None:
+            self.knowledge_graph.remove_knowledge_node(str(lore_id))
+
+        self._kg_submit(_do)
+
+    def _kg_delete_nodes(self, lore_ids: List[str]) -> None:
+        if not self._kg_auto_update_enabled() or not self.knowledge_graph or not lore_ids:
+            return
+
+        def _do() -> None:
+            self.knowledge_graph.remove_knowledge_nodes([str(i) for i in lore_ids if i])
+
+        self._kg_submit(_do)
 
     def _create_lore_metadata(
         self,
@@ -1833,6 +2165,16 @@ class LoreBook:
             # v2.30.39: 清除缓存
             self._invalidate_cache()
 
+            # v2.30.43+: 知识图谱增量同步（避免手动重建）
+            self._kg_upsert_entry(
+                {
+                    "id": lore_id,
+                    "title": title,
+                    "category": category,
+                    "keywords": keywords or [],
+                }
+            )
+
             logger.info(f"添加知识 [{category}] [{source}]: {title}")
             return lore_id
 
@@ -1845,6 +2187,14 @@ class LoreBook:
         try:
             # 最终刷盘：把尚未落盘的 usage_count 写回 JSON
             self._flush_usage_counts()
+
+            # 最终刷盘：知识图谱（autosave=false 时尤为重要）
+            if self.knowledge_graph:
+                try:
+                    self.knowledge_graph.flush()
+                except Exception as exc:
+                    logger.debug("知识图谱 flush 失败（可忽略）: %s", exc)
+
             if self.async_processor:
                 self.async_processor.close()
         except Exception as exc:
@@ -1924,6 +2274,16 @@ class LoreBook:
             # v2.30.39: 清除缓存
             self._invalidate_cache()
 
+            # v2.30.43+: 知识图谱增量同步
+            self._kg_upsert_entry(
+                {
+                    "id": lore_id,
+                    "title": lore_data.get("title", ""),
+                    "category": lore_data.get("category", "general"),
+                    "keywords": lore_data.get("keywords", []) or [],
+                }
+            )
+
             logger.info(f"更新知识: {lore_data['title']}")
             return True
 
@@ -1953,6 +2313,9 @@ class LoreBook:
 
             # v2.30.39: 清除缓存
             self._invalidate_cache()
+
+            # v2.30.43+: 知识图谱增量同步
+            self._kg_delete_node(lore_id)
 
             logger.info(f"删除知识: {lore_id}")
             return True
@@ -2469,6 +2832,137 @@ class LoreBook:
             logger.error(f"导入知识库失败: {e}")
             return 0
 
+    def import_records(
+        self,
+        records: List[Dict[str, Any]],
+        *,
+        overwrite: bool = False,
+        batch_size: int = 128,
+    ) -> int:
+        """
+        导入知识库记录（来自导出包的 advanced_memory.lore_book.items）。
+
+        - overwrite=True 时会先清空现有知识库，并尽量保留原 ids
+        - overwrite=False 时不清空，若 id 已存在则跳过
+        """
+        if self.vectorstore is None or self.json_file is None:
+            return 0
+        if not records:
+            return 0
+
+        if overwrite:
+            self.clear_all()
+
+        existing_ids: set[str] = set()
+        if not overwrite:
+            try:
+                existing = self._read_json_records()
+                existing_ids = {str(item.get("id")) for item in existing if item.get("id")}
+            except Exception:
+                existing_ids = set()
+
+        from uuid import uuid4
+
+        now_iso = datetime.now().isoformat()
+        json_records: List[Dict[str, Any]] = []
+        texts: List[str] = []
+        metadatas: List[Dict[str, Any]] = []
+        ids: List[str] = []
+
+        for lore in records:
+            if not isinstance(lore, dict):
+                continue
+            title = lore.get("title")
+            content = lore.get("content")
+            if not title or not content:
+                continue
+
+            lore_id = str(lore.get("id") or uuid4().hex)
+            if not overwrite and lore_id in existing_ids:
+                continue
+
+            category = str(lore.get("category") or "general")
+            keywords = lore.get("keywords") or []
+            if not isinstance(keywords, list):
+                keywords = [str(keywords)]
+            source = str(lore.get("source") or "import")
+            timestamp = str(lore.get("timestamp") or now_iso)
+
+            def _to_int(value: Any, default: int = 0) -> int:
+                try:
+                    return int(value)
+                except Exception:
+                    return int(default)
+
+            update_count = _to_int(lore.get("update_count", 0))
+            usage_count = _to_int(lore.get("usage_count", 0))
+            positive_feedback = _to_int(lore.get("positive_feedback", 0))
+            negative_feedback = _to_int(lore.get("negative_feedback", 0))
+
+            metadata = {
+                "id": lore_id,
+                "title": str(title),
+                "category": category,
+                "keywords": ",".join([str(k) for k in keywords]) if keywords else "",
+                "source": source,
+                "timestamp": timestamp,
+                "update_count": update_count,
+                "usage_count": usage_count,
+                "positive_feedback": positive_feedback,
+                "negative_feedback": negative_feedback,
+            }
+
+            full_content = f"【{title}】\n{content}"
+            texts.append(full_content)
+            metadatas.append(metadata)
+            ids.append(lore_id)
+
+            json_records.append(
+                {
+                    "id": lore_id,
+                    "title": str(title),
+                    "content": str(content),
+                    "category": category,
+                    "keywords": keywords,
+                    "source": source,
+                    "timestamp": timestamp,
+                    "update_count": update_count,
+                    "usage_count": usage_count,
+                    "positive_feedback": positive_feedback,
+                    "negative_feedback": negative_feedback,
+                }
+            )
+
+        if not texts:
+            return 0
+
+        # 先写 JSON，确保导入后可持久化恢复
+        try:
+            if overwrite:
+                self._write_json_records(json_records)
+            else:
+                merged = self._read_json_records()
+                merged.extend(json_records)
+                self._write_json_records(merged)
+        except Exception as e:
+            logger.error(f"写入知识 JSON 失败: {e}")
+
+        imported = 0
+        batch_size = max(1, int(batch_size))
+        for offset in range(0, len(texts), batch_size):
+            chunk_texts = texts[offset: offset + batch_size]
+            chunk_metas = metadatas[offset: offset + batch_size]
+            chunk_ids = ids[offset: offset + batch_size]
+            try:
+                self.vectorstore.add_texts(texts=chunk_texts, metadatas=chunk_metas, ids=chunk_ids)
+                imported += len(chunk_texts)
+            except Exception as e:
+                logger.error(f"导入知识库向量库批次失败: {e}")
+
+        self._invalidate_cache()
+        logger.info(f"导入知识库完成: {imported} 条 (overwrite={overwrite})")
+        return imported
+
     def clear_all(self) -> bool:
         """
         清空所有知识 - v2.30.38 新增
@@ -2485,7 +2979,7 @@ class LoreBook:
         try:
             with self._lock:
                 previous_records = self._read_json_records_unlocked()
-                lore_ids = [str(l.get("id")) for l in previous_records if l.get("id")]
+                lore_ids = [str(record.get("id")) for record in previous_records if record.get("id")]
                 self._write_json_records_unlocked([])
 
             if self.vectorstore and lore_ids:
@@ -3128,7 +3622,7 @@ class LoreBook:
                                 break
                         return _truncate("\n".join(parts))
                 except ImportError:
-                    logger.warning("需要安装 PyPDF2: pip install PyPDF2")
+                    logger.warning("需要安装 PyPDF2: uv pip install PyPDF2")
                     return None
 
             elif file_type == "docx":
@@ -3148,7 +3642,7 @@ class LoreBook:
                             break
                     return _truncate("\n".join(parts))
                 except ImportError:
-                    logger.warning("需要安装 python-docx: pip install python-docx")
+                    logger.warning("需要安装 python-docx: uv pip install python-docx")
                     return None
 
             elif file_type in ["html", "htm"]:
@@ -3168,7 +3662,7 @@ class LoreBook:
                     lines = [line.strip() for line in text.split("\n") if line.strip()]
                     return _truncate("\n\n".join(lines))
                 except ImportError:
-                    logger.warning("需要安装 beautifulsoup4: pip install beautifulsoup4")
+                    logger.warning("需要安装 beautifulsoup4: uv pip install beautifulsoup4")
                     return None
 
             elif file_type == "json":
@@ -3381,6 +3875,19 @@ class LoreBook:
             # 清除缓存
             self._invalidate_cache()
 
+            # v2.30.43+: 知识图谱增量同步（批量）
+            self._kg_upsert_entries(
+                [
+                    {
+                        "id": r.get("id"),
+                        "title": r.get("title", ""),
+                        "category": r.get("category", "general"),
+                        "keywords": r.get("keywords", []) or [],
+                    }
+                    for r in json_records
+                ]
+            )
+
             logger.info(f"批量添加 {len(added_ids)} 条知识")
             return added_ids
 
@@ -3439,6 +3946,9 @@ class LoreBook:
 
             # 清除缓存
             self._invalidate_cache()
+
+            # v2.30.43+: 知识图谱增量同步（批量）
+            self._kg_delete_nodes(unique_ids)
 
             logger.info(f"批量删除 {deleted_count} 条知识")
             return deleted_count
@@ -3826,7 +4336,10 @@ class LoreBook:
             related_ids = self.knowledge_graph.find_related_knowledge(
                 knowledge_id,
                 max_depth,
-                min_confidence
+                min_confidence,
+                include_incoming=getattr(settings.agent, "knowledge_graph_find_include_incoming", True),
+                max_results=getattr(settings.agent, "knowledge_graph_find_max_results", 200),
+                max_nodes_visited=getattr(settings.agent, "knowledge_graph_find_max_nodes_visited", 5000),
             )
 
             # 获取完整的知识信息

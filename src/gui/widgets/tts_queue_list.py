@@ -13,7 +13,7 @@ TTS队列列表组件 - v2.39.0
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QListWidget, QListWidgetItem, QFrame
+    QPushButton, QFrame
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint
 from PyQt6.QtGui import QFont, QDrag, QCursor, QMouseEvent
@@ -413,4 +413,3 @@ class TTSQueueList(QWidget):
             item.index = i
 
         logger.debug(f"移动队列项: {from_index} -> {to_index}")
-

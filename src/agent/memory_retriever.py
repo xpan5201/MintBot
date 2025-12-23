@@ -16,7 +16,7 @@ import asyncio
 import hashlib
 import time
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional, Awaitable
+from typing import List, Dict, Any, Awaitable
 from concurrent.futures import ThreadPoolExecutor
 
 from src.utils.logger import get_logger
@@ -185,7 +185,11 @@ class ConcurrentMemoryRetriever:
         # 优化缓存键生成，使用hash减少内存占用
         cache_key = None
         if use_cache:
-            cache_key_data = f"{query}_{long_term_k}_{core_k}_{diary_k}_{lore_k}"
+            # 注意：cache_manager.memory_cache 是全局缓存，必须纳入 user_id 等维度，避免跨用户污染
+            user_id = getattr(self.long_term_memory, "user_id", None)
+            long_term_obj = getattr(self.long_term_memory, "long_term", None)
+            lt_version = getattr(long_term_obj, "write_version", 0)
+            cache_key_data = f"u={user_id}|ltv={lt_version}|{query}_{long_term_k}_{core_k}_{diary_k}_{lore_k}"
             cache_key = hashlib.md5(cache_key_data.encode()).hexdigest()
             cached_result = cache_manager.memory_cache.get(cache_key)
             if cached_result is not None:
@@ -273,7 +277,10 @@ class ConcurrentMemoryRetriever:
             query,
             k,
         )
-        return await self._await_with_metrics("core", future)
+        results = await self._await_with_metrics("core", future)
+        if not results:
+            return []
+        return [entry.get("content", "") for entry in results if entry.get("content")]
 
     async def _retrieve_diary_async(
         self,

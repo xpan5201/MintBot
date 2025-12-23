@@ -6,14 +6,13 @@
 优化性能，确保 60fps 流畅运行
 """
 
-from PyQt6.QtWidgets import QWidget, QGraphicsOpacityEffect, QGraphicsDropShadowEffect
+from PyQt6.QtWidgets import QWidget, QGraphicsOpacityEffect
 from PyQt6.QtCore import (
     QPropertyAnimation, QEasingCurve, QParallelAnimationGroup,
-    QSequentialAnimationGroup, QPoint, QRect, QTimer, pyqtProperty, Qt
+    QPoint, QRect, pyqtProperty, Qt
 )
-from PyQt6.QtGui import QColor
 
-from .material_design_light import MD3_DURATION, MD3_EASING, MD3_STATE_LAYERS
+from .material_design_light import MD3_DURATION
 
 
 class AnimationMixin:
@@ -244,7 +243,6 @@ class LoadingAnimation(QWidget):
     def paintEvent(self, event):
         """绘制加载动画"""
         from PyQt6.QtGui import QPainter, QPen, QColor
-        from math import pi, cos, sin
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)

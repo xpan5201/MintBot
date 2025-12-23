@@ -10,7 +10,7 @@ v2.30.6 新增
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
-from typing import Dict, List, Optional, Callable, Any
+from typing import Dict, List, Optional, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from src.utils.logger import get_logger
@@ -144,7 +144,7 @@ class ManagedThreadPool:
         Returns:
             是否所有任务都完成
         """
-        from concurrent.futures import wait, FIRST_COMPLETED
+        from concurrent.futures import wait
         
         with self._lock:
             futures = list(self._futures)

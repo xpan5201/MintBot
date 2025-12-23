@@ -13,23 +13,21 @@ v2.18.0 优化内容：
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QLabel, QScrollArea,
+    QWidget, QVBoxLayout, QPushButton, QLabel,
     QListWidget, QListWidgetItem, QHBoxLayout, QGraphicsOpacityEffect, QLineEdit,
-    QGraphicsDropShadowEffect
 )
 from PyQt6.QtCore import (
-    Qt, pyqtSignal, QPropertyAnimation, QEasingCurve, QSize,
-    QPoint, QTimer, pyqtProperty, QParallelAnimationGroup
+    Qt, pyqtSignal, QPropertyAnimation, QEasingCurve,
+    QPoint, QTimer, pyqtProperty
 )
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QBrush, QPen, QMouseEvent, QFont
+from PyQt6.QtGui import QPainter, QColor, QBrush, QMouseEvent, QFont
 
 from .material_design_light import (
-    MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION, MD3_STATE_LAYERS, get_light_elevation_shadow
+    MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION, MD3_STATE_LAYERS
 )
 from .material_design_enhanced import (
-    MD3_ENHANCED_COLORS, MD3_ENHANCED_SPACING, MD3_ENHANCED_RADIUS,
-    MD3_ENHANCED_DURATION, MD3_ENHANCED_EASING, MD3_ENHANCED_STATE_LAYERS,
-    get_elevation_shadow
+    MD3_ENHANCED_COLORS, MD3_ENHANCED_RADIUS,
+    MD3_ENHANCED_DURATION, MD3_ENHANCED_EASING,
 )
 from .material_icons import MaterialIconButton, MATERIAL_ICONS
 from .theme_manager import is_anime_theme

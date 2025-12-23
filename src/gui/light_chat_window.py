@@ -7,7 +7,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QMainWindow,
     QDockWidget,
-    QPushButton,
     QAbstractScrollArea,
     QScrollArea,
     QLabel,
@@ -19,7 +18,6 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import (
     Qt,
-    QThread,
     QThreadPool,
     pyqtSignal,
     pyqtProperty,
@@ -137,21 +135,13 @@ from .light_message_bubble import (
     LightTypingIndicator,
     LightImageMessageBubble,
 )
-from .material_design_light import MD3_LIGHT_COLORS, MD3_RADIUS
 from .material_design_enhanced import (
     MD3_ENHANCED_COLORS,
-    MD3_ENHANCED_SPACING,
     MD3_ENHANCED_RADIUS,
-    MD3_ENHANCED_DURATION,
-    MD3_ENHANCED_EASING,
-    MD3_ENHANCED_ELEVATION,
     get_typography_css,
-    get_elevation_shadow,
 )
-from .theme_manager import is_anime_theme
 from .qss_utils import qss_rgba
 from .enhanced_rich_input import EnhancedInputWidget, ChatComposerIconButton
-from .loading_states import EmptyState
 from .notifications import show_toast, Toast
 from .contacts_panel import ContactsPanel
 from src.utils.logger import get_logger
@@ -1406,8 +1396,9 @@ class LightChatWindow(LightFramelessWindow):
             except Exception:
                 is_sending = False
 
+            asr_listening = bool(getattr(self, "_asr_listening", False))
             agent_ready = (self.agent is not None) and not bool(getattr(self, "_agent_initializing", False))
-            can_send = bool(enabled) and agent_ready and has_content and not is_sending
+            can_send = bool(enabled) and agent_ready and has_content and not is_sending and not asr_listening
             self.send_btn.setEnabled(can_send)
         except Exception:
             pass
@@ -2370,6 +2361,31 @@ class LightChatWindow(LightFramelessWindow):
             pass
 
         if self.current_streaming_bubble is None:
+            # 语音输入模式：若期间缓存了输出，则此处一次性落入普通气泡
+            try:
+                buf = getattr(self, "_asr_non_stream_buffer", None)
+            except Exception:
+                buf = None
+            if buf:
+                try:
+                    full_response = "".join(buf).strip()
+                    self._asr_non_stream_buffer = None
+                except Exception:
+                    full_response = ""
+                    self._asr_non_stream_buffer = None
+
+                if full_response and self._needs_tool_filter(full_response):
+                    try:
+                        full_response = self._filter_tool_info_safe(full_response)
+                    except Exception:
+                        pass
+
+                if full_response and full_response.strip():
+                    try:
+                        self._add_message(full_response, is_user=False)
+                    except Exception:
+                        pass
+
             self._reset_stream_render_state()
             self._stream_model_done = False
             self._set_send_enabled(True)
@@ -2505,6 +2521,18 @@ class LightChatWindow(LightFramelessWindow):
                 and self.tts_stream_processor
             ):
                 self.tts_stream_processor.reset()
+
+        # 语音输入模式：消息区作为历史查看，禁用流式渲染（只缓存，结束后一次性落入普通气泡）
+        if bool(getattr(self, "_asr_force_non_stream", False)):
+            try:
+                buf = getattr(self, "_asr_non_stream_buffer", None)
+                if buf is None:
+                    buf = []
+                    self._asr_non_stream_buffer = buf
+                buf.append(chunk)
+            except Exception:
+                pass
+            return
 
         # 创建或更新流式消息气泡
         if self.current_streaming_bubble is None:
@@ -2803,6 +2831,11 @@ class LightChatWindow(LightFramelessWindow):
             if not (text_clean or sticker_paths or file_paths):
                 return
 
+            # 语音输入模式下禁用发送：避免边录音边触发对话与流式刷新
+            if bool(getattr(self, "_asr_listening", False)):
+                show_toast(self, "语音输入中：请先停止语音输入再发送", Toast.TYPE_INFO, duration=1600)
+                return
+
             # Agent 未就绪时不允许发送：避免输入被清空/消息被写入历史后又失败
             if self.agent is None or bool(getattr(self, "_agent_initializing", False)):
                 if bool(getattr(self, "_agent_initializing", False)):
@@ -2983,9 +3016,210 @@ class LightChatWindow(LightFramelessWindow):
                 pass
 
     def _on_composer_mic_clicked(self) -> None:
-        """输入框语音按钮点击（占位）。"""
+        """输入框语音按钮点击：切换 ASR 语音输入模式。"""
         try:
-            show_toast(self, "语音输入开发中…", Toast.TYPE_INFO, duration=1500)
+            listening = bool(getattr(self, "_asr_listening", False))
+        except Exception:
+            listening = False
+
+        if listening:
+            self._stop_asr_listening()
+            return
+
+        self._start_asr_listening()
+
+    def _start_asr_listening(self) -> None:
+        """进入语音输入模式：启动 ASR 监听线程，并临时禁用发送/流式显示。"""
+        try:
+            from src.config.settings import settings
+        except Exception:
+            settings = None
+
+        try:
+            if settings is None or not hasattr(settings, "asr") or not settings.asr or not settings.asr.enabled:
+                show_toast(self, "语音输入未启用，请在设置中开启 ASR 后重启", Toast.TYPE_INFO, duration=2200)
+                return
+        except Exception:
+            show_toast(self, "语音输入配置不可用，请检查设置", Toast.TYPE_ERROR, duration=2200)
+            return
+
+        # FunASR 依赖/模型加载由启动预热完成；这里做一次兜底检测
+        try:
+            from src.multimodal import is_asr_available
+
+            if callable(is_asr_available) and not is_asr_available():
+                show_toast(
+                    self,
+                    "ASR 模型未就绪（请确认已安装 funasr 并重启预加载）",
+                    Toast.TYPE_ERROR,
+                    duration=2600,
+                )
+                return
+        except Exception:
+            show_toast(
+                self,
+                "ASR 不可用（缺少 funasr 或初始化失败）",
+                Toast.TYPE_ERROR,
+                duration=2600,
+            )
+            return
+
+        # 启动监听线程
+        try:
+            from src.gui.workers.asr_listen import ASRListenThread
+        except Exception as exc:
+            show_toast(self, f"导入 ASR 线程失败：{exc}", Toast.TYPE_ERROR, duration=2400)
+            return
+
+        try:
+            thread = getattr(self, "_asr_thread", None)
+            if thread is not None and getattr(thread, "isRunning", lambda: False)():
+                show_toast(self, "语音输入已在进行中", Toast.TYPE_INFO, duration=1200)
+                return
+        except Exception:
+            pass
+
+        try:
+            sample_rate = int(getattr(settings.asr, "sample_rate", 16000))
+            partial_interval_ms = int(getattr(settings.asr, "partial_interval_ms", 260))
+            partial_window_s = float(getattr(settings.asr, "partial_window_s", 6.0))
+        except Exception:
+            sample_rate, partial_interval_ms, partial_window_s = 16000, 260, 6.0
+
+        asr_thread = ASRListenThread(
+            sample_rate=sample_rate,
+            partial_interval_ms=partial_interval_ms,
+            partial_window_s=partial_window_s,
+            parent=self,
+        )
+        asr_thread.partial_text.connect(self._on_asr_partial_text)
+        asr_thread.final_text.connect(self._on_asr_final_text)
+        asr_thread.error.connect(self._on_asr_error)
+        asr_thread.finished.connect(self._on_asr_finished)
+
+        self._asr_thread = asr_thread
+        self._asr_listening = True
+        self._asr_force_non_stream = True
+
+        try:
+            if hasattr(self, "composer_mic_btn") and self.composer_mic_btn is not None:
+                self.composer_mic_btn.set_active(True)
+                self.composer_mic_btn.setToolTip("停止语音输入")
+        except Exception:
+            pass
+
+        # 语音模式：禁用发送（Enter/按钮都会被拦截），消息区改为“历史查看”（暂不流式渲染）
+        try:
+            self._set_send_enabled(False)
+        except Exception:
+            pass
+        try:
+            msg = "开始语音输入…再次点击麦克风停止"
+            try:
+                endpoint_ms = int(getattr(getattr(settings, "asr", None), "endpoint_silence_ms", 0) or 0)
+                if endpoint_ms > 0:
+                    msg = "开始语音输入…再次点击麦克风停止，或停顿自动完成"
+            except Exception:
+                pass
+            show_toast(self, msg, Toast.TYPE_INFO, duration=1600)
+        except Exception:
+            pass
+
+        try:
+            asr_thread.start()
+        except Exception as exc:
+            self._asr_listening = False
+            self._asr_force_non_stream = False
+            show_toast(self, f"启动语音输入失败：{exc}", Toast.TYPE_ERROR, duration=2400)
+
+    def _stop_asr_listening(self) -> None:
+        """退出语音输入模式：停止线程并恢复默认 UI 行为。"""
+        try:
+            thread = getattr(self, "_asr_thread", None)
+        except Exception:
+            thread = None
+
+        try:
+            self._asr_listening = False
+            self._asr_force_non_stream = False
+        except Exception:
+            pass
+
+        if thread is not None:
+            try:
+                thread.stop()
+            except Exception:
+                pass
+            try:
+                if thread.isRunning():
+                    thread.wait(1500)
+            except Exception:
+                pass
+            try:
+                thread.deleteLater()
+            except Exception:
+                pass
+            self._asr_thread = None
+
+        try:
+            if hasattr(self, "composer_mic_btn") and self.composer_mic_btn is not None:
+                self.composer_mic_btn.set_active(False)
+                self.composer_mic_btn.setToolTip("语音输入")
+        except Exception:
+            pass
+
+        try:
+            self._set_send_enabled(True)
+        except Exception:
+            pass
+
+    def _on_asr_partial_text(self, text: str) -> None:
+        if not bool(getattr(self, "_asr_listening", False)):
+            return
+        self._apply_asr_text_to_composer(text, final=False)
+
+    def _on_asr_final_text(self, text: str) -> None:
+        self._apply_asr_text_to_composer(text, final=True)
+
+    def _on_asr_error(self, error: str) -> None:
+        try:
+            show_toast(self, f"语音输入失败：{error}", Toast.TYPE_ERROR, duration=2600)
+        except Exception:
+            pass
+        self._stop_asr_listening()
+
+    def _on_asr_finished(self) -> None:
+        # 线程自然结束时，确保 UI 状态恢复
+        try:
+            if bool(getattr(self, "_asr_listening", False)):
+                self._stop_asr_listening()
+        except Exception:
+            pass
+
+    def _apply_asr_text_to_composer(self, text: str, *, final: bool) -> None:
+        """把 ASR 文本写入输入框，尽量保持光标在末尾。"""
+        text = (text or "").strip()
+        if not text:
+            return
+        if getattr(self, "_asr_last_text", None) == text and not final:
+            return
+        self._asr_last_text = text
+
+        editor = getattr(self, "input_text", None)
+        if editor is None:
+            return
+
+        try:
+            editor.setPlainText(text)
+            try:
+                from PyQt6.QtGui import QTextCursor
+
+                cursor = editor.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                editor.setTextCursor(cursor)
+                editor.ensureCursorVisible()
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -5099,7 +5333,6 @@ class LightChatWindow(LightFramelessWindow):
     def _show_login_window(self):
         """显示登录窗口"""
         from .auth_manager import AuthManager
-        from src.auth.auth_service import AuthService
 
         # 关闭当前窗口
         self.close()
@@ -5431,6 +5664,13 @@ class LightChatWindow(LightFramelessWindow):
         try:
             logger.info("聊天窗口正在关闭，清理资源...")
             self._closing = True
+
+            # 0. 停止语音输入（若开启）
+            try:
+                if bool(getattr(self, "_asr_listening", False)):
+                    self._stop_asr_listening()
+            except Exception:
+                pass
 
             # 1. 停止所有动画
             if hasattr(self, "avatar_pulse_animation") and self.avatar_pulse_animation:

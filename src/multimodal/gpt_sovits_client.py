@@ -502,7 +502,7 @@ class GPTSoVITSClient:
                 # 健康检查失败，不记录日志（健康检查失败不应影响正常请求）
                 return False
 
-        except Exception as e:
+        except Exception:
             # 健康检查异常，不记录日志，避免日志噪音
             return False
 

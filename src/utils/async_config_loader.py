@@ -313,7 +313,7 @@ if __name__ == "__main__":
             print(f"JSON配置加载成功: {len(config)} 项")
 
         # 测试缓存
-        config2 = await loader.load_json("config.json")  # 应该命中缓存
+        await loader.load_json("config.json")  # 应该命中缓存
 
         # 获取统计
         stats = loader.get_stats()

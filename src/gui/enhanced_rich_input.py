@@ -26,7 +26,6 @@ from PyQt6.QtCore import (
     QUrl,
     QEvent,
     QRectF,
-    QPointF,
     pyqtProperty,
     QPropertyAnimation,
     QEasingCurve,
@@ -50,7 +49,6 @@ from datetime import datetime
 import uuid
 from src.utils.logger import get_logger
 
-from src.gui.material_design_light import MD3_LIGHT_COLORS
 from src.gui.material_design_enhanced import MD3_ENHANCED_COLORS, MD3_ENHANCED_RADIUS
 from src.gui.qss_utils import qss_rgba
 
@@ -730,7 +728,7 @@ class EnhancedInputWidget(QWidget):
 
         self.mic_btn = ChatComposerIconButton(
             "mic",
-            "语音输入（开发中）",
+            "语音输入",
             size=38,
             icon_size=19,
             variant=ChatComposerIconButton.VARIANT_GHOST,

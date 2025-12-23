@@ -12,11 +12,10 @@ TTS历史记录面板 - v2.40.0
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView,
-    QMessageBox, QFileDialog, QComboBox, QDateEdit
+    QMessageBox, QComboBox, QDateEdit
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QDate
-from PyQt6.QtGui import QIcon
-from typing import Optional, List, Dict, Any
+from typing import List, Dict, Any
 from datetime import datetime
 
 from src.utils.logger import get_logger
@@ -680,5 +679,4 @@ class TTSHistoryPanel(QWidget):
             'ref_audio_name': ref_audio,
             'ref_audio_emotion': emotion
         }
-
 

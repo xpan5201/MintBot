@@ -32,6 +32,7 @@ GUI_ANIMATIONS_ENABLED = os.getenv("MINTCHAT_GUI_ANIMATIONS", "0").lower() not i
     "off",
 }
 _tts_init_started = False
+_asr_init_started = False
 _main_window = None  # Keep a strong reference to the main window (prevents GC-induced "flash quit").
 
 
@@ -53,6 +54,26 @@ def _start_tts_init_async() -> None:
             logger.info("应用将继续运行，但 TTS 功能暂不可用")
 
     threading.Thread(target=_runner, name="MintChatTTSInit", daemon=True).start()
+
+
+def _start_asr_init_async() -> None:
+    """后台初始化 ASR（FunASR）（避免阻塞 GUI 启动与首帧渲染）。"""
+    global _asr_init_started
+    if _asr_init_started:
+        return
+    _asr_init_started = True
+
+    def _runner() -> None:
+        try:
+            from src.multimodal import init_asr
+
+            if callable(init_asr):
+                init_asr()
+        except Exception as e:
+            logger.warning(f"ASR 初始化失败: {e}")
+            logger.info("应用将继续运行，但 ASR 功能暂不可用")
+
+    threading.Thread(target=_runner, name="MintChatASRInit", daemon=True).start()
 
 
 def _qt_message_handler(msg_type, context, message):
@@ -111,10 +132,28 @@ def main() -> None:
     """主函数"""
     # 启动前检查可选依赖，缺失时给出明确提示
     deps_status = check_optional_dependencies()
-    if deps_status["missing"]:
+    if not deps_status.get("in_project_venv", True):
+        logger.warning(
+            "当前未在项目 .venv 环境中运行（python=%s）。建议使用：uv run python MintChat.py 或 .venv\\Scripts\\python MintChat.py",
+            deps_status.get("python_executable", sys.executable),
+        )
+
+    missing = deps_status.get("missing", [])
+    broken = deps_status.get("broken", {})
+    hints = deps_status.get("hints", {})
+
+    if missing:
         logger.error(
-            "缺失依赖将导致高级功能不可用：%s。请安装后重启。",
-            ", ".join(deps_status["missing"]),
+            "检测到依赖缺失，将影响功能：%s。建议：%s",
+            ", ".join(missing),
+            "; ".join(f"{m}: {hints.get(m, 'uv sync --locked --no-install-project')}" for m in missing),
+        )
+
+    if broken:
+        logger.error(
+            "检测到依赖导入失败（已安装但不可用）：%s。建议：%s",
+            "; ".join(f"{m}: {err}" for m, err in broken.items()),
+            "; ".join(f"{m}: {hints.get(m, 'uv sync --locked --no-install-project --reinstall')}" for m in broken),
         )
 
     app = QApplication(sys.argv)
@@ -147,6 +186,8 @@ def main() -> None:
 
     # v2.48.10: 初始化 TTS 服务（后台线程，避免健康检查阻塞 GUI 启动）
     _start_tts_init_async()
+    # v2.56.0: 初始化 ASR 服务（后台线程，避免加载模型阻塞 GUI 启动）
+    _start_asr_init_async()
 
     try:
         from src.config.settings import settings

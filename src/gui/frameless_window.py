@@ -9,10 +9,10 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QPushButton, QGraphicsDropShadowEffect
 )
-from PyQt6.QtCore import Qt, QPoint, QRect, QPropertyAnimation, QEasingCurve, pyqtSignal
-from PyQt6.QtGui import QMouseEvent, QCursor
+from PyQt6.QtCore import Qt, QPoint, QRect, pyqtSignal
+from PyQt6.QtGui import QMouseEvent
 
-from .material_design import MD3_COLORS, MD3_RADIUS, MD3_DURATION, get_elevation_shadow
+from .material_design import MD3_COLORS, MD3_RADIUS
 
 
 class TitleBar(QWidget):

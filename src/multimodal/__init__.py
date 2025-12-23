@@ -31,6 +31,11 @@ __all__ = [
     "get_tts_manager_instance",
     "get_tts_config_instance",
     "is_tts_available",
+    # ASR
+    "init_asr",
+    "get_asr_model_instance",
+    "get_asr_model_lock",
+    "is_asr_available",
 ]
 
 
@@ -87,9 +92,29 @@ def __getattr__(name: str) -> Any:  # pragma: no cover - 仅用于 import 懒加
         }
         return mapping[name]
 
+    if name in {
+        "init_asr",
+        "get_asr_model_instance",
+        "get_asr_model_lock",
+        "is_asr_available",
+    }:
+        from .asr_initializer import (
+            get_asr_model_instance,
+            get_asr_model_lock,
+            init_asr,
+            is_asr_available,
+        )
+
+        mapping = {
+            "init_asr": init_asr,
+            "get_asr_model_instance": get_asr_model_instance,
+            "get_asr_model_lock": get_asr_model_lock,
+            "is_asr_available": is_asr_available,
+        }
+        return mapping[name]
+
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> list[str]:  # pragma: no cover
     return sorted(set(globals().keys()) | set(__all__))
-

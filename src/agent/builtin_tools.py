@@ -47,7 +47,7 @@ import json
 import sys
 import time
 import threading
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Tuple
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -636,7 +636,7 @@ async def bing_web_search(query: str, count: int = 5) -> str:
     except ToolError as e:
         # 分类错误处理
         if e.error_type == ErrorType.NETWORK_ERROR:
-            return f"抱歉主人，网络连接失败了喵~ 请检查网络连接"
+            return "抱歉主人，网络连接失败了喵~ 请检查网络连接"
         elif e.error_type == ErrorType.API_ERROR:
             return f"抱歉主人，搜索服务暂时不可用喵~ ({e.message})"
         else:
@@ -977,7 +977,7 @@ async def amap_route_plan(origin: str, destination: str, strategy: int = 0, wayp
             else:
                 return f"未找到从'{origin}'到'{destination}'的路线喵~"
         else:
-            return f"路线规划失败喵~"
+            return "路线规划失败喵~"
 
     except ToolError as e:
         if e.error_type == ErrorType.NETWORK_ERROR:
@@ -1269,7 +1269,7 @@ async def amap_batch_route_plan(routes: str, strategy: int = 0) -> str:
             continue
         parts = route.split(",")
         if len(parts) != 4:
-            return f"抱歉主人，路线格式应为'起点经度,起点纬度,终点经度,终点纬度'喵~"
+            return "抱歉主人，路线格式应为'起点经度,起点纬度,终点经度,终点纬度'喵~"
         route_list.append({
             "origin": f"{parts[0]},{parts[1]}",
             "destination": f"{parts[2]},{parts[3]}"
@@ -1648,9 +1648,9 @@ def generate_performance_report(output_path: Optional[str] = None) -> str:
         x = np.arange(len(tool_names))
         width = 0.25
 
-        bars2_1 = ax2.bar(x - width, p50_latencies, width, label='P50', color='lightgreen', edgecolor='green')
-        bars2_2 = ax2.bar(x, p95_latencies, width, label='P95', color='orange', edgecolor='darkorange')
-        bars2_3 = ax2.bar(x + width, p99_latencies, width, label='P99', color='salmon', edgecolor='red')
+        ax2.bar(x - width, p50_latencies, width, label='P50', color='lightgreen', edgecolor='green')
+        ax2.bar(x, p95_latencies, width, label='P95', color='orange', edgecolor='darkorange')
+        ax2.bar(x + width, p99_latencies, width, label='P99', color='salmon', edgecolor='red')
 
         ax2.set_xlabel('工具名称', fontsize=12)
         ax2.set_ylabel('延迟 (秒)', fontsize=12)

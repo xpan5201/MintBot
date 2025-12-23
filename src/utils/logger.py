@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import warnings
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -76,6 +77,16 @@ def _env_flag(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.lower() not in {"0", "false", "no", "off"}
+
+
+def _configure_warning_filters() -> None:
+    """Suppress known noisy warnings without hiding actionable errors."""
+    # pydub: ffmpeg/avconv missing warning is expected in our default setup; torchaudio will be used.
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*Couldn't find ffmpeg or avconv.*",
+        category=RuntimeWarning,
+    )
 
 
 @dataclass
@@ -417,6 +428,7 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
         )
         if cfg.capture_warnings:
             logging.captureWarnings(True)
+            _configure_warning_filters()
 
         set_library_log_levels({name: cfg.quiet_level for name in cfg.quiet_libs})
         return _LegacyLoggerAdapter(_loguru_base.bind(logger_name="mintchat"))

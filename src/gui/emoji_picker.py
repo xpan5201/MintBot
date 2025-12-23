@@ -36,26 +36,19 @@ from PyQt6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QLineEdit,
     QFileDialog,
-    QGraphicsOpacityEffect,
-    QToolButton,
 )
 from PyQt6.QtCore import (
     Qt,
     pyqtSignal,
     QPropertyAnimation,
-    QEasingCurve,
     pyqtProperty,
-    QParallelAnimationGroup,
-    QSequentialAnimationGroup,
     QSize,
 )
-from PyQt6.QtGui import QFont, QColor, QPixmap, QMovie, QIcon, QImageReader
+from PyQt6.QtGui import QColor, QPixmap, QMovie, QIcon, QImageReader
 from pathlib import Path
-from typing import Optional, List, Dict
-import json
+from typing import Optional, Dict
 from functools import lru_cache
 
-from .material_design_light import MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION
 from .material_design_enhanced import (
     MD3_ENHANCED_COLORS,
     MD3_ENHANCED_SPACING,
@@ -63,7 +56,6 @@ from .material_design_enhanced import (
     MD3_ENHANCED_DURATION,
     MD3_ENHANCED_EASING,
     get_typography_css,
-    get_elevation_shadow,
 )
 from .material_icons import MaterialIconButton, MaterialIcon
 
@@ -1282,7 +1274,7 @@ class EmojiPicker(QWidget):
             # 空状态图标 - 更大更醒目
             empty_icon = QLabel("🖼️")
             empty_icon.setStyleSheet(
-                f"""
+                """
                 QLabel {{
                     font-size: 80px;
                     background: transparent;

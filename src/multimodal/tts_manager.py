@@ -178,8 +178,6 @@ class TTSManager:
         if not text:
             return ""
 
-        original = text
-
         # 去除零宽字符和不可见控制符
         for ch in ("\u200b", "\u200c", "\u200d"):
             text = text.replace(ch, "")

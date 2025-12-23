@@ -9,7 +9,7 @@
 - 事务支持
 - 性能监控
 
-依赖: aiosqlite (需要安装: pip install aiosqlite)
+依赖: aiosqlite (需要安装: uv pip install aiosqlite)
 """
 
 import asyncio

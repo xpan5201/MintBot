@@ -55,7 +55,7 @@ def demo_image_analysis():
             print("提示：请替换为实际的图像路径")
 
     except ImportError:
-        print("⚠️  需要安装 langchain-openai: pip install langchain-openai")
+        print("⚠️  需要安装依赖 langchain-openai，请先执行: uv sync --locked --no-install-project")
     except Exception as e:
         print(f"❌ 图像分析失败: {e}")
 
@@ -85,7 +85,7 @@ def demo_ocr():
             print("提示：请替换为实际的图像路径")
 
     except ImportError:
-        print("⚠️  需要安装 langchain-openai: pip install langchain-openai")
+        print("⚠️  需要安装依赖 langchain-openai，请先执行: uv sync --locked --no-install-project")
     except Exception as e:
         print(f"❌ OCR 失败: {e}")
 

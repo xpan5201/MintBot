@@ -17,7 +17,7 @@ import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from pathlib import Path

@@ -15,7 +15,6 @@ import asyncio
 from pathlib import Path
 from typing import Optional, Dict, Tuple
 from PIL import Image
-import io
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -272,7 +271,7 @@ if __name__ == "__main__":
                 print(f"缩略图生成成功: {thumbnail.size}")
 
             # 测试缓存
-            image2 = await loader.load_image(test_image)  # 应该命中缓存
+            await loader.load_image(test_image)  # 应该命中缓存
 
             # 获取统计
             stats = loader.get_stats()
@@ -283,5 +282,4 @@ if __name__ == "__main__":
 
     # 运行测试
     asyncio.run(test())
-
 

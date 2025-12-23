@@ -1,3 +1,5 @@
-cd /d D:\MintChat
-call conda activate mintchat
-D:\Users\xpan5201\anaconda3\envs\mintchat\python.exe MintChat.py
+@echo off
+REM MintChat GUI launcher alias (Windows)
+
+call "%~dp0MintChat.bat"
+

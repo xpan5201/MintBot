@@ -6,7 +6,7 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-    QSlider, QFrame
+    QSlider
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -199,4 +199,3 @@ class VoiceControlPanel(QWidget):
     def set_top_k(self, top_k: int):
         """设置Top-k"""
         self.top_k_slider.setValue(top_k)
-

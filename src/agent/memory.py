@@ -7,10 +7,13 @@
 from __future__ import annotations
 
 from collections import deque
+import hashlib
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock
+import time
+from uuid import uuid4
 from typing import Any, Deque, Dict, Iterable, List, Optional, Sequence, TypedDict, Literal
 
 from src.config.settings import settings
@@ -20,8 +23,11 @@ from src.utils.chroma_helper import create_chroma_vectorstore, get_collection_co
 logger = get_logger(__name__)
 
 # 轻量消息结构：避免短期记忆依赖 LangChain 消息类型，提升启动速度与兼容性
+_ChatRole = Literal["user", "assistant", "system"]
+
+
 class _ChatMessage(TypedDict):
-    role: Literal["user", "assistant", "system"]
+    role: _ChatRole
     content: str
 
 
@@ -104,8 +110,8 @@ class ShortTermMemory:
         self.messages: Deque[_ChatMessage] = deque(maxlen=maxlen)
         self._lock = Lock()
         self._version = 0
-        self._cached_dicts_version = -1
-        self._cached_dicts: Optional[tuple[Dict[str, str], ...]] = None
+        self._cached_pairs_version = -1
+        self._cached_pairs: Optional[tuple[tuple[_ChatRole, str], ...]] = None
         logger.info("短期记忆初始化完成，保留最近 %d 条消息", k)
 
     @property
@@ -146,8 +152,19 @@ class ShortTermMemory:
         with self._lock:
             self.messages.extend(pending)
             self._version += 1
-            self._cached_dicts_version = -1
-            self._cached_dicts = None
+            self._cached_pairs_version = -1
+            self._cached_pairs = None
+
+    def _get_pairs_snapshot(self) -> tuple[tuple[_ChatRole, str], ...]:
+        with self._lock:
+            cached = self._cached_pairs
+            if cached is not None and self._cached_pairs_version == self._version:
+                return cached
+
+            built = tuple((item["role"], item["content"]) for item in self.messages)
+            self._cached_pairs = built
+            self._cached_pairs_version = self._version
+            return built
 
     def get_messages(self) -> List[_ChatMessage]:
         """
@@ -156,8 +173,8 @@ class ShortTermMemory:
         Returns:
             List[_ChatMessage]: 消息列表
         """
-        with self._lock:
-            return list(self.messages)
+        pairs = self._get_pairs_snapshot()
+        return [{"role": role, "content": content} for role, content in pairs]
 
     def get_messages_as_dict(self) -> List[Dict[str, str]]:
         """
@@ -166,29 +183,69 @@ class ShortTermMemory:
         Returns:
             List[Dict[str, str]]: 消息列表
         """
-        with self._lock:
-            cached = self._cached_dicts
-            if cached is not None and self._cached_dicts_version == self._version:
-                return list(cached)
-
-            # 每条消息仅包含 role/content 两个字段：构造一次并缓存，减少重复分配。
-            built = tuple({"role": item["role"], "content": item["content"]} for item in self.messages)
-            self._cached_dicts = built
-            self._cached_dicts_version = self._version
-            return list(built)
+        pairs = self._get_pairs_snapshot()
+        # 返回新 dict，避免调用方误改缓存/内部状态导致难以排查的问题。
+        return [{"role": role, "content": content} for role, content in pairs]
 
     def clear(self) -> None:
         """清空短期记忆"""
         with self._lock:
             self.messages.clear()
             self._version += 1
-            self._cached_dicts_version = -1
-            self._cached_dicts = None
+            self._cached_pairs_version = -1
+            self._cached_pairs = None
         logger.info("短期记忆已清空")
 
 
 class LongTermMemory:
     """长期记忆管理器 (v3.3.2: 性能优化)"""
+
+    @staticmethod
+    def _compute_content_hash(content: str) -> str:
+        """生成稳定内容指纹（用于持久化去重/检索去重）。"""
+        normalized = "".join(str(content).split()).lower()
+        return hashlib.md5(normalized.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _parse_timestamp_to_unix(timestamp: str) -> Optional[float]:
+        """Parse ISO timestamp string into unix seconds (supports trailing 'Z')."""
+        if not isinstance(timestamp, str):
+            return None
+        ts = timestamp.strip()
+        if not ts:
+            return None
+        if ts.endswith("Z"):
+            ts = ts[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(ts).timestamp()
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _ensure_timestamp_unix(
+        metadata: Dict[str, Any],
+        *,
+        fallback_unix: Optional[float] = None,
+    ) -> None:
+        """确保 metadata 中存在数值型 timestamp_unix（epoch seconds）。"""
+        existing = metadata.get("timestamp_unix")
+        if isinstance(existing, (int, float)):
+            return
+        if isinstance(existing, str):
+            try:
+                metadata["timestamp_unix"] = float(existing)
+                return
+            except ValueError:
+                pass
+
+        timestamp = metadata.get("timestamp")
+        if isinstance(timestamp, str) and timestamp:
+            parsed = LongTermMemory._parse_timestamp_to_unix(timestamp)
+            if parsed is not None:
+                metadata["timestamp_unix"] = parsed
+                return
+
+        metadata["timestamp_unix"] = float(fallback_unix if fallback_unix is not None else time.time())
 
     def __init__(
         self,
@@ -221,7 +278,24 @@ class LongTermMemory:
         # v3.3.2: 批量操作缓冲区（线程安全）
         self._batch_buffer: List[Dict[str, Any]] = []
         self._batch_buffer_lock = Lock()  # 保护批量缓冲区的锁
-        self._batch_size = 10  # 每10条记忆批量写入一次
+        self._batch_size = max(
+            1,
+            int(getattr(getattr(settings, "agent", object()), "long_term_batch_size", 10)),
+        )
+        # 定时刷新（避免长期运行时“少量缓冲”一直不落盘）
+        self._batch_flush_interval_s = max(
+            0.0,
+            float(
+                getattr(
+                    getattr(settings, "agent", object()),
+                    "long_term_batch_flush_interval_s",
+                    30.0,
+                )
+            ),
+        )
+        self._last_batch_flush_mono = time.monotonic()
+        # 写入版本号：用于检索缓存失效（只在向量库实际写入成功后递增）
+        self._write_version = 0
         # 底层向量库（Chroma/SQLite）在并发读写下可能出现锁冲突或不稳定：用锁串行化访问更稳
         self._vectorstore_lock = Lock()
 
@@ -264,8 +338,16 @@ class LongTermMemory:
         if metadata is None:
             metadata = {}
 
-        # 添加时间戳
-        metadata["timestamp"] = datetime.now().isoformat()
+        # 添加时间戳（保留调用方传入的 timestamp）
+        timestamp = metadata.get("timestamp")
+        if not isinstance(timestamp, str) or not timestamp:
+            now_unix = time.time()
+            metadata["timestamp_unix"] = float(now_unix)
+            metadata["timestamp"] = datetime.fromtimestamp(now_unix).isoformat()
+        else:
+            self._ensure_timestamp_unix(metadata)
+        # 追加内容指纹（用于跨进程/跨会话去重与统计）
+        metadata.setdefault("content_hash", self._compute_content_hash(content))
 
         # v3.3.2: 批量模式 - 添加到缓冲区（线程安全）
         if batch:
@@ -274,7 +356,12 @@ class LongTermMemory:
             with self._batch_buffer_lock:
                 self._batch_buffer.append({"content": content, "metadata": metadata})
                 # 达到批量大小时自动提交
-                if len(self._batch_buffer) >= self._batch_size:
+                now_mono = time.monotonic()
+                due_by_time = (
+                    self._batch_flush_interval_s > 0
+                    and (now_mono - self._last_batch_flush_mono) >= self._batch_flush_interval_s
+                )
+                if len(self._batch_buffer) >= self._batch_size or due_by_time:
                     # 在锁外调用flush_batch，避免死锁
                     buffer_to_flush = self._batch_buffer.copy()
                     self._batch_buffer.clear()
@@ -289,6 +376,8 @@ class LongTermMemory:
                             texts=contents,
                             metadatas=metadatas,
                         )
+                        self._write_version += len(buffer_to_flush)
+                    self._last_batch_flush_mono = time.monotonic()
                     logger.info("批量添加了 %d 条记忆", len(buffer_to_flush))
                 except Exception as e:
                     logger.error("批量添加记忆失败: %s", e)
@@ -304,6 +393,7 @@ class LongTermMemory:
                     texts=[content],
                     metadatas=[metadata],
                 )
+                self._write_version += 1
 
             # v2.26.0: ChromaDB 0.4.0+ 自动持久化，无需手动调用 persist()
             # ChromaDB 会自动将所有写入操作持久化到磁盘
@@ -342,9 +432,16 @@ class LongTermMemory:
         if not metadata_list:
             metadata_list = [{} for _ in texts]
 
-        timestamp = datetime.now().isoformat()
-        for meta in metadata_list:
-            meta.setdefault("timestamp", timestamp)
+        now_unix = time.time()
+        now_iso = datetime.fromtimestamp(now_unix).isoformat()
+        for text, meta in zip(texts, metadata_list):
+            timestamp = meta.get("timestamp")
+            if not isinstance(timestamp, str) or not timestamp:
+                meta["timestamp"] = now_iso
+                meta.setdefault("timestamp_unix", float(now_unix))
+            else:
+                self._ensure_timestamp_unix(meta, fallback_unix=now_unix)
+            meta.setdefault("content_hash", self._compute_content_hash(text))
 
         try:
             with self._vectorstore_lock:
@@ -352,6 +449,7 @@ class LongTermMemory:
                     texts=texts,
                     metadatas=metadata_list,
                 )
+                self._write_version += len(texts)
             logger.info("批量添加了 %d 条记忆", len(texts))
             return len(texts)
         except Exception as e:
@@ -386,12 +484,14 @@ class LongTermMemory:
                     texts=contents,
                     metadatas=metadatas,
                 )
+                self._write_version += len(buffer_to_flush)
 
             # v2.26.0: ChromaDB 0.4.0+ 自动持久化，无需手动调用 persist()
             # ChromaDB 会自动将所有写入操作持久化到磁盘
             logger.debug("批量记忆已添加（自动持久化）")
 
             count = len(buffer_to_flush)
+            self._last_batch_flush_mono = time.monotonic()
             logger.info("批量添加了 %d 条记忆", count)
             return count
 
@@ -401,6 +501,362 @@ class LongTermMemory:
             with self._batch_buffer_lock:
                 self._batch_buffer = buffer_to_flush + self._batch_buffer
             return 0
+
+    def export_records(
+        self,
+        *,
+        include_embeddings: bool = False,
+        batch_size: int = 500,
+    ) -> Dict[str, Any]:
+        """
+        导出长期记忆（不包含向量，默认仅 documents + metadatas + ids）。
+
+        Returns:
+            Dict[str, Any]:
+                {
+                  "collection_name": str,
+                  "count": int,
+                  "items": [{"id": str, "content": str, "metadata": dict}, ...],
+                }
+        """
+        if self.vectorstore is None:
+            return {"collection_name": self.collection_name, "count": 0, "items": []}
+
+        # 导出前尽量落盘缓冲区，避免“导出文件缺少最近记忆”
+        try:
+            self.flush_batch()
+        except Exception as e:
+            logger.debug("导出前刷新批量缓冲区失败（可忽略）: %s", e)
+
+        try:
+            collection = getattr(self.vectorstore, "_collection", None)
+            if collection is None:
+                logger.warning("长期记忆向量库不支持导出（缺少 _collection）")
+                return {"collection_name": self.collection_name, "count": 0, "items": []}
+
+            total = int(collection.count())
+            include = ["documents", "metadatas", "ids"]
+            if include_embeddings:
+                include.append("embeddings")
+
+            items: List[Dict[str, Any]] = []
+            batch_size = max(1, int(batch_size))
+            now_unix = time.time()
+
+            for offset in range(0, total, batch_size):
+                chunk = collection.get(
+                    include=include,
+                    limit=batch_size,
+                    offset=offset,
+                )
+
+                ids = chunk.get("ids") or []
+                documents = chunk.get("documents") or []
+                metadatas = chunk.get("metadatas") or []
+
+                for doc_id, content, metadata in zip(ids, documents, metadatas):
+                    if not content:
+                        continue
+                    meta = dict(metadata or {})
+                    meta.setdefault("content_hash", self._compute_content_hash(content))
+                    self._ensure_timestamp_unix(meta, fallback_unix=now_unix)
+                    items.append(
+                        {
+                            "id": str(doc_id),
+                            "content": content,
+                            "metadata": meta,
+                        }
+                    )
+
+            return {
+                "collection_name": self.collection_name,
+                "count": total,
+                "items": items,
+            }
+        except TypeError:
+            # 兼容少数旧版 chromadb：get() 不支持 offset/limit
+            try:
+                collection = getattr(self.vectorstore, "_collection", None)
+                if collection is None:
+                    return {"collection_name": self.collection_name, "count": 0, "items": []}
+                chunk = collection.get(include=["documents", "metadatas", "ids"])
+                ids = chunk.get("ids") or []
+                documents = chunk.get("documents") or []
+                metadatas = chunk.get("metadatas") or []
+                items = []
+                now_unix = time.time()
+                for doc_id, content, metadata in zip(ids, documents, metadatas):
+                    if not content:
+                        continue
+                    meta = dict(metadata or {})
+                    meta.setdefault("content_hash", self._compute_content_hash(content))
+                    self._ensure_timestamp_unix(meta, fallback_unix=now_unix)
+                    items.append({"id": str(doc_id), "content": content, "metadata": meta})
+                return {
+                    "collection_name": self.collection_name,
+                    "count": len(items),
+                    "items": items,
+                }
+            except Exception as e:
+                logger.warning("导出长期记忆失败（兼容路径）: %s", e)
+                return {"collection_name": self.collection_name, "count": 0, "items": []}
+        except Exception as e:
+            logger.exception("导出长期记忆失败: %s", e)
+            return {"collection_name": self.collection_name, "count": 0, "items": []}
+
+    def import_records(
+        self,
+        records: Sequence[Dict[str, Any]],
+        *,
+        overwrite: bool = False,
+        batch_size: int = 128,
+    ) -> int:
+        """
+        导入长期记忆（不导入向量，写入时会重新生成 embedding）。
+
+        Args:
+            records: 形如 export_records()["items"] 的列表
+            overwrite: True 时会清空现有长期记忆再导入，并尽量保留原 id；False 时不清空且忽略原 id
+
+        Returns:
+            int: 成功导入的条数
+        """
+        if self.vectorstore is None:
+            logger.warning("向量数据库未初始化，无法导入长期记忆")
+            return 0
+
+        if not records:
+            return 0
+
+        if overwrite:
+            self.clear()
+            if self.vectorstore is None:
+                logger.warning("清空后向量库初始化失败，无法导入长期记忆")
+                return 0
+
+        texts: List[str] = []
+        metadatas: List[Dict[str, Any]] = []
+        ids: List[str] = []
+
+        now_unix = time.time()
+        now_iso = datetime.fromtimestamp(now_unix).isoformat()
+        for item in records:
+            content = (item or {}).get("content")
+            if not content:
+                continue
+            metadata = dict((item or {}).get("metadata") or {})
+            timestamp = metadata.get("timestamp")
+            if not isinstance(timestamp, str) or not timestamp:
+                metadata["timestamp"] = now_iso
+                metadata.setdefault("timestamp_unix", float(now_unix))
+            else:
+                self._ensure_timestamp_unix(metadata, fallback_unix=now_unix)
+            metadata.setdefault("content_hash", self._compute_content_hash(content))
+
+            if overwrite:
+                ids.append(str((item or {}).get("id") or uuid4().hex))
+            else:
+                original_id = (item or {}).get("id")
+                if original_id:
+                    metadata.setdefault("original_id", str(original_id))
+
+            texts.append(content)
+            metadatas.append(metadata)
+
+        if not texts:
+            return 0
+
+        imported = 0
+        batch_size = max(1, int(batch_size))
+
+        for idx in range(0, len(texts), batch_size):
+            chunk_texts = texts[idx: idx + batch_size]
+            chunk_metas = metadatas[idx: idx + batch_size]
+            try:
+                with self._vectorstore_lock:
+                    if overwrite:
+                        chunk_ids = ids[idx: idx + batch_size]
+                        self.vectorstore.add_texts(
+                            texts=chunk_texts,
+                            metadatas=chunk_metas,
+                            ids=chunk_ids,
+                        )
+                    else:
+                        self.vectorstore.add_texts(
+                            texts=chunk_texts,
+                            metadatas=chunk_metas,
+                        )
+                    self._write_version += len(chunk_texts)
+                imported += len(chunk_texts)
+            except Exception as e:
+                logger.warning("导入长期记忆批次失败（idx=%d）: %s", idx, e)
+
+        if imported:
+            logger.info("导入长期记忆完成: %d 条 (overwrite=%s)", imported, overwrite)
+        return imported
+
+    def prune(
+        self,
+        *,
+        max_items: Optional[int] = None,
+        max_age_days: Optional[int] = None,
+        preserve_importance_above: float = 0.85,
+        dry_run: bool = True,
+        batch_size: int = 500,
+    ) -> Dict[str, Any]:
+        """
+        清理/裁剪长期记忆（默认 dry_run，不会真正删除）。
+
+        规则（安全优先）：
+        - max_age_days: 删除超过指定天数且 importance < preserve_importance_above 的记忆
+        - max_items: 在保护高重要性记忆的前提下，将总量裁剪到 max_items
+
+        Returns:
+            Dict[str, Any]: 清理统计信息
+        """
+        if self.vectorstore is None:
+            return {
+                "dry_run": dry_run,
+                "total_before": 0,
+                "deleted": 0,
+                "protected": 0,
+                "would_delete_ids": [],
+            }
+
+        # 先落盘缓冲区，避免“删错/漏删”
+        try:
+            self.flush_batch()
+        except Exception as e:
+            logger.debug("prune 前刷新批量缓冲区失败（可忽略）: %s", e)
+
+        collection = getattr(self.vectorstore, "_collection", None)
+        if collection is None or not hasattr(collection, "get") or not hasattr(collection, "count"):
+            return {
+                "dry_run": dry_run,
+                "total_before": 0,
+                "deleted": 0,
+                "protected": 0,
+                "would_delete_ids": [],
+            }
+
+        now_unix = time.time()
+        preserve_importance_above = min(1.0, max(0.0, float(preserve_importance_above)))
+
+        protected_ids: set[str] = set()
+        ids_to_delete: set[str] = set()
+        candidates: list[tuple[str, Optional[float], float]] = []
+        total_before = 0
+
+        cutoff_unix: Optional[float] = None
+        if max_age_days is not None:
+            max_age_days = max(0, int(max_age_days))
+            cutoff_unix = now_unix - float(max_age_days) * 86400.0
+
+        def _iter_id_meta() -> Iterable[tuple[str, Dict[str, Any]]]:
+            include = ["metadatas", "ids"]
+            try:
+                total = int(collection.count())
+                step = max(1, int(batch_size))
+                for offset in range(0, total, step):
+                    chunk = collection.get(include=include, limit=step, offset=offset)
+                    ids = chunk.get("ids") or []
+                    metadatas = chunk.get("metadatas") or []
+                    for doc_id, meta in zip(ids, metadatas):
+                        yield str(doc_id), dict(meta or {})
+            except TypeError:
+                chunk = collection.get(include=include)
+                ids = chunk.get("ids") or []
+                metadatas = chunk.get("metadatas") or []
+                for doc_id, meta in zip(ids, metadatas):
+                    yield str(doc_id), dict(meta or {})
+
+        for doc_id, meta in _iter_id_meta():
+            if not doc_id:
+                continue
+            total_before += 1
+
+            importance = float(meta.get("importance", 0.5) or 0.5)
+            is_protected = importance >= preserve_importance_above
+            if is_protected:
+                protected_ids.add(doc_id)
+
+            ts_unix: Optional[float] = None
+            ts_unix_raw = meta.get("timestamp_unix")
+            if isinstance(ts_unix_raw, (int, float)):
+                ts_unix = float(ts_unix_raw)
+            elif isinstance(ts_unix_raw, str):
+                try:
+                    ts_unix = float(ts_unix_raw)
+                except ValueError:
+                    ts_unix = None
+
+            if ts_unix is None:
+                ts = meta.get("timestamp")
+                if isinstance(ts, str) and ts:
+                    ts_unix = self._parse_timestamp_to_unix(ts)
+
+            # 1) 按年龄裁剪（仅删除低重要性）
+            if (cutoff_unix is not None) and (not is_protected):
+                if ts_unix is not None and ts_unix < cutoff_unix:
+                    ids_to_delete.add(doc_id)
+                    continue
+
+            # 2) 按数量裁剪（保护高重要性）
+            if max_items is not None and not is_protected:
+                candidates.append((doc_id, ts_unix, importance))
+
+        if total_before == 0:
+            return {
+                "dry_run": dry_run,
+                "total_before": 0,
+                "deleted": 0,
+                "protected": 0,
+                "would_delete_ids": [],
+            }
+
+        if max_items is not None:
+            import heapq
+
+            max_items = max(0, int(max_items))
+            protected_count = len(protected_ids)
+            allowance = max(max_items - protected_count, 0)
+
+            def _sort_key(item_tuple: tuple[str, Optional[float], float]) -> tuple[float, float]:
+                _, ts_unix, importance = item_tuple
+                return (importance, float(ts_unix or 0.0))
+
+            if allowance == 0:
+                ids_to_delete.update({doc_id for doc_id, _, _ in candidates})
+            elif candidates:
+                keep = heapq.nlargest(allowance, candidates, key=_sort_key)
+                keep_ids = {doc_id for doc_id, _, _ in keep}
+                for doc_id, _, _ in candidates:
+                    if doc_id not in keep_ids:
+                        ids_to_delete.add(doc_id)
+
+        # 真正删除（分批，避免一次性 ids 过多）
+        deleted = 0
+        if ids_to_delete and not dry_run:
+            collection = getattr(self.vectorstore, "_collection", None)
+            if collection is None or not hasattr(collection, "delete"):
+                logger.warning("长期记忆向量库不支持 delete，无法执行 prune")
+            else:
+                delete_ids = list(ids_to_delete)
+                for offset in range(0, len(delete_ids), batch_size):
+                    chunk = delete_ids[offset: offset + batch_size]
+                    with self._vectorstore_lock:
+                        collection.delete(ids=chunk)
+                        self._write_version += 1  # 删除也会改变检索结果，触发缓存失效
+                    deleted += len(chunk)
+
+        return {
+            "dry_run": dry_run,
+            "total_before": total_before,
+            "deleted": deleted if not dry_run else 0,
+            "protected": len(protected_ids),
+            "would_delete": len(ids_to_delete),
+            "would_delete_ids": sorted(ids_to_delete)[:200],
+        }
 
     def search_memories(
         self,
@@ -434,9 +890,11 @@ class LongTermMemory:
                     filter=filter_dict,
                 )
 
-            now = datetime.now()
+            now_unix = time.time()
             memories = []
             for doc, score in results:
+                metadata = dict(getattr(doc, "metadata", None) or {})
+                metadata.setdefault("content_hash", self._compute_content_hash(doc.page_content))
                 # v3.3: 计算相似度（ChromaDB的score越小越相似）
                 similarity = 1.0 / (1.0 + score)  # 转换为0-1之间的相似度
 
@@ -445,20 +903,36 @@ class LongTermMemory:
                     continue
 
                 # v3.3: 时间衰减（最近的记忆更重要）
-                timestamp = doc.metadata.get("timestamp")
                 recency_score = 1.0
-                if timestamp:
+                mem_ts_unix: Optional[float] = None
+                ts_unix_raw = metadata.get("timestamp_unix")
+                if isinstance(ts_unix_raw, (int, float)):
+                    mem_ts_unix = float(ts_unix_raw)
+                elif isinstance(ts_unix_raw, str):
                     try:
-                        mem_time = datetime.fromisoformat(timestamp)
-                        age_days = (now - mem_time).days
-                        # 30天内的记忆不衰减，之后逐渐衰减
-                        recency_score = max(0.5, 1.0 - (age_days - 30) / 365.0) if age_days > 30 else 1.0
-                    except (ValueError, TypeError) as e:
-                        logger.debug("解析时间戳失败: %s", e)
-                        pass
+                        mem_ts_unix = float(ts_unix_raw)
+                        metadata["timestamp_unix"] = mem_ts_unix
+                    except ValueError:
+                        mem_ts_unix = None
+
+                if mem_ts_unix is None:
+                    timestamp = metadata.get("timestamp")
+                    if isinstance(timestamp, str) and timestamp:
+                        parsed = self._parse_timestamp_to_unix(timestamp)
+                        if parsed is not None:
+                            mem_ts_unix = parsed
+                            metadata["timestamp_unix"] = mem_ts_unix
+                        else:
+                            logger.debug("解析时间戳失败: %s", timestamp)
+                            mem_ts_unix = None
+
+                if mem_ts_unix is not None:
+                    age_days = max(0.0, (now_unix - mem_ts_unix) / 86400.0)
+                    # 30天内的记忆不衰减，之后逐渐衰减
+                    recency_score = max(0.5, 1.0 - (age_days - 30) / 365.0) if age_days > 30 else 1.0
 
                 # v3.3: 重要性加权
-                importance = doc.metadata.get("importance", 0.5)
+                importance = metadata.get("importance", 0.5)
 
                 # v3.3: 综合评分 = 相似度(60%) + 时间性(20%) + 重要性(20%)
                 final_score = (
@@ -469,7 +943,7 @@ class LongTermMemory:
 
                 memories.append({
                     "content": doc.page_content,
-                    "metadata": doc.metadata,
+                    "metadata": metadata,
                     "score": score,  # 原始分数
                     "similarity": similarity,  # 相似度
                     "recency_score": recency_score,  # 时间性
@@ -527,6 +1001,11 @@ class LongTermMemory:
             logger.debug("无法获取记忆数量: %s", e)
             return 0
 
+    @property
+    def write_version(self) -> int:
+        """长期记忆写入版本号（仅在向量库写入成功后递增）。"""
+        return int(getattr(self, "_write_version", 0))
+
     def clear(self) -> None:
         """清空长期记忆"""
         if self.vectorstore is None:
@@ -534,17 +1013,24 @@ class LongTermMemory:
             return
 
         try:
+            # clear 表示显式丢弃未落盘的批量缓冲区
+            with self._batch_buffer_lock:
+                self._batch_buffer.clear()
+            self._last_batch_flush_mono = time.monotonic()
+
             # 删除集合并重新创建
-            self.vectorstore.delete_collection()
-            self.vectorstore = create_chroma_vectorstore(
-                collection_name=self.collection_name,
-                persist_directory=str(self.persist_directory),
-                use_local_embedding=settings.use_local_embedding,
-                enable_cache=settings.enable_embedding_cache,
-            )
+            with self._vectorstore_lock:
+                self.vectorstore.delete_collection()
+                self.vectorstore = create_chroma_vectorstore(
+                    collection_name=self.collection_name,
+                    persist_directory=str(self.persist_directory),
+                    use_local_embedding=settings.use_local_embedding,
+                    enable_cache=settings.enable_embedding_cache,
+                )
             if self.vectorstore is None:
                 logger.error("长期记忆已删除，但向量库重新初始化失败")
             else:
+                self._write_version += 1
                 logger.info("长期记忆已清空")
         except Exception as e:
             logger.error("清空长期记忆失败: %s", e)
@@ -600,11 +1086,13 @@ class MemoryManager:
         )
 
         if self.enable_optimizer and MEMORY_OPTIMIZER_AVAILABLE:
+            dedup_max_hashes = int(getattr(getattr(settings, "agent", object()), "memory_dedup_max_hashes", 50_000))
             self.optimizer = MemoryOptimizer(
                 enable_cache=True,
                 enable_deduplication=True,
                 enable_consolidation=True,
                 enable_character_scoring=True,
+                dedup_max_hashes=dedup_max_hashes,
                 user_id=user_id,
             )
             logger.info("记忆优化器已启用")
@@ -684,9 +1172,10 @@ class MemoryManager:
                 content_hash: Optional[str] = None
                 if deduplicator:
                     content_hash = deduplicator.get_content_hash(interaction)
-                    if content_hash in deduplicator.seen_hashes:
+                    if deduplicator.contains_hash(content_hash):
                         logger.debug("跳过重复记忆: %.30s...", interaction)
                         return
+                    metadata["content_hash"] = content_hash
 
                 # 直接添加到长期记忆（延迟角色一致性评分）
                 stored = self.long_term.add_memory(
@@ -695,7 +1184,7 @@ class MemoryManager:
                     batch=True,
                 )
                 if stored and deduplicator and content_hash:
-                    deduplicator.seen_hashes.add(content_hash)
+                    deduplicator.add_hash(content_hash)
 
                 # 更新统计
                 self.optimizer.stats["total_memories_processed"] += 1
@@ -820,7 +1309,9 @@ class MemoryManager:
         k = k or settings.long_term_memory_top_k
 
         # v3.3: 智能缓存键（考虑语义相似性）
-        cache_key = query.strip().lower()[:100]  # 标准化查询
+        # 将长期记忆写入版本纳入 key，避免写入后命中旧缓存导致“找不到新记忆”
+        lt_version = getattr(getattr(self, "long_term", None), "write_version", 0)
+        cache_key = f"{query.strip().lower()[:100]}|v{lt_version}"  # 标准化查询
 
         # v3.2.1: 优化性能 - 先检查缓存
         if self.optimizer and self.optimizer.cache:
@@ -840,11 +1331,13 @@ class MemoryManager:
             seen_contents = set()
 
             for mem in memories:
-                # 简单的内容指纹（前50字符）
-                content_fingerprint = mem["content"][:50].strip()
-                if content_fingerprint not in seen_contents:
+                meta = mem.get("metadata", {}) or {}
+                content_hash = meta.get("content_hash")
+                if not content_hash:
+                    content_hash = LongTermMemory._compute_content_hash(mem.get("content", ""))
+                if content_hash and content_hash not in seen_contents:
                     unique_memories.append(mem)
-                    seen_contents.add(content_fingerprint)
+                    seen_contents.add(content_hash)
 
             memories = unique_memories
             logger.debug("去重后保留 %d 条记忆", len(memories))
@@ -860,15 +1353,32 @@ class MemoryManager:
                 content = self.long_term.summarize_memory(content, max_length=400)
 
             # v3.3: 添加时间上下文
-            timestamp = metadata.get("timestamp")
-            if timestamp:
+            mem_time: Optional[datetime] = None
+            ts_unix_raw = metadata.get("timestamp_unix")
+            if isinstance(ts_unix_raw, (int, float)):
+                mem_time = datetime.fromtimestamp(float(ts_unix_raw))
+            elif isinstance(ts_unix_raw, str):
                 try:
-                    mem_time = datetime.fromisoformat(timestamp)
-                    time_desc = self._get_time_description(mem_time)
-                    content = f"[{time_desc}] {content}"
-                except (ValueError, TypeError) as e:
-                    logger.debug("解析时间戳失败: %s", e)
-                    pass
+                    ts_unix_val = float(ts_unix_raw)
+                    metadata["timestamp_unix"] = ts_unix_val
+                    mem_time = datetime.fromtimestamp(ts_unix_val)
+                except ValueError:
+                    mem_time = None
+
+            if mem_time is None:
+                timestamp = metadata.get("timestamp")
+                if isinstance(timestamp, str) and timestamp:
+                    parsed = LongTermMemory._parse_timestamp_to_unix(timestamp)
+                    if parsed is not None:
+                        metadata["timestamp_unix"] = parsed
+                        mem_time = datetime.fromtimestamp(parsed)
+                    else:
+                        logger.debug("解析时间戳失败: %s", timestamp)
+                        mem_time = None
+
+            if mem_time is not None:
+                time_desc = self._get_time_description(mem_time)
+                content = f"[{time_desc}] {content}"
 
             # v3.3: 添加重要性标记
             importance = metadata.get("importance", 0.5)
@@ -878,7 +1388,8 @@ class MemoryManager:
             enhanced_memories.append(content)
 
         # v3.2.1: 缓存结果
-        if self.optimizer and memories:
+        # 允许缓存空结果：cache_key 已包含 long_term.write_version，因此写入后会自动失效
+        if self.optimizer and self.optimizer.cache is not None:
             memory_dicts = [
                 {
                     "content": content,
@@ -887,8 +1398,7 @@ class MemoryManager:
                 for content, mem in zip(enhanced_memories, memories)
             ]
 
-            if self.optimizer.cache:
-                self.optimizer.cache.set_query_result(cache_key, memory_dicts)
+            self.optimizer.cache.set_query_result(cache_key, memory_dicts)
 
         return enhanced_memories
 
@@ -968,10 +1478,11 @@ class MemoryManager:
                     }
                     if deduplicator:
                         content_hash = deduplicator.get_content_hash(content)
-                        if content_hash in deduplicator.seen_hashes:
+                        if deduplicator.contains_hash(content_hash):
                             i += 2
                             continue
                         pending_hashes.append(content_hash)
+                        metadata["content_hash"] = content_hash
                     contents.append(content)
                     metadatas.append(metadata)
 
@@ -984,7 +1495,7 @@ class MemoryManager:
 
         consolidated_count = self.long_term.add_memories(contents, metadatas)
         if consolidated_count == len(contents) and deduplicator and pending_hashes:
-            deduplicator.seen_hashes.update(pending_hashes)
+            deduplicator.add_hashes(pending_hashes)
 
         if consolidated_count > 0:
             logger.info("巩固了 %d 条重要记忆到长期存储", consolidated_count)
@@ -1048,15 +1559,21 @@ class MemoryManager:
                 # v3.3.2: 批量缓冲区状态
                 stats["batch_buffer_size"] = len(self.long_term._batch_buffer)
                 stats["batch_threshold"] = self.long_term._batch_size
+                stats["batch_flush_interval_s"] = getattr(self.long_term, "_batch_flush_interval_s", 0.0)
+                stats["long_term_write_version"] = getattr(self.long_term, "write_version", 0)
             except (AttributeError, RuntimeError) as e:
                 logger.debug("获取长期记忆统计失败: %s", e)
                 stats["long_term_count"] = "未知"
                 stats["batch_buffer_size"] = 0
                 stats["batch_threshold"] = 0
+                stats["batch_flush_interval_s"] = 0.0
+                stats["long_term_write_version"] = 0
         else:
             stats["long_term_count"] = 0
             stats["batch_buffer_size"] = 0
             stats["batch_threshold"] = 0
+            stats["batch_flush_interval_s"] = 0.0
+            stats["long_term_write_version"] = 0
 
         if self.optimizer:
             optimizer_stats = self.optimizer.get_stats()
@@ -1086,41 +1603,184 @@ class MemoryManager:
         logger.info("所有记忆已清空")
 
     def cleanup_cache(self) -> None:
-        """清理内存缓存 (v2.28.0: 新增内存管理优化)
-
-        清理长期记忆中的嵌入向量缓存，释放内存
         """
-        if self.long_term and hasattr(self.long_term, '_embedding_cache'):
-            cache_size = len(self.long_term._embedding_cache)
-            if cache_size > 0:
-                self.long_term._embedding_cache.clear()
-                logger.info("已清理 %d 个嵌入向量缓存，释放内存", cache_size)
+        清理记忆相关缓存 / 缓冲区。
 
-        # 清理批量缓冲区
-        if self.long_term and hasattr(self.long_term, '_batch_buffer'):
-            # 先刷新缓冲区到数据库
-            if hasattr(self.long_term, 'flush_batch'):
-                try:
-                    flushed_count = self.long_term.flush_batch()
-                    if flushed_count > 0:
-                        logger.info("已刷新 %d 个批量缓冲记忆到数据库", flushed_count)
-                except Exception as e:
-                    logger.warning("刷新批量缓冲区失败: %s", e)
+        - 刷新长期记忆批量缓冲区（避免进程退出导致最近记忆丢失）
+        - 清理 MemoryOptimizer 缓存（降低常驻内存占用）
+        """
+        # 1) 刷新批量缓冲区（更重要：保证数据完整性）
+        if self.long_term:
+            try:
+                flushed_count = self.long_term.flush_batch()
+                if flushed_count > 0:
+                    logger.info("已刷新 %d 个批量缓冲记忆到数据库", flushed_count)
+            except Exception as e:
+                logger.warning("刷新批量缓冲区失败: %s", e)
 
-    def export_memories(self, filepath: Path) -> None:
+        # 2) 清理优化器缓存（可选）
+        if self.optimizer:
+            try:
+                self.optimizer.clear_cache()
+            except Exception as e:
+                logger.debug("清理优化器缓存失败（可忽略）: %s", e)
+
+    def prune_long_term(
+        self,
+        *,
+        max_items: Optional[int] = None,
+        max_age_days: Optional[int] = None,
+        preserve_importance_above: float = 0.85,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """裁剪长期记忆（默认 dry_run，不会真正删除）。"""
+        if not self.long_term:
+            return {
+                "dry_run": dry_run,
+                "total_before": 0,
+                "deleted": 0,
+                "protected": 0,
+                "would_delete": 0,
+                "would_delete_ids": [],
+            }
+
+        return self.long_term.prune(
+            max_items=max_items,
+            max_age_days=max_age_days,
+            preserve_importance_above=preserve_importance_above,
+            dry_run=dry_run,
+        )
+
+    def export_memories(
+        self,
+        filepath: Path,
+        *,
+        include_long_term: bool = True,
+        include_optimizer_stats: bool = False,
+    ) -> None:
         """
         导出记忆到文件
 
         Args:
             filepath: 导出文件路径
+            include_long_term: 是否导出长期记忆（默认 True）
+            include_optimizer_stats: 是否附带优化器统计（默认 False）
         """
-        data = {
-            "short_term": self.get_recent_messages(),
-            "export_time": datetime.now().isoformat(),
-        }
+        data = self.get_export_data(
+            include_long_term=include_long_term,
+            include_optimizer_stats=include_optimizer_stats,
+        )
 
         filepath.parent.mkdir(parents=True, exist_ok=True)
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
         logger.info("记忆已导出到: %s", filepath)
+
+    def get_export_data(
+        self,
+        *,
+        include_long_term: bool = True,
+        include_optimizer_stats: bool = False,
+    ) -> Dict[str, Any]:
+        """获取可序列化的记忆导出数据（不写文件）。"""
+        data: Dict[str, Any] = {
+            "format_version": 2,
+            "user_id": self.user_id,
+            "short_term": self.get_recent_messages(),
+            "export_time": datetime.now().isoformat(),
+        }
+
+        if include_long_term and self.long_term:
+            data["long_term"] = self.long_term.export_records()
+
+        if include_optimizer_stats and self.optimizer:
+            data["optimizer_stats"] = self.optimizer.get_stats()
+
+        return data
+
+    def import_from_data(
+        self,
+        data: Dict[str, Any],
+        *,
+        overwrite_long_term: bool = False,
+        replace_short_term: bool = True,
+    ) -> Dict[str, int]:
+        """
+        从 dict 导入记忆（支持 v2+ 导出结构，兼容旧结构）。
+
+        Returns:
+            Dict[str, int]: {"short_term": int, "long_term": int}
+        """
+        if not isinstance(data, dict):
+            raise ValueError("记忆导入数据格式错误：应为 dict")
+
+        imported_short = 0
+        imported_long = 0
+
+        short_term = data.get("short_term") or []
+        if isinstance(short_term, list):
+            if replace_short_term:
+                self.short_term.clear()
+            pairs: List[tuple[str, str]] = []
+            for msg in short_term:
+                if not isinstance(msg, dict):
+                    continue
+                role = msg.get("role")
+                content = msg.get("content")
+                if not role or not content:
+                    continue
+                pairs.append((str(role), str(content)))
+            if pairs:
+                self.short_term.add_messages(pairs)
+                imported_short = len(pairs)
+
+        long_term = data.get("long_term") or {}
+        if (
+            self.long_term
+            and isinstance(long_term, dict)
+            and isinstance(long_term.get("items"), list)
+        ):
+            imported_long = self.long_term.import_records(
+                long_term.get("items", []),
+                overwrite=overwrite_long_term,
+            )
+
+        logger.info(
+            "导入记忆完成: short_term=%d, long_term=%d (overwrite_long_term=%s)",
+            imported_short,
+            imported_long,
+            overwrite_long_term,
+        )
+
+        return {"short_term": imported_short, "long_term": imported_long}
+
+    def import_memories(
+        self,
+        filepath: Path,
+        *,
+        overwrite_long_term: bool = False,
+        replace_short_term: bool = True,
+    ) -> Dict[str, int]:
+        """
+        从文件导入记忆。
+
+        支持：
+        - v2+ 导出格式（包含 short_term / long_term）
+        - 旧格式（仅 short_term）
+
+        Returns:
+            Dict[str, int]: {"short_term": int, "long_term": int}
+        """
+        if not filepath.exists():
+            raise FileNotFoundError(filepath)
+
+        data = json.loads(filepath.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("记忆导入文件格式错误：应为 JSON object")
+
+        return self.import_from_data(
+            data,
+            overwrite_long_term=overwrite_long_term,
+            replace_short_term=replace_short_term,
+        )

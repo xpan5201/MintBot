@@ -7,8 +7,12 @@ MintChat 浅色主题 GUI 启动器
 """
 
 import sys
+from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
+
+project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root))
 
 from src.gui.light_chat_window import LightChatWindow
 

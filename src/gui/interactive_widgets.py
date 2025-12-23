@@ -6,15 +6,15 @@
 包含涟漪效果、悬停状态、按压反馈等
 """
 
-from PyQt6.QtWidgets import QPushButton, QWidget, QGraphicsOpacityEffect
+from PyQt6.QtWidgets import QPushButton, QWidget
 from PyQt6.QtCore import (
     Qt, QPropertyAnimation, QEasingCurve, QPoint, QTimer,
     pyqtSignal, QSequentialAnimationGroup, pyqtProperty
 )
-from PyQt6.QtGui import QPainter, QColor, QBrush, QPen, QMouseEvent
+from PyQt6.QtGui import QPainter, QColor, QBrush, QMouseEvent
 
 from .material_design_light import (
-    MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION, MD3_STATE_LAYERS
+    MD3_DURATION, MD3_STATE_LAYERS
 )
 
 

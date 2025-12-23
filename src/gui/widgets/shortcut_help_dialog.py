@@ -9,7 +9,6 @@ from PyQt6.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from typing import List, Dict
 
 from src.utils.logger import get_logger
 
@@ -193,4 +192,3 @@ class ShortcutHelpDialog(QDialog):
             description_item = QTableWidgetItem(description)
             description_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             self.shortcut_table.setItem(row, 2, description_item)
-

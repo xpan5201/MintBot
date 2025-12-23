@@ -9,13 +9,13 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QTableWidget, QTableWidgetItem, QComboBox, QLineEdit,
     QTextEdit, QDialog, QDialogButtonBox, QHeaderView,
-    QMessageBox, QSpinBox, QDoubleSpinBox, QGroupBox,
+    QMessageBox, QDoubleSpinBox, QGroupBox,
     QFormLayout, QScrollArea, QSplitter
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFont
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Dict, Any
 import json
 
 from src.utils.logger import get_logger
@@ -48,7 +48,7 @@ class MemoryDetailDialog(QDialog):
         # 滚动区域
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet(f"""
+        scroll.setStyleSheet("""
             QScrollArea {{
                 border: none;
                 background: transparent;
@@ -643,7 +643,7 @@ class MemoryManagerWidget(QWidget):
             stats_text += f"  {topic_name}: {count} ({percentage:.1f}%)<br>"
 
         stats_text += f"<br><b>平均重要性:</b> {avg_importance:.2f}<br>"
-        stats_text += f"<br><b>元数据统计:</b><br>"
+        stats_text += "<br><b>元数据统计:</b><br>"
         stats_text += f"  包含人物: {people_count}<br>"
         stats_text += f"  包含地点: {location_count}<br>"
         stats_text += f"  包含事件: {event_count}<br>"
@@ -783,4 +783,3 @@ class MemoryManagerWidget(QWidget):
                 except Exception as e:
                     logger.error(f"清空记忆失败: {e}")
                     QMessageBox.critical(self, "错误", f"清空记忆失败: {e}")
-

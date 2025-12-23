@@ -9,15 +9,13 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QTableWidget, QTableWidgetItem, QComboBox, QLineEdit,
     QTextEdit, QDialog, QDialogButtonBox, QHeaderView,
-    QMessageBox, QFileDialog, QGroupBox, QFormLayout,
-    QScrollArea, QSplitter, QTabWidget, QProgressDialog
+    QMessageBox, QFileDialog, QFormLayout,
+    QScrollArea, QProgressDialog
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QThread
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtCore import Qt, pyqtSignal, QThread
+from PyQt6.QtGui import QFont
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pathlib import Path
-import json
 
 from src.utils.logger import get_logger
 from .material_design_light import MD3_LIGHT_COLORS
@@ -70,7 +68,7 @@ class LoreDetailDialog(QDialog):
         # 滚动区域
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet(f"""
+        scroll.setStyleSheet("""
             QScrollArea {{
                 border: none;
                 background: transparent;
@@ -658,7 +656,7 @@ class LoreBookManagerWidget(QWidget):
             edit_btn = QPushButton("✏️")
             edit_btn.setToolTip("编辑")
             edit_btn.setMaximumWidth(40)
-            edit_btn.clicked.connect(lambda checked, l=lore: self._on_edit_clicked(l))
+            edit_btn.clicked.connect(lambda checked, lore_item=lore: self._on_edit_clicked(lore_item))
             action_layout.addWidget(edit_btn)
 
             self.lore_table.setCellWidget(row, 6, action_widget)
@@ -692,9 +690,9 @@ class LoreBookManagerWidget(QWidget):
 
         # 查找知识
         lore = None
-        for l in self.current_lores:
-            if l.get("title") == title:
-                lore = l
+        for lore_item in self.current_lores:
+            if lore_item.get("title") == title:
+                lore = lore_item
                 break
 
         if not lore:

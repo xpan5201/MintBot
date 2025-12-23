@@ -10,7 +10,7 @@ TTS 初始化模块
 
 import asyncio
 import concurrent.futures
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from src.config.settings import load_settings
 from src.utils.logger import logger
@@ -99,7 +99,7 @@ def init_tts() -> bool:
             from src.multimodal.tts_manager import TTSConfig, get_tts_manager
         except ImportError as e:
             logger.error(f"导入 TTS 模块失败: {e}")
-            logger.error("请确保已安装 httpx: pip install httpx")
+            logger.error("请先执行: uv sync --locked --no-install-project")
             return False
 
         # 创建 TTS 配置
@@ -154,7 +154,7 @@ def init_tts() -> bool:
         try:
             # 检查是否已有事件循环
             try:
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()
                 # 如果已有事件循环，在新线程中运行（避免阻塞当前事件循环）
                 def run_in_new_loop():
                     """在新线程中创建新的事件循环并运行健康检查"""

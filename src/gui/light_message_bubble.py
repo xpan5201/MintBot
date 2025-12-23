@@ -56,10 +56,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import (
     Qt, QPropertyAnimation, QEasingCurve, QTimer,
-    QParallelAnimationGroup, QSequentialAnimationGroup, QPoint, pyqtProperty, QSize
+    QParallelAnimationGroup, QPoint, pyqtProperty, QSize
 )
 from PyQt6.QtGui import (
-    QFont,
     QColor,
     QPixmap,
     QMovie,
@@ -76,15 +75,11 @@ from typing import Optional
 import time
 import os
 
-from .material_design_light import (
-    MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION, get_light_elevation_shadow
-)
 from .material_design_enhanced import (
-    MD3_ENHANCED_COLORS, MD3_ENHANCED_TYPOGRAPHY, MD3_ENHANCED_SPACING,
+    MD3_ENHANCED_COLORS, MD3_ENHANCED_SPACING,
     MD3_ENHANCED_RADIUS, MD3_ENHANCED_DURATION, MD3_ENHANCED_EASING,
-    get_elevation_shadow, get_typography_css
+    get_typography_css
 )
-from .enhanced_animations import AnimationMixin
 from .theme_manager import is_anime_theme
 
 from src.utils.logger import get_logger

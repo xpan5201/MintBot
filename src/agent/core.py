@@ -20,7 +20,7 @@ from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from queue import Empty, Full, Queue
-from threading import Event, Lock, Thread
+from threading import Event, Lock
 from typing import (
     Any,
     AsyncIterator,
@@ -1290,7 +1290,7 @@ class MintChatAgent:
                 if ChatOpenAI is None:
                     raise ImportError(
                         "langchain-openai 未安装或导入失败，无法创建 ChatOpenAI。"
-                        " 请运行: pip install -r requirements.txt"
+                        " 请运行: uv sync --locked --no-install-project"
                     ) from _LANGCHAIN_OPENAI_IMPORT_ERROR
                 if not settings.openai_api_key:
                     raise ValueError("OpenAI API Key 未配置")
@@ -1316,7 +1316,7 @@ class MintChatAgent:
             elif provider == "anthropic":
                 if not HAS_ANTHROPIC:
                     raise ImportError(
-                        "langchain_anthropic 未安装。请运行: pip install langchain-anthropic"
+                        "langchain_anthropic 未安装。请运行: uv sync --locked --no-install-project"
                     )
                 if not settings.anthropic_api_key:
                     raise ValueError("Anthropic API Key 未配置")
@@ -1341,7 +1341,7 @@ class MintChatAgent:
             elif provider == "google":
                 if not HAS_GOOGLE:
                     raise ImportError(
-                        "langchain_google_genai 未安装。请运行: pip install langchain-google-genai"
+                        "langchain_google_genai 未安装。请运行: uv sync --locked --no-install-project"
                     )
                 if not settings.google_api_key:
                     raise ValueError("Google API Key 未配置")
@@ -1367,7 +1367,7 @@ class MintChatAgent:
                 if ChatOpenAI is None:
                     raise ImportError(
                         "langchain-openai 未安装或导入失败，无法创建 ChatOpenAI。"
-                        " 请运行: pip install -r requirements.txt"
+                        " 请运行: uv sync --locked --no-install-project"
                     ) from _LANGCHAIN_OPENAI_IMPORT_ERROR
                 if not settings.llm.key:
                     raise ValueError("API Key 未配置")
@@ -1409,7 +1409,7 @@ class MintChatAgent:
         try:
             if not HAS_LANGCHAIN or create_agent is None:
                 raise ImportError(
-                    "langchain 未安装或导入失败，无法创建 Agent。请运行: pip install -r requirements.txt"
+                    "langchain 未安装或导入失败，无法创建 Agent。请运行: uv sync --locked --no-install-project"
                 ) from _LANGCHAIN_IMPORT_ERROR
             # 优先使用配置加载器生成系统提示词
             config_prompt = CharacterConfigLoader.generate_system_prompt()
@@ -2895,7 +2895,7 @@ class MintChatAgent:
                     break
                 try:
                     wait_timeout = watchdog.next_wait()
-                except AgentTimeoutError as exc:
+                except AgentTimeoutError:
                     stop_event.set()
                     _close_stream()
                     raise
@@ -2968,6 +2968,7 @@ class MintChatAgent:
                     if exc is None:
                         exc = RuntimeError("LLM 流式调用失败（未知原因）")
                     error_msg = str(exc) or repr(exc) or f"{type(exc).__name__}: LLM 流式调用失败"
+                    logger.error("LLM 流式调用失败: %s", error_msg)
                     raise exc
                 elif kind == "end":
                     break
@@ -3085,7 +3086,7 @@ class MintChatAgent:
                 while True:
                     try:
                         wait_timeout = watchdog.next_wait()
-                    except AgentTimeoutError as exc:
+                    except AgentTimeoutError:
                         await _safe_aclose()
                         raise
                     if cancel_event is not None:
@@ -3520,7 +3521,7 @@ class MintChatAgent:
             except Exception:
                 pass
 
-            if not getattr(self, "enable_streaming", False):
+            if not bool(getattr(self, "enable_streaming", True)):
                 try:
                     response = self._invoke_with_failover(
                         bundle,
@@ -3768,6 +3769,25 @@ class MintChatAgent:
     def clear_memory(self) -> None:
         """清空所有记忆"""
         self.memory.clear_all()
+        if getattr(self, "core_memory", None):
+            try:
+                if hasattr(self.core_memory, "clear_all"):
+                    self.core_memory.clear_all()
+            except Exception as e:
+                logger.debug("清空核心记忆失败（可忽略）: %s", e)
+        if getattr(self, "diary_memory", None):
+            try:
+                if hasattr(self.diary_memory, "clear_all"):
+                    self.diary_memory.clear_all()
+            except Exception as e:
+                logger.debug("清空日记失败（可忽略）: %s", e)
+        if getattr(self, "lore_book", None):
+            try:
+                if hasattr(self.lore_book, "clear_all"):
+                    self.lore_book.clear_all()
+            except Exception as e:
+                logger.debug("清空知识库失败（可忽略）: %s", e)
+
         logger.info("记忆已清空")
 
     def export_memory(self, filepath: str) -> None:
@@ -3777,8 +3797,137 @@ class MintChatAgent:
         Args:
             filepath: 导出文件路径
         """
+        import json
         from pathlib import Path
-        self.memory.export_memories(Path(filepath))
+
+        data = self.memory.get_export_data(include_long_term=True, include_optimizer_stats=False)
+        data["format_version"] = max(int(data.get("format_version") or 0), 3)
+        data["agent"] = {
+            "character_name": getattr(self.character, "name", None),
+            "model_name": getattr(self, "model_name", None),
+            "user_id": self.user_id,
+        }
+
+        advanced: dict = {}
+
+        # CoreMemory（Chroma collection）
+        core_items = []
+        if getattr(self, "core_memory", None) and getattr(self.core_memory, "vectorstore", None):
+            try:
+                core_data = self.core_memory.vectorstore.get(include=["documents", "metadatas", "ids"])
+            except TypeError:
+                core_data = self.core_memory.vectorstore.get()
+            ids = core_data.get("ids") or []
+            docs = core_data.get("documents") or []
+            metas = core_data.get("metadatas") or []
+            for doc_id, content, meta in zip(ids, docs, metas):
+                if not content:
+                    continue
+                core_items.append({"id": str(doc_id), "content": content, "metadata": dict(meta or {})})
+        advanced["core_memory"] = {"count": len(core_items), "items": core_items}
+
+        # DiaryMemory（以 diary.json 为准；向量库可由内容重建）
+        diary_entries = []
+        diary_file = getattr(getattr(self, "diary_memory", None), "diary_file", None)
+        if diary_file:
+            try:
+                diary_entries = json.loads(Path(diary_file).read_text(encoding="utf-8"))
+                if not isinstance(diary_entries, list):
+                    diary_entries = []
+            except Exception as e:
+                logger.debug("读取 diary.json 失败（可忽略）: %s", e)
+        advanced["diary"] = {"count": len(diary_entries), "items": diary_entries}
+
+        # LoreBook（JSON 为准；向量库可由内容重建）
+        lore_items = []
+        if getattr(self, "lore_book", None):
+            try:
+                lore_items = self.lore_book.get_all_lores(use_cache=False)
+            except TypeError:
+                lore_items = self.lore_book.get_all_lores()
+            except Exception as e:
+                logger.debug("读取 lore_books 失败（可忽略）: %s", e)
+        advanced["lore_book"] = {"count": len(lore_items), "items": lore_items}
+
+        data["advanced_memory"] = advanced
+
+        export_path = Path(filepath)
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        export_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def import_memory(self, filepath: str, *, overwrite: bool = False) -> Dict[str, int]:
+        """
+        导入记忆（与 export_memory 输出的导出包匹配）。
+
+        Args:
+            filepath: 导入文件路径
+            overwrite: 是否覆盖已有记忆（覆盖：会清空对应存储再导入）
+
+        Returns:
+            Dict[str, int]: 导入统计
+        """
+        import json
+        from pathlib import Path
+
+        path = Path(filepath)
+        if not path.exists():
+            raise FileNotFoundError(path)
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("记忆导入文件格式错误：应为 JSON object")
+
+        stats: Dict[str, int] = {
+            "short_term": 0,
+            "long_term": 0,
+            "core_memory": 0,
+            "diary": 0,
+            "lore_book": 0,
+        }
+
+        # 基础记忆（短期+长期）
+        try:
+            base_stats = self.memory.import_from_data(
+                data,
+                overwrite_long_term=overwrite,
+                replace_short_term=True,
+            )
+            stats.update(base_stats)
+        except Exception as e:
+            logger.warning("导入基础记忆失败: %s", e)
+
+        # 高级记忆（可选）
+        advanced = data.get("advanced_memory") or {}
+        if isinstance(advanced, dict):
+            # CoreMemory
+            core_block = advanced.get("core_memory")
+            core_items = core_block.get("items") if isinstance(core_block, dict) else None
+            if isinstance(core_items, list) and getattr(self, "core_memory", None) and hasattr(self.core_memory, "import_records"):
+                try:
+                    stats["core_memory"] = int(self.core_memory.import_records(core_items, overwrite=overwrite))
+                except Exception as e:
+                    logger.warning("导入核心记忆失败: %s", e)
+
+            # Diary
+            diary_block = advanced.get("diary")
+            diary_items = diary_block.get("items") if isinstance(diary_block, dict) else None
+            if isinstance(diary_items, list) and getattr(self, "diary_memory", None) and hasattr(self.diary_memory, "import_entries"):
+                try:
+                    stats["diary"] = int(self.diary_memory.import_entries(diary_items, overwrite=overwrite))
+                except Exception as e:
+                    logger.warning("导入日记失败: %s", e)
+
+            # LoreBook
+            lore_block = advanced.get("lore_book")
+            lore_items = lore_block.get("items") if isinstance(lore_block, dict) else None
+            if isinstance(lore_items, list) and getattr(self, "lore_book", None) and hasattr(self.lore_book, "import_records"):
+                try:
+                    stats["lore_book"] = int(self.lore_book.import_records(lore_items, overwrite=overwrite))
+                except Exception as e:
+                    logger.warning("导入知识库失败: %s", e)
+
+        logger.info("导入记忆完成: %s", stats)
+        return stats
 
     def get_stats(self) -> Dict[str, Any]:
         """
@@ -4151,16 +4300,6 @@ class MintChatAgent:
                 self.memory.cleanup_cache()
             except Exception as e:
                 logger.warning(f"清理记忆缓存时出错: {e}")
-        
-        # 6. 关闭HTTP连接池（如果使用了）
-        try:
-            from src.agent.builtin_tools import ConnectionPool
-            # 注意：这是异步方法，但在同步上下文中调用
-            # 如果连接池有同步关闭方法，应该使用同步方法
-            # 这里暂时跳过，因为ConnectionPool.close是async的
-            # 如果需要，可以在Agent初始化时记录是否需要清理连接池
-        except Exception as e:
-            logger.debug("清理连接池时出错（可忽略）: %s", e)
         
         logger.info("Agent 资源清理完成")
 

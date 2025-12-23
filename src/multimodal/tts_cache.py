@@ -96,7 +96,6 @@ class PersistentTTSAudioCache:
 
         try:
             data = json.loads(self.index_path.read_text(encoding="utf-8"))
-            version = data.get("version", 1)
             entries = data.get("entries", {})
             loaded = 0
             for key, payload in entries.items():

@@ -5,10 +5,10 @@ TTS性能监控面板组件 - v2.45.0
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QProgressBar, QFrame, QGridLayout, QTabWidget
+    QWidget, QVBoxLayout, QLabel,
+    QFrame, QGridLayout, QTabWidget
 )
-from PyQt6.QtCore import Qt, pyqtSlot, QTimer
+from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QFont
 
 from src.gui.widgets.performance_chart import PerformanceChart  # v2.45.0
@@ -260,5 +260,4 @@ class TTSPerformanceMonitor(QWidget):
         """设置TTS管理器"""
         self.tts_manager = tts_manager
         self._update_performance_data()  # 立即更新一次
-
 

@@ -6,18 +6,20 @@
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QCheckBox, QStackedWidget, QGraphicsDropShadowEffect,
-    QGraphicsOpacityEffect, QApplication
+    QWidget,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve, QSize, QRect, QPoint, QRectF
-from PyQt6.QtGui import QFont, QColor, QPixmap, QPainter, QPainterPath, QMouseEvent, QCursor, QBitmap, QPen, QBrush, QRegion
+from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation
+from PyQt6.QtGui import QColor, QPixmap
 
 from .material_design_enhanced import (
     MD3_ENHANCED_COLORS, MD3_ENHANCED_RADIUS, MD3_ENHANCED_DURATION,
-    MD3_ENHANCED_EASING, get_elevation_shadow, get_typography_css
+    MD3_ENHANCED_EASING,
 )
-from .material_icons import MATERIAL_ICONS
 from .qss_utils import qss_rgba
 from ..auth import AuthService
 from src.utils.logger import get_logger

@@ -7,14 +7,12 @@
 """
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGraphicsOpacityEffect
-from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer, pyqtProperty, QRect
+from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer, pyqtProperty
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QPainterPath
 
-from .material_design_light import MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION
+from .material_design_light import MD3_LIGHT_COLORS, MD3_DURATION
 from .material_design_enhanced import (
-    MD3_ENHANCED_COLORS, MD3_ENHANCED_SPACING, MD3_ENHANCED_RADIUS,
     MD3_ENHANCED_DURATION, MD3_ENHANCED_EASING,
-    get_typography_css
 )
 
 

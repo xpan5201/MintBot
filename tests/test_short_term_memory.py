@@ -24,6 +24,17 @@ def test_short_term_memory_keeps_last_k_interactions() -> None:
     assert mem.get_messages_as_dict() == []
 
 
+def test_short_term_memory_dict_snapshot_is_not_mutable() -> None:
+    mem = ShortTermMemory(k=2)
+    mem.add_messages((("user", "u1"), ("assistant", "a1")))
+
+    first = mem.get_messages_as_dict()
+    first[0]["content"] = "MUTATED"
+
+    second = mem.get_messages_as_dict()
+    assert [m["content"] for m in second] == ["u1", "a1"]
+
+
 def test_memory_manager_short_term_version_tracks_short_term_memory() -> None:
     mgr = MemoryManager(
         short_term_k=1,
@@ -45,4 +56,3 @@ def test_memory_manager_short_term_version_tracks_short_term_memory() -> None:
     mgr.clear_all()
     assert mgr.short_term_version == 3
     assert mgr.get_recent_messages() == []
-

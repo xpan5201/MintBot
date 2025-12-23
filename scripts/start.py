@@ -6,7 +6,7 @@ MintChat 命令行启动脚本 (跨平台)
 日期: 2025-11-06
 
 这是一个跨平台的命令行启动脚本，可以在 Windows、Linux、Mac 上运行。
-支持 conda 环境自动检测和友好的用户交互。
+推荐使用 uv + .venv（无需手动激活环境）。
 提供多个示例程序的交互式菜单。
 """
 
@@ -14,6 +14,10 @@ import os
 import sys
 import subprocess
 from pathlib import Path
+from shutil import which
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+os.chdir(PROJECT_ROOT)
 
 
 def print_banner():
@@ -25,36 +29,32 @@ def print_banner():
     print()
 
 
-def check_conda_env():
-    """检查是否在 conda 环境中"""
-    conda_env = os.environ.get("CONDA_DEFAULT_ENV")
+def check_env():
+    """检查是否在虚拟环境中，并给出启动建议"""
+    venv = os.environ.get("VIRTUAL_ENV")
+    if venv:
+        print(f"[信息] 当前虚拟环境: {venv}")
+        return
 
-    if conda_env:
-        print(f"[信息] 当前 Conda 环境: {conda_env}")
+    print("[提示] 未检测到虚拟环境 (VIRTUAL_ENV)")
+    print()
 
-        if conda_env != "mintchat":
-            print("[警告] 当前不在 mintchat 环境中")
-            print()
-            print("建议使用 mintchat 环境运行:")
-            if sys.platform == "win32":
-                print("  run.bat")
-            else:
-                print("  bash run.sh")
-            print()
-            print("或手动激活环境:")
-            print("  conda activate mintchat")
-            print()
-    else:
-        print("[警告] 未检测到 Conda 环境")
-        print()
-        print("建议使用 Conda 环境运行 MintChat")
-        print()
-        print("使用启动脚本:")
+    uv_path = which("uv")
+    if uv_path:
+        print(f"[信息] 已检测到 uv: {uv_path}")
+        print("建议使用 uv 启动（会自动使用/创建 .venv）:")
         if sys.platform == "win32":
-            print("  run.bat")
+            print("  uv sync --locked --no-install-project")
+            print("  .\\.venv\\Scripts\\python.exe scripts/start.py")
         else:
-            print("  bash run.sh")
-        print()
+            print("  uv sync --locked --no-install-project")
+            print("  ./.venv/bin/python scripts/start.py")
+    else:
+        print("[警告] 未检测到 uv")
+        print("请先安装 uv，然后使用 uv 启动。")
+        print("Windows: pipx install uv")
+        print("Linux/macOS: curl -LsSf https://astral.sh/uv/install.sh | sh")
+    print()
 
 
 def check_python_version():
@@ -66,13 +66,13 @@ def check_python_version():
     )
     print(f"[信息] Python 版本: {version}")
 
-    if sys.version_info < (3, 12):
+    if sys.version_info < (3, 13):
         print("[错误] Python 版本过低")
         print(
             f"当前版本: "
             f"{sys.version_info.major}.{sys.version_info.minor}"
         )
-        print("需要版本: 3.12+")
+        print("需要版本: 3.13+")
         print()
         return False
 
@@ -136,14 +136,14 @@ def check_dependencies():
     except ImportError as e:
         print(f"[警告] 依赖未安装或不完整: {e}")
         print()
-        print("请运行以下命令安装依赖:")
-        print("  pip install -r requirements.txt")
+        print("请使用 uv 同步依赖后重试:")
+        print("  uv sync --locked --no-install-project")
         print()
-        print("或使用自动安装脚本:")
+        print("然后使用 .venv 运行:")
         if sys.platform == "win32":
-            print("  install_deps.bat")
+            print("  .\\.venv\\Scripts\\python.exe scripts/start.py")
         else:
-            print("  bash install_deps.sh")
+            print("  ./.venv/bin/python scripts/start.py")
         print()
         return False
 
@@ -213,8 +213,8 @@ def main():
     # 打印横幅
     print_banner()
 
-    # 检查 Conda 环境
-    check_conda_env()
+    # 检查环境
+    check_env()
     print()
 
     # 检查 Python 版本

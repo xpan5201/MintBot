@@ -1,49 +1,94 @@
 """
 轻量依赖检查工具
 
-用于在启动阶段检测可选/扩展依赖是否缺失，给出明确提示，避免静默降级。
+用于在启动阶段检测可选/扩展依赖是否缺失或导入失败，给出明确提示，避免静默降级。
 """
 
 from __future__ import annotations
 
 import importlib
-from typing import Dict, List
+import sys
+from pathlib import Path
+from typing import Dict, List, TypedDict
 
-from src.utils.logger import get_logger
-
-logger = get_logger(__name__)
+UV_SYNC_BASE = "uv sync --locked --no-install-project"
 
 
-def check_optional_dependencies() -> Dict[str, List[str]]:
+class DependencyStatus(TypedDict):
     """
-    检测可选依赖是否缺失，并返回缺失项列表。
+    Optional dependency status.
+
+    Notes:
+        - missing: 模块本身未安装（ModuleNotFoundError.name == module_name）。
+        - broken: 模块存在，但导入时抛错（包含子依赖缺失/二进制不匹配/元数据损坏等）。
+    """
+
+    missing: List[str]
+    installed: List[str]
+    broken: Dict[str, str]
+    hints: Dict[str, str]
+    python_executable: str
+    in_project_venv: bool
+
+
+def _format_exc(err: BaseException) -> str:
+    text = str(err).strip()
+    if text:
+        text = text.splitlines()[0]
+        return f"{type(err).__name__}: {text}"
+    return type(err).__name__
+
+
+def _is_project_venv(project_root: Path) -> bool:
+    try:
+        venv_root = (project_root / ".venv").resolve()
+        prefix = Path(sys.prefix).resolve()
+        return prefix == venv_root
+    except Exception:
+        return False
+
+
+def check_optional_dependencies() -> DependencyStatus:
+    """
+    检测可选/扩展依赖是否缺失或导入失败，并返回状态。
 
     Returns:
-        Dict[str, List[str]]: {"missing": [...], "installed": [...]}
+        DependencyStatus
     """
-    deps = {
-        "langchain": "pip install langchain langchain-openai",
-        "langchain_openai": "pip install langchain-openai",
-        "redis": "pip install redis",
+    project_root = Path(__file__).resolve().parents[2]
+
+    deps: Dict[str, str] = {
+        "langchain": "langchain",
+        "langchain_openai": "langchain-openai",
+        "redis": "redis",
     }
 
     missing: List[str] = []
     installed: List[str] = []
+    broken: Dict[str, str] = {}
+    hints: Dict[str, str] = {}
 
-    for module_name in deps:
+    for module_name, package_name in deps.items():
         try:
             importlib.import_module(module_name)
             installed.append(module_name)
-        except Exception:
-            missing.append(module_name)
+        except ModuleNotFoundError as e:
+            if e.name == module_name:
+                missing.append(module_name)
+                hints[module_name] = UV_SYNC_BASE
+            else:
+                broken[module_name] = _format_exc(e)
+                hints[module_name] = f"{UV_SYNC_BASE} --reinstall-package {package_name}"
+        except Exception as e:
+            broken[module_name] = _format_exc(e)
+            hints[module_name] = f"{UV_SYNC_BASE} --reinstall-package {package_name}"
 
-    if missing:
-        install_cmds = {name: deps[name] for name in missing if name in deps}
-        logger.error(
-            "检测到可选依赖缺失，将影响增强功能：%s。安装建议：%s",
-            ", ".join(missing),
-            "; ".join(f"{k}: {v}" for k, v in install_cmds.items()),
-        )
-
-    return {"missing": missing, "installed": installed}
+    return {
+        "missing": missing,
+        "installed": installed,
+        "broken": broken,
+        "hints": hints,
+        "python_executable": sys.executable,
+        "in_project_venv": _is_project_venv(project_root),
+    }
 

@@ -502,7 +502,7 @@ class Live2DGlWidget(QOpenGLWidget):
         if live2d_mod is None:
             hint = "未检测到 / 无法加载 live2d-py（Cubism Native SDK）。\n"
             hint += f"当前 Python: {sys.executable}\n"
-            hint += "请在同一环境中安装：pip install -U live2d-py\n"
+            hint += "请先在同一环境中同步依赖：uv sync --locked --no-install-project\n"
             if err:
                 hint += f"\n错误信息：{err}"
             self._live2d = None
@@ -1277,8 +1277,6 @@ class Live2DGlWidget(QOpenGLWidget):
         ay = float(getattr(self, "_vtuber_gesture_ay", 0.0) or 0.0)
         az = float(getattr(self, "_vtuber_gesture_az", 0.0) or 0.0)
         bx = float(getattr(self, "_vtuber_gesture_bx", 0.0) or 0.0)
-        by = float(getattr(self, "_vtuber_gesture_by", 0.0) or 0.0)
-        bz = float(getattr(self, "_vtuber_gesture_bz", 0.0) or 0.0)
         ex = float(getattr(self, "_vtuber_gesture_ex", 0.0) or 0.0)
         ey = float(getattr(self, "_vtuber_gesture_ey", 0.0) or 0.0)
 

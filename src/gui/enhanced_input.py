@@ -8,15 +8,14 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton,
-    QLabel, QGraphicsOpacityEffect, QGraphicsDropShadowEffect
+    QLabel,
 )
 from PyQt6.QtCore import (
-    Qt, QPropertyAnimation, QEasingCurve, pyqtSignal, pyqtProperty, QTimer
+    Qt, QPropertyAnimation, QEasingCurve, pyqtSignal, pyqtProperty
 )
-from PyQt6.QtGui import QColor, QTextCursor
 
 from .material_design_light import (
-    MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION, get_light_elevation_shadow
+    MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION
 )
 from .material_design_enhanced import (
     MD3_ENHANCED_COLORS, MD3_ENHANCED_SPACING, MD3_ENHANCED_RADIUS,

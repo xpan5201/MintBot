@@ -339,6 +339,173 @@ class TTSConfig(BaseModel):
     )
 
 
+# ==================== ASR 配置模型 ====================
+
+
+class ASRConfig(BaseModel):
+    """ASR (Speech-to-Text) 配置"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = Field(
+        default=False,
+        description="是否启用 ASR（语音转文本）功能",
+    )
+
+    model: str = Field(
+        default="iic/SenseVoiceSmall",
+        description="FunASR 模型名称/路径（默认 SenseVoiceSmall：iic/SenseVoiceSmall）",
+    )
+
+    hub: Optional[str] = Field(
+        default=None,
+        description="模型仓库来源（hf=HuggingFace, ms=ModelScope）；为空则自动推断",
+    )
+
+    trust_remote_code: bool = Field(
+        default=True,
+        description="是否信任模型仓库远程代码（仅 HuggingFace hub 生效；ModelScope 会忽略以避免噪声/失败日志）",
+    )
+
+    device: str = Field(
+        default="auto",
+        description="推理设备（auto/cpu/cuda），默认 auto（优先使用 CUDA）",
+    )
+
+    language: str = Field(
+        default="auto",
+        description="识别语言（auto/zh/en/ja/ko/yue 等），默认 auto",
+    )
+
+    use_itn: bool = Field(
+        default=True,
+        description="是否启用 ITN（数字/日期等文本规范化），默认开启",
+    )
+
+    ban_emo_unk: bool = Field(
+        default=True,
+        description="是否禁用未知情绪 token（减少 SenseVoice 输出噪声）",
+    )
+
+    vad_model: Optional[str] = Field(
+        default="fsmn-vad",
+        description="VAD 模型（建议 fsmn-vad）；为空/none 则禁用长音频切分",
+    )
+
+    vad_max_single_segment_time_ms: int = Field(
+        default=30000,
+        ge=1000,
+        le=120000,
+        description="VAD 单段最大时长（ms），默认 30000",
+    )
+
+    merge_vad: bool = Field(
+        default=True,
+        description="是否合并 VAD 分段结果（提升连贯性）",
+    )
+
+    merge_length_s: int = Field(
+        default=15,
+        ge=1,
+        le=60,
+        description="VAD 合并窗口（秒），默认 15",
+    )
+
+    batch_size_s: int = Field(
+        default=60,
+        ge=1,
+        le=600,
+        description="长音频动态 batch 时长上限（秒），默认 60",
+    )
+
+    sample_rate: int = Field(
+        default=16000,
+        ge=8000,
+        le=48000,
+        description="录音采样率（Hz），默认 16000",
+    )
+
+    partial_interval_ms: int = Field(
+        default=600,
+        ge=80,
+        le=2000,
+        description="实时转写刷新间隔（毫秒），越小越实时但越耗 CPU",
+    )
+
+    partial_window_s: float = Field(
+        default=4.0,
+        gt=0.5,
+        le=20.0,
+        description="实时转写窗口长度（秒）：每次识别取最近 N 秒音频（降低延迟与抖动）",
+    )
+
+    silence_skip_partial: bool = Field(
+        default=True,
+        description="是否在静音时跳过 partial 推理（降低 CPU/提升流畅度）",
+    )
+
+    silence_rms_threshold: float = Field(
+        default=0.006,
+        gt=0.0,
+        le=0.2,
+        description="静音阈值（RMS，0-1）；低于该值认为静音，默认 0.006",
+    )
+
+    # ==================== Realtime Mic VAD / Endpointing ====================
+
+    silence_threshold_mode: str = Field(
+        default="auto",
+        description="静音阈值模式：fixed=固定阈值（silence_rms_threshold），auto=自动噪声门限（推荐）",
+    )
+
+    silence_threshold_multiplier: float = Field(
+        default=3.0,
+        gt=1.0,
+        le=20.0,
+        description="auto 模式下：静音阈值 = max(silence_rms_threshold, noise_rms * multiplier)",
+    )
+
+    noise_calibration_ms: int = Field(
+        default=400,
+        ge=0,
+        le=5000,
+        description="auto 模式下噪声底噪估计的校准时长（ms），默认 400",
+    )
+
+    min_speech_ms: int = Field(
+        default=180,
+        ge=0,
+        le=2000,
+        description="判定开始说话所需的最短连续语音时长（ms），默认 180",
+    )
+
+    endpoint_silence_ms: int = Field(
+        default=900,
+        ge=0,
+        le=10000,
+        description="停顿自动结束阈值（ms）；为 0 则关闭自动结束，默认 900",
+    )
+
+    pre_roll_ms: int = Field(
+        default=250,
+        ge=0,
+        le=3000,
+        description="开始说话前保留的预卷帧（ms），避免吞掉第一个字，默认 250",
+    )
+
+    max_utterance_s: float = Field(
+        default=25.0,
+        gt=0.0,
+        le=300.0,
+        description="单次语音输入最长时长（秒），超过将自动结束，默认 25.0",
+    )
+
+    warmup: bool = Field(
+        default=True,
+        description="启动时是否做一次模型预热（降低首次识别延迟）",
+    )
+
+
 # ==================== MCP 配置模型 ====================
 
 
@@ -460,6 +627,26 @@ class AgentConfig(BaseModel):
     memory_optimizer_enabled: bool = Field(
         default=True,
         description="是否启用记忆优化器（缓存、去重、巩固、角色一致性）",
+    )
+    memory_dedup_max_hashes: int = Field(
+        default=50_000,
+        ge=0,
+        le=1_000_000,
+        description="去重器保留的 content_hash 最大数量（0 表示不限制，但会增加内存占用）",
+    )
+
+    # 长期记忆（向量库）写入策略
+    long_term_batch_size: int = Field(
+        default=10,
+        ge=1,
+        le=1000,
+        description="长期记忆批量写入阈值（条）。达到阈值会触发一次向量库写入。",
+    )
+    long_term_batch_flush_interval_s: float = Field(
+        default=30.0,
+        ge=0.0,
+        le=3600.0,
+        description="长期记忆批量写入强制刷新间隔（秒）。0 表示仅按条数触发。",
     )
 
     # v3.2.1 性能优化配置
@@ -627,6 +814,75 @@ class AgentConfig(BaseModel):
         ge=0.0,
         le=1.0,
         description="知识去重相似度阈值（相似度 >= 此值认为重复）",
+    )
+
+    # 知识图谱配置（关系提取/查询性能保护）
+    knowledge_graph_enabled: bool = Field(
+        default=True,
+        description="是否启用知识图谱系统（仅当依赖可用时生效）",
+    )
+    knowledge_graph_auto_update: bool = Field(
+        default=True,
+        description="知识增删改时是否自动增量更新图谱（避免手动重建）",
+    )
+    knowledge_graph_auto_update_edges: bool = Field(
+        default=True,
+        description="增量更新时是否同时更新规则关系边（更智能但更耗时）",
+    )
+    knowledge_graph_auto_update_async: bool = Field(
+        default=True,
+        description="图谱增量更新是否放到后台线程执行（需要性能优化器/线程池可用）",
+    )
+    knowledge_graph_autosave: bool = Field(
+        default=True,
+        description="知识图谱是否自动落盘（关闭可显著减少写盘，但异常退出会丢最后未 flush 的更新）",
+    )
+    knowledge_graph_save_pretty_json: bool = Field(
+        default=True,
+        description="知识图谱保存 JSON 时是否缩进美化（更易读但更慢更大）",
+    )
+    knowledge_graph_save_sort: bool = Field(
+        default=True,
+        description="知识图谱保存 JSON 时是否对节点/边排序（便于 diff 但更慢）",
+    )
+    knowledge_graph_rule_max_ids_per_keyword: int = Field(
+        default=200,
+        ge=1,
+        description="规则提取时每个关键词最多参与匹配的知识数量（防止公共词爆炸）",
+    )
+    knowledge_graph_rule_max_keyword_links_per_node: int = Field(
+        default=12,
+        ge=0,
+        description="规则提取时每个知识最多保留的关键词相关边数（0 表示不限制）",
+    )
+    knowledge_graph_rule_category_anchor_count: int = Field(
+        default=2,
+        ge=0,
+        description="规则提取时每个类别的锚点数量（用于稀疏化类别边）",
+    )
+    knowledge_graph_rule_max_relations: int = Field(
+        default=100_000,
+        ge=0,
+        description="规则提取最大关系数量（0 表示不限制）",
+    )
+    knowledge_graph_rule_shared_keywords_desc_limit: int = Field(
+        default=12,
+        ge=1,
+        description="关系描述中最多显示的共享关键词数量",
+    )
+    knowledge_graph_find_max_results: int = Field(
+        default=200,
+        ge=0,
+        description="图谱相关知识查询最大返回数（0 表示不限制）",
+    )
+    knowledge_graph_find_max_nodes_visited: int = Field(
+        default=5000,
+        ge=0,
+        description="图谱相关知识查询最大遍历节点数（0 表示不限制）",
+    )
+    knowledge_graph_find_include_incoming: bool = Field(
+        default=True,
+        description="图谱相关知识查询是否包含入边（True 更适合“相关知识”检索）",
     )
 
     # 情绪系统配置
@@ -826,6 +1082,12 @@ class Settings(BaseModel):
     tts: TTSConfig = Field(
         default_factory=TTSConfig,
         description="TTS (Text-to-Speech) 配置",
+    )
+
+    # ASR 配置 (v2.56.0 新增)
+    asr: ASRConfig = Field(
+        default_factory=ASRConfig,
+        description="ASR (Speech-to-Text) 配置",
     )
 
     # 日志配置
@@ -1184,6 +1446,13 @@ class Settings(BaseModel):
                     tts_config = TTSConfig(**tts_config_data)
                     settings_kwargs["tts"] = tts_config
 
+            # ASR 配置 (v2.56.0 新增)
+            if "ASR" in config_data:
+                asr_config_data = config_data["ASR"]
+                if asr_config_data:
+                    asr_config = ASRConfig(**asr_config_data)
+                    settings_kwargs["asr"] = asr_config
+
             return cls(**settings_kwargs)
 
         except yaml.YAMLError as e:
@@ -1227,6 +1496,8 @@ class Settings(BaseModel):
             config_dict["MCP"] = self.mcp.model_dump(by_alias=True, exclude_none=True)
         if hasattr(self, "tts") and self.tts is not None:
             config_dict["TTS"] = self.tts.model_dump(by_alias=True, exclude_none=True)
+        if hasattr(self, "asr") and self.asr is not None:
+            config_dict["ASR"] = self.asr.model_dump(by_alias=True, exclude_none=True)
 
         with open(output_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(config_dict, f, allow_unicode=True, sort_keys=False)

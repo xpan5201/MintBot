@@ -18,7 +18,6 @@ from pathlib import Path
 from collections import OrderedDict
 from typing import Dict, Any, Optional, Callable, TypeVar, Generic
 from dataclasses import dataclass, field
-from datetime import datetime
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -495,7 +494,7 @@ class CacheManager:
             def warmup_task():
                 return self._warmup_all_sync()
 
-            future = submit_background_task(warmup_task)
+            submit_background_task(warmup_task)
             logger.info("已在后台线程中启动缓存预热")
             return {}
         else:

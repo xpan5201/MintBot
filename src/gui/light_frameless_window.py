@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import (
     Qt,
     QPoint,
-    QPointF,
     QRect,
     QRectF,
     pyqtSignal,
@@ -324,7 +323,7 @@ class LightFramelessWindow(QWidget):
 
         # 内容区域
         self.content_widget = QWidget()
-        self.content_widget.setStyleSheet(f"""
+        self.content_widget.setStyleSheet("""
             QWidget {{
                 background: transparent;
             }}

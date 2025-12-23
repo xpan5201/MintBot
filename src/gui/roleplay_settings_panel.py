@@ -446,6 +446,9 @@ class SettingsPanel(QWidget):
         self.tts_switch = ToggleSwitch(checked=False)
         rows.append((_RowSpec("语音回复", "开启后可使用 TTS 让角色“说话”"), self.tts_switch))
 
+        self.asr_switch = ToggleSwitch(checked=False)
+        rows.append((_RowSpec("语音输入", "开启后可使用 ASR 将语音实时转为文字"), self.asr_switch))
+
         for idx, (spec, control) in enumerate(rows):
             layout.addWidget(self._row(spec.title, spec.subtitle, control))
             if idx != len(rows) - 1:
@@ -458,7 +461,7 @@ class SettingsPanel(QWidget):
             self.ai_avatar_input,
         ):
             w.textChanged.connect(self._mark_unsaved_changes)
-        for sw in (self.mood_switch, self.emotion_memory_switch, self.long_memory_switch, self.tts_switch):
+        for sw in (self.mood_switch, self.emotion_memory_switch, self.long_memory_switch, self.tts_switch, self.asr_switch):
             sw.toggled.connect(lambda _checked, _sw=sw: self._mark_unsaved_changes())
 
         return card
@@ -718,6 +721,9 @@ class SettingsPanel(QWidget):
             tts_cfg = self._config_data.get("TTS") or self._config_data.get("tts") or {}
             if not isinstance(tts_cfg, dict):
                 tts_cfg = {}
+            asr_cfg = self._config_data.get("ASR") or self._config_data.get("asr") or {}
+            if not isinstance(asr_cfg, dict):
+                asr_cfg = {}
 
             try:
                 self.role_name_input.setText(str(agent_cfg.get("char", "") or ""))
@@ -739,6 +745,11 @@ class SettingsPanel(QWidget):
 
             try:
                 self.tts_switch.setChecked(bool(tts_cfg.get("enabled", False)))
+            except Exception:
+                pass
+
+            try:
+                self.asr_switch.setChecked(bool(asr_cfg.get("enabled", False)))
             except Exception:
                 pass
 
@@ -766,6 +777,10 @@ class SettingsPanel(QWidget):
         if not isinstance(tts_cfg, dict):
             tts_cfg = {}
             config["TTS"] = tts_cfg
+        asr_cfg = config.get("ASR")
+        if not isinstance(asr_cfg, dict):
+            asr_cfg = {}
+            config["ASR"] = asr_cfg
 
         role_name_input = getattr(self, "role_name_input", None)
         user_name_input = getattr(self, "user_name_input", None)
@@ -774,6 +789,7 @@ class SettingsPanel(QWidget):
         emotion_memory_switch = getattr(self, "emotion_memory_switch", None)
         long_memory_switch = getattr(self, "long_memory_switch", None)
         tts_switch = getattr(self, "tts_switch", None)
+        asr_switch = getattr(self, "asr_switch", None)
 
         agent_cfg["char"] = str(role_name_input.text() if role_name_input is not None else "")
         agent_cfg["user"] = str(user_name_input.text() if user_name_input is not None else "")
@@ -785,6 +801,7 @@ class SettingsPanel(QWidget):
 
         llm_cfg["api"] = str(llm_api_input.text() if llm_api_input is not None else "")
         tts_cfg["enabled"] = bool(tts_switch.isChecked() if tts_switch is not None else False)
+        asr_cfg["enabled"] = bool(asr_switch.isChecked() if asr_switch is not None else False)
         return config
 
     def save_settings(self, *, show_feedback: bool = True) -> bool:

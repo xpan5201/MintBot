@@ -8,8 +8,8 @@ from PyQt6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout,
     QTextEdit, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QTextCursor
 from datetime import datetime
 from .styles import THEME_COLORS
 

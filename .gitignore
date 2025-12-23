@@ -67,6 +67,8 @@ temp/
 cache/
 out/
 
-GPT-SoVITS-v2pro-20250604-nvidia50/
+# Vendor / third-party (kept out of git)
+third_party/*
+!third_party/README.md
 
 live2d/Blue_cat/

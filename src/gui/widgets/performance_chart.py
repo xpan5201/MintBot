@@ -8,7 +8,6 @@ from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QPointF, QRectF
 from PyQt6.QtGui import QPainter, QPen, QColor, QPainterPath, QFont
 from collections import deque
-from typing import List, Tuple
 
 from src.utils.logger import get_logger
 
@@ -183,4 +182,3 @@ class PerformanceChart(QWidget):
             int(rect.left() - 35), int(rect.bottom() + 5),
             f"{self._min_value:.1f}"
         )
-

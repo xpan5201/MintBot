@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QKeySequence
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from src.utils.logger import get_logger
 
@@ -308,4 +308,3 @@ class ShortcutSettingsDialog(QDialog):
                     background: #d0d0d0;
                 }
             """
-

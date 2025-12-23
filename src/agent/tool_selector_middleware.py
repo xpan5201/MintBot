@@ -403,9 +403,8 @@ class MintChatToolSelectorMiddleware(AgentMiddleware):
         scores = self._score_categories(user_text)
         hit_score = sum(scores.values())
         if not scores:
-            # 无明显意图：提供一组通用工具兜底，避免把全部工具塞进主模型上下文
-            fallback = [name for name in _DEFAULT_FALLBACK_TOOL_NAMES if name in set(tool_names)]
-            return fallback, 0
+            # 无明显意图：不要强行收缩候选工具，避免误删可用工具导致“工具不可用/空回复”。
+            return [], 0
 
         selected: list[str] = []
         name_set = set(tool_names)

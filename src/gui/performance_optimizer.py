@@ -1,8 +1,7 @@
 """GUI性能优化模块（虚拟滚动、消息池、GPU加速、批量更新、懒加载、内存管理）"""
 
-from PyQt6.QtWidgets import QWidget, QScrollArea, QVBoxLayout
-from PyQt6.QtCore import Qt, QTimer, QRect, QObject, QCoreApplication
-from PyQt6.QtGui import QPainter
+from PyQt6.QtWidgets import QWidget, QScrollArea
+from PyQt6.QtCore import Qt, QTimer, QObject, QCoreApplication
 from typing import List, Dict, Optional, Callable
 import time
 

@@ -23,7 +23,7 @@ def check_dependencies():
         print("✅ PyQt6 已安装")
     except ImportError:
         print("❌ PyQt6 未安装")
-        print("   请运行: pip install PyQt6")
+        print("   请运行: uv sync --locked --no-install-project")
         return False
     
     try:
@@ -210,8 +210,8 @@ def print_summary():
     print("   解决方案: 确保在主线程（GUI线程）中调用")
     print()
     print("3. ❌ PyQt6 版本问题")
-    print("   解决方案: 更新 PyQt6 到最新版本")
-    print("   命令: pip install --upgrade PyQt6")
+    print("   解决方案: 重新同步/升级 PyQt6 依赖（更新锁文件后再同步）")
+    print("   命令: uv sync --locked --no-install-project")
     print()
     print("4. ❌ 权限问题")
     print("   解决方案: 以管理员身份运行程序")

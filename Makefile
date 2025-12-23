@@ -1,82 +1,89 @@
-.PHONY: help install test lint format clean run
+.PHONY: help lock install test test-cov lint format type-check clean run run-tools run-multimodal run-gui setup-config
+
+UV ?= uv
+
+ifeq ($(OS),Windows_NT)
+PY := .venv/Scripts/python.exe
+else
+PY := .venv/bin/python
+endif
 
 help:
 	@echo "MintChat - 多模态猫娘女仆智能体"
 	@echo ""
 	@echo "可用命令:"
-	@echo "  make install    - 安装项目依赖"
-	@echo "  make test       - 运行测试"
-	@echo "  make lint       - 代码检查"
-	@echo "  make format     - 代码格式化"
-	@echo "  make clean      - 清理临时文件"
+	@echo "  make install    - 安装运行依赖 (uv sync --no-install-project)"
+	@echo "  make dev        - 安装开发依赖 (uv sync --group dev --no-install-project)"
+	@echo "  make lock       - 更新 uv.lock"
+	@echo "  make test       - 运行测试 (pytest)"
+	@echo "  make lint       - 代码检查 (flake8)"
+	@echo "  make format     - 代码格式化 (black)"
+	@echo "  make type-check - 类型检查 (mypy)"
+	@echo "  make clean      - 清理缓存/报告"
 	@echo "  make run        - 运行基础对话示例"
-	@echo "  make dev        - 安装开发依赖"
+	@echo "  make run-gui    - 启动 GUI (MintChat.py)"
 
-install:
-	@echo "安装项目依赖..."
-	conda env create -f environment.yml || conda env update -f environment.yml
+lock:
+	@$(UV) lock
+
+sync:
+	@$(UV) sync --locked --no-install-project
+
+install: setup-config sync
 	@echo "依赖安装完成！"
-	@echo "请运行: conda activate mintchat"
 
 dev:
-	@echo "安装开发依赖..."
-	pip install -e ".[dev]"
+	@$(UV) sync --locked --group dev --no-install-project
 	@echo "开发依赖安装完成！"
 
-test:
+test: dev
 	@echo "运行测试..."
-	pytest tests/ -v
+	@$(PY) -m pytest tests/ -v
 
-test-cov:
+test-cov: dev
 	@echo "运行测试并生成覆盖率报告..."
-	pytest --cov=src --cov-report=html --cov-report=term tests/
+	@$(PY) -m pytest --cov=src --cov-report=html --cov-report=term tests/
 	@echo "覆盖率报告已生成到 htmlcov/ 目录"
 
-lint:
+lint: dev
 	@echo "运行代码检查..."
-	flake8 src/ tests/ examples/ --max-line-length=100 --ignore=E203,W503
+	@$(PY) -m flake8 src/ tests/ examples/ --max-line-length=100 --ignore=E203,W503
 	@echo "代码检查完成！"
 
-format:
+format: dev
 	@echo "格式化代码..."
-	black src/ tests/ examples/
+	@$(PY) -m black src/ tests/ examples/
 	@echo "代码格式化完成！"
 
-type-check:
+type-check: dev
 	@echo "运行类型检查..."
-	mypy src/ --ignore-missing-imports
+	@$(PY) -m mypy src/ --ignore-missing-imports
 	@echo "类型检查完成！"
 
 clean:
 	@echo "清理临时文件..."
-	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name ".mypy_cache" -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete 2>/dev/null || true
-	rm -rf htmlcov/ .coverage 2>/dev/null || true
+	@$(UV) run --no-project --script scripts/clean.py
 	@echo "清理完成！"
 
-run:
+run: sync
 	@echo "运行基础对话示例..."
-	python examples/basic_chat.py
+	@$(PY) examples/basic_chat.py
 
-run-tools:
+run-tools: sync
 	@echo "运行工具使用示例..."
-	python examples/tool_usage.py
+	@$(PY) examples/tool_usage.py
 
-run-multimodal:
+run-multimodal: sync
 	@echo "运行多模态示例..."
-	python examples/multimodal_demo.py
+	@$(PY) examples/multimodal_demo.py
+
+run-gui: sync
+	@echo "启动 GUI..."
+	@$(PY) MintChat.py
 
 setup-config:
 	@echo "设置配置文件..."
-	@if [ ! -f config.yaml ]; then \
-		cp config.yaml.example config.yaml; \
-		echo "config.yaml 文件已创建，请编辑并填入您的 API Key"; \
-	else \
-		echo "config.yaml 文件已存在"; \
-	fi
+	@$(UV) run --no-project --script scripts/setup_config.py
 
 all: format lint type-check test
 	@echo "所有检查完成！"

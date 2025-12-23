@@ -122,7 +122,7 @@ class AudioProcessor:
                 return transcript.text
 
             except ImportError:
-                logger.warning("openai 库未安装，请运行: pip install openai")
+                logger.warning("openai 库未安装，请先执行: uv sync --locked --no-install-project")
                 return "语音识别需要安装 openai 库"
 
         except Exception as e:
@@ -184,7 +184,7 @@ class AudioProcessor:
                 return str(output_path)
 
             except ImportError:
-                logger.warning("openai 库未安装，请运行: pip install openai")
+                logger.warning("openai 库未安装，请先执行: uv sync --locked --no-install-project")
                 return "语音合成需要安装 openai 库"
 
         except Exception as e:
@@ -241,6 +241,13 @@ class AudioProcessor:
         try:
             # 尝试使用 pydub
             try:
+                try:
+                    from .ffmpeg_setup import ensure_ffmpeg_for_audio
+
+                    ensure_ffmpeg_for_audio(quiet=True)
+                except Exception:
+                    pass
+
                 from pydub import AudioSegment
 
                 # 加载音频
