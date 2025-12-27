@@ -45,6 +45,7 @@ _CHINESE_KEYWORDS_PATTERN = re.compile(r"[\u4e00-\u9fa5]{2,4}")
 # v2.30.40: 导入混合检索系统
 try:
     from src.agent.hybrid_retriever import HybridRetriever, Reranker, QueryExpander
+
     HAS_HYBRID_RETRIEVER = True
 except Exception as exc:  # pragma: no cover - 环境依赖差异
     HAS_HYBRID_RETRIEVER = False
@@ -56,6 +57,7 @@ except Exception as exc:  # pragma: no cover - 环境依赖差异
 # v2.30.41: 导入知识质量管理系统
 try:
     from src.agent.knowledge_quality import KnowledgeQualityManager
+
     HAS_QUALITY_MANAGER = True
 except Exception as exc:  # pragma: no cover - 环境依赖差异
     HAS_QUALITY_MANAGER = False
@@ -69,6 +71,7 @@ try:
         ProactiveKnowledgePusher,
         KnowledgeUsageTracker,
     )
+
     HAS_RECOMMENDER = True
 except Exception as exc:  # pragma: no cover - 环境依赖差异
     HAS_RECOMMENDER = False
@@ -80,6 +83,7 @@ except Exception as exc:  # pragma: no cover - 环境依赖差异
 # v2.30.43: 导入知识图谱系统
 try:
     from src.agent.knowledge_graph import KnowledgeGraph
+
     HAS_KNOWLEDGE_GRAPH = True
 except Exception as exc:  # pragma: no cover - 环境依赖差异
     HAS_KNOWLEDGE_GRAPH = False
@@ -92,6 +96,7 @@ try:
         MultiLevelCache,
         AsyncProcessor,
     )
+
     HAS_PERFORMANCE_OPTIMIZER = True
 except ImportError:
     HAS_PERFORMANCE_OPTIMIZER = False
@@ -100,6 +105,7 @@ except ImportError:
 # 尝试导入 LangChain LLM
 try:
     from langchain_openai import ChatOpenAI
+
     HAS_LANGCHAIN_LLM = True
 except ImportError:
     HAS_LANGCHAIN_LLM = False
@@ -134,7 +140,9 @@ class CoreMemory:
         if persist_directory:
             persist_dir = persist_directory
         elif user_id is not None:
-            persist_dir = str(Path(settings.data_dir) / "users" / str(user_id) / "memory" / "core_memory")
+            persist_dir = str(
+                Path(settings.data_dir) / "users" / str(user_id) / "memory" / "core_memory"
+            )
         else:
             persist_dir = str(Path(settings.data_dir) / "memory" / "core_memory")
 
@@ -221,11 +229,13 @@ class CoreMemory:
                 if category and doc.metadata.get("category") != category:
                     continue
 
-                memories.append({
-                    "content": doc.page_content,
-                    "similarity": similarity,
-                    "metadata": doc.metadata,
-                })
+                memories.append(
+                    {
+                        "content": doc.page_content,
+                        "similarity": similarity,
+                        "metadata": doc.metadata,
+                    }
+                )
 
                 if len(memories) >= k:
                     break
@@ -311,6 +321,7 @@ class CoreMemory:
 
             if overwrite:
                 from uuid import uuid4
+
                 ids.append(str(item.get("id") or uuid4().hex))
             else:
                 original_id = item.get("id")
@@ -327,12 +338,14 @@ class CoreMemory:
         batch_size = max(1, int(batch_size))
 
         for offset in range(0, len(texts), batch_size):
-            chunk_texts = texts[offset: offset + batch_size]
-            chunk_metas = metadatas[offset: offset + batch_size]
+            chunk_texts = texts[offset : offset + batch_size]
+            chunk_metas = metadatas[offset : offset + batch_size]
             try:
                 if overwrite:
-                    chunk_ids = ids[offset: offset + batch_size]
-                    self.vectorstore.add_texts(texts=chunk_texts, metadatas=chunk_metas, ids=chunk_ids)
+                    chunk_ids = ids[offset : offset + batch_size]
+                    self.vectorstore.add_texts(
+                        texts=chunk_texts, metadatas=chunk_metas, ids=chunk_ids
+                    )
                 else:
                     self.vectorstore.add_texts(texts=chunk_texts, metadatas=chunk_metas)
                 imported += len(chunk_texts)
@@ -405,7 +418,9 @@ class DiaryMemory:
 
         # v2.30.32: 初始化 LLM（用于辅助提取）
         self.llm = None
-        self.use_llm_extraction = getattr(settings.agent, "use_llm_extraction", False)  # 默认关闭，避免过度调用
+        self.use_llm_extraction = getattr(
+            settings.agent, "use_llm_extraction", False
+        )  # 默认关闭，避免过度调用
         if self.use_llm_extraction and HAS_LANGCHAIN_LLM:
             try:
                 self.llm = ChatOpenAI(
@@ -430,7 +445,9 @@ class DiaryMemory:
         self.smart_diary_enabled = getattr(settings.agent, "smart_diary_enabled", True)
         self.diary_importance_threshold = getattr(settings.agent, "diary_importance_threshold", 0.6)
         self.daily_summary_enabled = getattr(settings.agent, "daily_summary_enabled", True)
-        self.diary_daily_max_entries = max(1, int(getattr(settings.agent, "diary_daily_max_entries", 5)))
+        self.diary_daily_max_entries = max(
+            1, int(getattr(settings.agent, "diary_daily_max_entries", 5))
+        )
         self.diary_max_entries = max(1, int(getattr(settings.agent, "diary_max_entries", 500)))
         self.diary_max_days = max(1, int(getattr(settings.agent, "diary_max_days", 90)))
         self.diary_min_chars = max(1, int(getattr(settings.agent, "diary_min_chars", 10)))
@@ -440,7 +457,9 @@ class DiaryMemory:
         self.diary_similarity_threshold = min(
             1.0, max(0.0, float(getattr(settings.agent, "diary_similarity_threshold", 0.9)))
         )
-        self.diary_daily_highlights = max(1, int(getattr(settings.agent, "diary_daily_highlights", 3)))
+        self.diary_daily_highlights = max(
+            1, int(getattr(settings.agent, "diary_daily_highlights", 3))
+        )
         self._last_diary_ts: Optional[datetime] = None
         self._diary_cache: Optional[List[Dict[str, Any]]] = None
         self._diary_lock = Lock()
@@ -459,57 +478,176 @@ class DiaryMemory:
 
         self.emotion_keywords = {
             "happy": {
-                "开心": 1.0, "高兴": 1.0, "快乐": 1.0, "愉快": 1.0, "喜悦": 1.0,
-                "幸福": 1.0, "满足": 0.8, "欣喜": 1.0, "喵~": 0.6,
-                "欢乐": 0.9, "欣慰": 0.8, "舒心": 0.8, "畅快": 0.8,
-                "哈哈": 0.8, "嘻嘻": 0.8, "呵呵": 0.6, "笑": 0.7,
-                "哈哈哈": 0.9, "嘿嘿": 0.7, "嘿": 0.6, "笑了": 0.7,
-                "好": 0.5, "不错": 0.6, "棒": 0.7, "赞": 0.7,
-                "美": 0.6, "妙": 0.6, "爽": 0.7, "舒服": 0.6,
+                "开心": 1.0,
+                "高兴": 1.0,
+                "快乐": 1.0,
+                "愉快": 1.0,
+                "喜悦": 1.0,
+                "幸福": 1.0,
+                "满足": 0.8,
+                "欣喜": 1.0,
+                "喵~": 0.6,
+                "欢乐": 0.9,
+                "欣慰": 0.8,
+                "舒心": 0.8,
+                "畅快": 0.8,
+                "哈哈": 0.8,
+                "嘻嘻": 0.8,
+                "呵呵": 0.6,
+                "笑": 0.7,
+                "哈哈哈": 0.9,
+                "嘿嘿": 0.7,
+                "嘿": 0.6,
+                "笑了": 0.7,
+                "好": 0.5,
+                "不错": 0.6,
+                "棒": 0.7,
+                "赞": 0.7,
+                "美": 0.6,
+                "妙": 0.6,
+                "爽": 0.7,
+                "舒服": 0.6,
             },
             "sad": {
-                "难过": 1.0, "伤心": 1.0, "悲伤": 1.0, "失落": 0.9, "沮丧": 0.9,
-                "郁闷": 0.8, "不开心": 1.0, "痛苦": 1.0, "心痛": 1.0,
-                "悲痛": 1.0, "忧伤": 0.9, "哀伤": 0.9, "凄凉": 0.8,
-                "哭": 0.9, "呜呜": 0.8, "泪": 0.7, "眼泪": 0.8,
-                "哭了": 0.9, "流泪": 0.8, "泪水": 0.8, "哭泣": 0.9,
-                "累": 0.5, "疲惫": 0.6, "无奈": 0.6, "失望": 0.7,
-                "绝望": 0.8, "心酸": 0.7, "委屈": 0.7, "孤独": 0.6,
+                "难过": 1.0,
+                "伤心": 1.0,
+                "悲伤": 1.0,
+                "失落": 0.9,
+                "沮丧": 0.9,
+                "郁闷": 0.8,
+                "不开心": 1.0,
+                "痛苦": 1.0,
+                "心痛": 1.0,
+                "悲痛": 1.0,
+                "忧伤": 0.9,
+                "哀伤": 0.9,
+                "凄凉": 0.8,
+                "哭": 0.9,
+                "呜呜": 0.8,
+                "泪": 0.7,
+                "眼泪": 0.8,
+                "哭了": 0.9,
+                "流泪": 0.8,
+                "泪水": 0.8,
+                "哭泣": 0.9,
+                "累": 0.5,
+                "疲惫": 0.6,
+                "无奈": 0.6,
+                "失望": 0.7,
+                "绝望": 0.8,
+                "心酸": 0.7,
+                "委屈": 0.7,
+                "孤独": 0.6,
             },
             "angry": {
-                "生气": 1.0, "愤怒": 1.0, "恼火": 0.9, "气愤": 1.0, "讨厌": 0.8,
-                "烦": 0.7, "哼": 0.6, "火大": 0.9, "气死": 1.0,
-                "暴怒": 1.0, "发火": 0.9, "恼怒": 0.9, "愤慨": 0.9,
-                "可恶": 0.8, "混蛋": 0.9, "该死": 0.9, "烦死": 0.8,
-                "烦人": 0.7, "讨厌死": 0.8, "气人": 0.8, "可气": 0.8,
+                "生气": 1.0,
+                "愤怒": 1.0,
+                "恼火": 0.9,
+                "气愤": 1.0,
+                "讨厌": 0.8,
+                "烦": 0.7,
+                "哼": 0.6,
+                "火大": 0.9,
+                "气死": 1.0,
+                "暴怒": 1.0,
+                "发火": 0.9,
+                "恼怒": 0.9,
+                "愤慨": 0.9,
+                "可恶": 0.8,
+                "混蛋": 0.9,
+                "该死": 0.9,
+                "烦死": 0.8,
+                "烦人": 0.7,
+                "讨厌死": 0.8,
+                "气人": 0.8,
+                "可气": 0.8,
             },
             "anxious": {
-                "担心": 1.0, "焦虑": 1.0, "紧张": 1.0, "不安": 0.9, "害怕": 1.0,
-                "恐惧": 1.0, "忧虑": 0.9, "慌": 0.8, "怕": 0.7,
-                "惊慌": 0.9, "恐慌": 0.9, "惶恐": 0.8, "惊恐": 0.9,
-                "紧迫": 0.7, "压力": 0.8, "忐忑": 0.9, "慌张": 0.8,
-                "慌乱": 0.8, "不知所措": 0.9, "手足无措": 0.9, "心慌": 0.8,
+                "担心": 1.0,
+                "焦虑": 1.0,
+                "紧张": 1.0,
+                "不安": 0.9,
+                "害怕": 1.0,
+                "恐惧": 1.0,
+                "忧虑": 0.9,
+                "慌": 0.8,
+                "怕": 0.7,
+                "惊慌": 0.9,
+                "恐慌": 0.9,
+                "惶恐": 0.8,
+                "惊恐": 0.9,
+                "紧迫": 0.7,
+                "压力": 0.8,
+                "忐忑": 0.9,
+                "慌张": 0.8,
+                "慌乱": 0.8,
+                "不知所措": 0.9,
+                "手足无措": 0.9,
+                "心慌": 0.8,
             },
             "excited": {
-                "兴奋": 1.0, "激动": 1.0, "期待": 0.9, "迫不及待": 1.0,
-                "太棒了": 1.0, "好棒": 0.9, "厉害": 0.8, "牛": 0.7,
-                "盼望": 0.9, "渴望": 0.9, "向往": 0.8, "憧憬": 0.8,
-                "哇": 0.7, "耶": 0.8, "赞": 0.7, "哇塞": 0.8, "天啊": 0.7,
-                "太好了": 0.9, "真棒": 0.8, "酷": 0.7, "帅": 0.7,
-                "期盼": 0.6, "想": 0.4, "希望": 0.5, "等不及": 0.8,
+                "兴奋": 1.0,
+                "激动": 1.0,
+                "期待": 0.9,
+                "迫不及待": 1.0,
+                "太棒了": 1.0,
+                "好棒": 0.9,
+                "厉害": 0.8,
+                "牛": 0.7,
+                "盼望": 0.9,
+                "渴望": 0.9,
+                "向往": 0.8,
+                "憧憬": 0.8,
+                "哇": 0.7,
+                "耶": 0.8,
+                "赞": 0.7,
+                "哇塞": 0.8,
+                "天啊": 0.7,
+                "太好了": 0.9,
+                "真棒": 0.8,
+                "酷": 0.7,
+                "帅": 0.7,
+                "期盼": 0.6,
+                "想": 0.4,
+                "希望": 0.5,
+                "等不及": 0.8,
             },
         }
 
         self.negation_words = ["不", "没", "无", "未", "别", "莫", "勿", "毋"]
 
         self.degree_words = {
-            "超级": 2.0, "非常": 2.0, "特别": 2.0, "极其": 2.0, "十分": 2.0,
-            "太": 2.0, "最": 2.0, "极": 2.0, "超": 1.8,
-            "巨": 1.9, "无比": 2.0, "格外": 1.9, "异常": 1.9,
-            "很": 1.5, "挺": 1.5, "相当": 1.5, "颇": 1.5, "蛮": 1.5,
-            "够": 1.4, "实在": 1.5, "真": 1.5, "真的": 1.5,
-            "比较": 1.2, "还": 1.2, "稍微": 0.8, "有点": 0.8, "略": 0.8,
-            "稍": 0.8, "些许": 0.7, "一点": 0.8, "点": 0.7,
+            "超级": 2.0,
+            "非常": 2.0,
+            "特别": 2.0,
+            "极其": 2.0,
+            "十分": 2.0,
+            "太": 2.0,
+            "最": 2.0,
+            "极": 2.0,
+            "超": 1.8,
+            "巨": 1.9,
+            "无比": 2.0,
+            "格外": 1.9,
+            "异常": 1.9,
+            "很": 1.5,
+            "挺": 1.5,
+            "相当": 1.5,
+            "颇": 1.5,
+            "蛮": 1.5,
+            "够": 1.4,
+            "实在": 1.5,
+            "真": 1.5,
+            "真的": 1.5,
+            "比较": 1.2,
+            "还": 1.2,
+            "稍微": 0.8,
+            "有点": 0.8,
+            "略": 0.8,
+            "稍": 0.8,
+            "些许": 0.7,
+            "一点": 0.8,
+            "点": 0.7,
         }
 
         self.emotion_opposite = {
@@ -538,42 +676,119 @@ class DiaryMemory:
 
         self.topic_keywords = {
             "work": {
-                "工作": 2.0, "项目": 2.0, "任务": 1.8, "会议": 2.0,
-                "同事": 1.5, "老板": 1.8, "公司": 1.8, "加班": 2.0,
-                "职业": 1.5, "业务": 1.5, "客户": 1.5, "合同": 1.8,
-                "上班": 1.8, "下班": 1.5, "办公": 1.5, "职场": 1.5,
-                "领导": 1.8, "部门": 1.5, "团队": 1.5, "绩效": 1.8,
-                "报告": 1.5, "文档": 1.2, "邮件": 1.2, "电话": 1.0,
+                "工作": 2.0,
+                "项目": 2.0,
+                "任务": 1.8,
+                "会议": 2.0,
+                "同事": 1.5,
+                "老板": 1.8,
+                "公司": 1.8,
+                "加班": 2.0,
+                "职业": 1.5,
+                "业务": 1.5,
+                "客户": 1.5,
+                "合同": 1.8,
+                "上班": 1.8,
+                "下班": 1.5,
+                "办公": 1.5,
+                "职场": 1.5,
+                "领导": 1.8,
+                "部门": 1.5,
+                "团队": 1.5,
+                "绩效": 1.8,
+                "报告": 1.5,
+                "文档": 1.2,
+                "邮件": 1.2,
+                "电话": 1.0,
             },
             "life": {
-                "生活": 2.0, "家": 1.8, "家人": 1.8, "父母": 1.5,
-                "吃饭": 1.5, "睡觉": 1.5, "休息": 1.5, "购物": 1.5,
-                "做饭": 1.5, "打扫": 1.5, "洗衣": 1.2, "家务": 1.5,
-                "日常": 1.5, "琐事": 1.2, "生活琐事": 1.5,
+                "生活": 2.0,
+                "家": 1.8,
+                "家人": 1.8,
+                "父母": 1.5,
+                "吃饭": 1.5,
+                "睡觉": 1.5,
+                "休息": 1.5,
+                "购物": 1.5,
+                "做饭": 1.5,
+                "打扫": 1.5,
+                "洗衣": 1.2,
+                "家务": 1.5,
+                "日常": 1.5,
+                "琐事": 1.2,
+                "生活琐事": 1.5,
             },
             "study": {
-                "学习": 2.0, "考试": 2.0, "作业": 1.8, "课程": 1.8,
-                "老师": 1.5, "同学": 1.5, "学校": 1.8, "上课": 1.8,
-                "复习": 1.8, "预习": 1.5, "笔记": 1.5, "教材": 1.5,
-                "知识": 1.5, "技能": 1.5, "培训": 1.5, "证书": 1.5,
+                "学习": 2.0,
+                "考试": 2.0,
+                "作业": 1.8,
+                "课程": 1.8,
+                "老师": 1.5,
+                "同学": 1.5,
+                "学校": 1.8,
+                "上课": 1.8,
+                "复习": 1.8,
+                "预习": 1.5,
+                "笔记": 1.5,
+                "教材": 1.5,
+                "知识": 1.5,
+                "技能": 1.5,
+                "培训": 1.5,
+                "证书": 1.5,
             },
             "entertainment": {
-                "娱乐": 2.0, "游戏": 1.8, "电影": 1.8, "音乐": 1.8,
-                "看剧": 1.8, "追剧": 1.8, "动漫": 1.5, "小说": 1.5,
-                "玩": 1.5, "逛街": 1.5, "旅游": 1.8, "旅行": 1.8,
-                "聚会": 1.5, "派对": 1.5, "唱歌": 1.5, "跳舞": 1.5,
+                "娱乐": 2.0,
+                "游戏": 1.8,
+                "电影": 1.8,
+                "音乐": 1.8,
+                "看剧": 1.8,
+                "追剧": 1.8,
+                "动漫": 1.5,
+                "小说": 1.5,
+                "玩": 1.5,
+                "逛街": 1.5,
+                "旅游": 1.8,
+                "旅行": 1.8,
+                "聚会": 1.5,
+                "派对": 1.5,
+                "唱歌": 1.5,
+                "跳舞": 1.5,
             },
             "health": {
-                "健康": 2.0, "身体": 1.8, "生病": 1.8, "医院": 1.8,
-                "医生": 1.5, "药": 1.5, "治疗": 1.5, "检查": 1.5,
-                "运动": 1.8, "锻炼": 1.8, "健身": 1.8, "跑步": 1.5,
-                "饮食": 1.5, "营养": 1.5, "睡眠": 1.5, "休息": 1.2,
+                "健康": 2.0,
+                "身体": 1.8,
+                "生病": 1.8,
+                "医院": 1.8,
+                "医生": 1.5,
+                "药": 1.5,
+                "治疗": 1.5,
+                "检查": 1.5,
+                "运动": 1.8,
+                "锻炼": 1.8,
+                "健身": 1.8,
+                "跑步": 1.5,
+                "饮食": 1.5,
+                "营养": 1.5,
+                "睡眠": 1.5,
+                "休息": 1.2,
             },
             "relationship": {
-                "朋友": 2.0, "友情": 2.0, "恋爱": 2.0, "爱情": 2.0,
-                "男友": 1.8, "女友": 1.8, "伴侣": 1.8, "对象": 1.8,
-                "家人": 1.8, "亲人": 1.8, "关系": 1.5, "相处": 1.5,
-                "聊天": 1.2, "交流": 1.2, "沟通": 1.5, "理解": 1.2,
+                "朋友": 2.0,
+                "友情": 2.0,
+                "恋爱": 2.0,
+                "爱情": 2.0,
+                "男友": 1.8,
+                "女友": 1.8,
+                "伴侣": 1.8,
+                "对象": 1.8,
+                "家人": 1.8,
+                "亲人": 1.8,
+                "关系": 1.5,
+                "相处": 1.5,
+                "聊天": 1.2,
+                "交流": 1.2,
+                "沟通": 1.5,
+                "理解": 1.2,
             },
         }
         # v3.3.5: 主题关键词字典只读复用，避免多实例重复构造
@@ -671,12 +886,16 @@ class DiaryMemory:
             reasons.append(f"重要对话(重要性:{importance:.2f})")
 
         # 2. 美好瞬间（happy, excited 情感）- 需有足够长度或事件信息
-        if emotion in ["happy", "excited"] and existing_happy_count < 2 and (
-            importance >= self.diary_importance_threshold
-            or content_len >= max(30, self.diary_min_chars * 2)
-            or people
-            or location
-            or event
+        if (
+            emotion in ["happy", "excited"]
+            and existing_happy_count < 2
+            and (
+                importance >= self.diary_importance_threshold
+                or content_len >= max(30, self.diary_min_chars * 2)
+                or people
+                or location
+                or event
+            )
         ):
             reasons.append(f"美好瞬间({emotion})")
 
@@ -739,7 +958,9 @@ class DiaryMemory:
         return {
             "emotion": emotion or llm_result.get("emotion") or self._extract_emotion(content),
             "topic": topic or llm_result.get("topic") or self._extract_topic(content),
-            "importance": importance if importance is not None else self._calculate_importance(content),
+            "importance": (
+                importance if importance is not None else self._calculate_importance(content)
+            ),
             "people": people or llm_result.get("people") or [],
             "location": location or llm_result.get("location"),
             "time_info": time_info or llm_result.get("time"),
@@ -812,8 +1033,7 @@ class DiaryMemory:
             diaries = [
                 entry
                 for entry in diaries
-                if (ts := entry.get("timestamp"))
-                and self._safe_parse_datetime(ts) >= cutoff
+                if (ts := entry.get("timestamp")) and self._safe_parse_datetime(ts) >= cutoff
             ] or diaries[-self.diary_max_entries :]
 
         # 限制最大条数（保留最新）
@@ -834,7 +1054,9 @@ class DiaryMemory:
             logger.warning(f"检查每日日记上限失败: {e}")
             return False
 
-    def _count_daily_emotion(self, date_str: str, target_emotions: Optional[set[str]] = None) -> int:
+    def _count_daily_emotion(
+        self, date_str: str, target_emotions: Optional[set[str]] = None
+    ) -> int:
         """
         统计某天指定情绪的日记条数。
         """
@@ -885,8 +1107,7 @@ class DiaryMemory:
         """
         with self._diary_lock:
             self.diary_file.write_text(
-                json.dumps(diaries, ensure_ascii=False, indent=2),
-                encoding="utf-8"
+                json.dumps(diaries, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             self._diary_cache = list(diaries)
 
@@ -1028,8 +1249,8 @@ class DiaryMemory:
         imported_vs = 0
         batch_size = max(1, int(batch_size))
         for offset in range(0, len(texts), batch_size):
-            chunk_texts = texts[offset: offset + batch_size]
-            chunk_metas = metadatas[offset: offset + batch_size]
+            chunk_texts = texts[offset : offset + batch_size]
+            chunk_metas = metadatas[offset : offset + batch_size]
             try:
                 self.vectorstore.add_texts(texts=chunk_texts, metadatas=chunk_metas)
                 imported_vs += len(chunk_texts)
@@ -1070,7 +1291,9 @@ class DiaryMemory:
             "emotion": metadata["emotion"],
             "topic": metadata["topic"],
             "importance": metadata["importance"],
-            "people": json.dumps(metadata["people"], ensure_ascii=False) if metadata["people"] else "[]",
+            "people": (
+                json.dumps(metadata["people"], ensure_ascii=False) if metadata["people"] else "[]"
+            ),
             "location": metadata.get("location") or "",
             "time_info": metadata.get("time_info") or "",
             "event": metadata.get("event") or "",
@@ -1154,18 +1377,21 @@ class DiaryMemory:
         if (
             not force_save
             and self._last_diary_ts is not None
-            and (timestamp - self._last_diary_ts).total_seconds() < self.diary_min_interval_minutes * 60
+            and (timestamp - self._last_diary_ts).total_seconds()
+            < self.diary_min_interval_minutes * 60
         ):
             logger.debug(
                 "跳过日记保存：距离上次日记不足 %d 分钟",
                 self.diary_min_interval_minutes,
             )
             if self.daily_summary_enabled:
-                self.daily_conversations.append({
-                    "content": content,
-                    "timestamp": timestamp,
-                    **metadata,
-                })
+                self.daily_conversations.append(
+                    {
+                        "content": content,
+                        "timestamp": timestamp,
+                        **metadata,
+                    }
+                )
             return
 
         # v2.30.36: 智能过滤 - 判断是否应该保存为日记
@@ -1177,17 +1403,21 @@ class DiaryMemory:
                 location=metadata.get("location"),
                 event=metadata.get("event"),
                 content_len=len(content),
-                existing_happy_count=self._count_daily_emotion(date_str, target_emotions={"happy", "excited"}),
+                existing_happy_count=self._count_daily_emotion(
+                    date_str, target_emotions={"happy", "excited"}
+                ),
             )
             if not should_save:
                 logger.debug("跳过日记保存: %s - %.30s...", reason, content)
                 # 添加到临时对话缓存（用于每日总结）
                 if self.daily_summary_enabled:
-                    self.daily_conversations.append({
-                        "content": content,
-                        "timestamp": timestamp,
-                        **metadata,
-                    })
+                    self.daily_conversations.append(
+                        {
+                            "content": content,
+                            "timestamp": timestamp,
+                            **metadata,
+                        }
+                    )
                 return
             else:
                 logger.info("保存日记: %s", reason)
@@ -1196,11 +1426,13 @@ class DiaryMemory:
         if self._is_daily_cap_reached(date_str):
             logger.debug("跳过日记保存：已达到每日上限 %d", self.diary_daily_max_entries)
             if self.daily_summary_enabled:
-                self.daily_conversations.append({
-                    "content": content,
-                    "timestamp": timestamp,
-                    **metadata,
-                })
+                self.daily_conversations.append(
+                    {
+                        "content": content,
+                        "timestamp": timestamp,
+                        **metadata,
+                    }
+                )
             return
 
         # v2.48.4: 使用辅助方法保存日记
@@ -1209,11 +1441,13 @@ class DiaryMemory:
             self._save_diary_to_vectorstore(content, timestamp, metadata)
             self._last_diary_ts = timestamp
             if self.daily_summary_enabled:
-                self.daily_conversations.append({
-                    "content": content,
-                    "timestamp": timestamp,
-                    **metadata,
-                })
+                self.daily_conversations.append(
+                    {
+                        "content": content,
+                        "timestamp": timestamp,
+                        **metadata,
+                    }
+                )
 
     def generate_daily_summary(self, force: bool = False) -> Optional[str]:
         """
@@ -1286,7 +1520,9 @@ class DiaryMemory:
             f"情感分布: {emotion_summary}\n"
             f"话题分布: {topic_summary}\n"
             f"平均重要性: {avg_importance:.2f}\n\n"
-            "今天的高光时刻：\n" + ("\n".join(highlight_lines) if highlight_lines else "（暂无）") + "\n\n"
+            "今天的高光时刻：\n"
+            + ("\n".join(highlight_lines) if highlight_lines else "（暂无）")
+            + "\n\n"
             "今天是美好的一天，期待明天继续和主人聊天喵~ 💕"
         )
 
@@ -1451,22 +1687,43 @@ class DiaryMemory:
         # 基础分数：基于内容长度（调整公式，让长消息得分更高）
         # 使用对数函数，让长度影响更平滑
         import math
+
         length_score = min(math.log(len(content) + 1) / 10, 0.3)  # 最多0.3分
 
         # 重要性关键词（带权重）
         important_keywords = {
             # 极高重要性（权重 0.25）
-            "紧急": 0.25, "严重": 0.25, "危险": 0.25, "警告": 0.25,
-            "立即": 0.25, "马上": 0.25, "赶紧": 0.25,
+            "紧急": 0.25,
+            "严重": 0.25,
+            "危险": 0.25,
+            "警告": 0.25,
+            "立即": 0.25,
+            "马上": 0.25,
+            "赶紧": 0.25,
             # 高重要性（权重 0.20）
-            "重要": 0.20, "关键": 0.20, "必须": 0.20, "一定": 0.20,
-            "务必": 0.20, "千万": 0.20, "切记": 0.20,
+            "重要": 0.20,
+            "关键": 0.20,
+            "必须": 0.20,
+            "一定": 0.20,
+            "务必": 0.20,
+            "千万": 0.20,
+            "切记": 0.20,
             # 中重要性（权重 0.15）
-            "记住": 0.15, "提醒": 0.15, "别忘": 0.15, "注意": 0.15,
-            "小心": 0.15, "当心": 0.15, "留意": 0.15,
+            "记住": 0.15,
+            "提醒": 0.15,
+            "别忘": 0.15,
+            "注意": 0.15,
+            "小心": 0.15,
+            "当心": 0.15,
+            "留意": 0.15,
             # 低重要性（权重 0.10）
-            "需要": 0.10, "应该": 0.10, "最好": 0.10, "建议": 0.10,
-            "希望": 0.08, "想要": 0.08, "打算": 0.08,
+            "需要": 0.10,
+            "应该": 0.10,
+            "最好": 0.10,
+            "建议": 0.10,
+            "希望": 0.08,
+            "想要": 0.08,
+            "打算": 0.08,
         }
 
         # 关键词加分（累加所有匹配的关键词权重）
@@ -1483,14 +1740,27 @@ class DiaryMemory:
         # 特殊事件加分
         special_events = {
             # 时间相关（权重 0.15）
-            "明天": 0.15, "今天": 0.10, "下周": 0.15, "下月": 0.15,
-            "截止": 0.20, "期限": 0.20, "日期": 0.10,
+            "明天": 0.15,
+            "今天": 0.10,
+            "下周": 0.15,
+            "下月": 0.15,
+            "截止": 0.20,
+            "期限": 0.20,
+            "日期": 0.10,
             # 人物相关（权重 0.10）
-            "会议": 0.15, "面试": 0.20, "约会": 0.15, "聚会": 0.10,
-            "生日": 0.15, "纪念日": 0.15,
+            "会议": 0.15,
+            "面试": 0.20,
+            "约会": 0.15,
+            "聚会": 0.10,
+            "生日": 0.15,
+            "纪念日": 0.15,
             # 事件相关（权重 0.10）
-            "考试": 0.20, "比赛": 0.15, "演出": 0.15, "活动": 0.10,
-            "项目": 0.15, "任务": 0.12,
+            "考试": 0.20,
+            "比赛": 0.15,
+            "演出": 0.15,
+            "活动": 0.10,
+            "项目": 0.15,
+            "任务": 0.12,
         }
 
         # 特殊事件加分
@@ -1592,21 +1862,23 @@ class DiaryMemory:
                 similarity = 1.0 - score
 
                 # 应用阈值
-                if (
-                    settings.agent.is_check_memorys
-                    and similarity < settings.agent.mem_thresholds
-                ):
+                if settings.agent.is_check_memorys and similarity < settings.agent.mem_thresholds:
                     continue
 
                 # v2.48.5: 使用海象运算符优化重要性过滤
-                if min_importance is not None and doc.metadata.get("importance", 0.0) < min_importance:
+                if (
+                    min_importance is not None
+                    and doc.metadata.get("importance", 0.0) < min_importance
+                ):
                     continue
 
-                memories.append({
-                    "content": doc.page_content,
-                    "similarity": similarity,
-                    "metadata": doc.metadata,
-                })
+                memories.append(
+                    {
+                        "content": doc.page_content,
+                        "similarity": similarity,
+                        "metadata": doc.metadata,
+                    }
+                )
 
                 if len(memories) >= k:
                     break
@@ -1643,10 +1915,7 @@ class DiaryMemory:
             diaries = self._get_diaries()
 
             # 筛选指定情感的日记
-            results = [
-                diary for diary in diaries
-                if diary.get("emotion") == emotion
-            ]
+            results = [diary for diary in diaries if diary.get("emotion") == emotion]
 
             # 按重要性排序
             results.sort(key=lambda x: x.get("importance", 0.0), reverse=True)
@@ -1680,10 +1949,7 @@ class DiaryMemory:
             diaries = self._get_diaries()
 
             # 筛选指定主题的日记
-            results = [
-                diary for diary in diaries
-                if diary.get("topic") == topic
-            ]
+            results = [diary for diary in diaries if diary.get("topic") == topic]
 
             # 按重要性排序
             results.sort(key=lambda x: x.get("importance", 0.0), reverse=True)
@@ -1803,6 +2069,8 @@ class LoreBook:
         """
         # 并发读写保护：质量检查等后台任务可能与主线程同时访问 JSON/缓存
         self._lock = Lock()
+        # 混合检索器初始化保护：避免并发触发导致重复构建 BM25 索引
+        self._hybrid_init_lock = Lock()
         # 使用次数写盘缓冲（避免每次 search 都读写 JSON + 清缓存）
         self._usage_buffer: Dict[str, int] = {}
         self._usage_pending_total: int = 0
@@ -1828,7 +2096,9 @@ class LoreBook:
         if persist_directory:
             persist_dir = persist_directory
         elif user_id is not None:
-            persist_dir = str(Path(settings.data_dir) / "users" / str(user_id) / "memory" / "lore_books")
+            persist_dir = str(
+                Path(settings.data_dir) / "users" / str(user_id) / "memory" / "lore_books"
+            )
         else:
             persist_dir = str(Path(settings.data_dir) / "memory" / "lore_books")
 
@@ -1850,9 +2120,13 @@ class LoreBook:
         # v2.30.39: 添加内存缓存（提升性能）
         self._cache = {
             "all_lores": None,  # 缓存所有知识
+            "lore_by_id": None,  # 缓存 ID->知识 索引（性能优化：O(1) 查找）
             "statistics": None,  # 缓存统计信息
             "last_update": None,  # 最后更新时间
         }
+
+        # v3.3.6: 记录最近一次知识库搜索命中（用于“相关知识”类的主动推送上下文）
+        self._last_search_hit: Optional[Dict[str, Any]] = None
 
         # v2.30.40: 初始化混合检索器
         self.hybrid_retriever = None
@@ -1878,7 +2152,36 @@ class LoreBook:
 
         if HAS_RECOMMENDER:
             self.recommender = KnowledgeRecommender()
-            self.pusher = ProactiveKnowledgePusher()
+
+            persist_push_state = bool(getattr(settings.agent, "proactive_push_persist_state", True))
+            configured_state_file = getattr(settings.agent, "proactive_push_state_file", None)
+            state_file: Optional[Path] = None
+            if persist_push_state:
+                try:
+                    if configured_state_file:
+                        state_file = Path(str(configured_state_file))
+                    else:
+                        state_file = (
+                            Path(settings.data_dir) / "memory" / "proactive_push_state.json"
+                        )
+                except Exception:
+                    state_file = None
+            self.pusher = ProactiveKnowledgePusher(
+                push_cooldown_s=float(getattr(settings.agent, "proactive_push_cooldown_s", 300.0)),
+                max_history=int(getattr(settings.agent, "proactive_push_max_history", 1000)),
+                max_pushed_per_user=int(
+                    getattr(settings.agent, "proactive_push_max_pushed_per_user", 500)
+                ),
+                max_pushes_per_day=int(getattr(settings.agent, "proactive_push_daily_limit", 10)),
+                min_quality_score=float(
+                    getattr(settings.agent, "proactive_push_min_quality_score", 0.5)
+                ),
+                min_relevance_score=float(
+                    getattr(settings.agent, "proactive_push_min_relevance_score", 0.3)
+                ),
+                persist_state=persist_push_state,
+                state_file=state_file,
+            )
             self.usage_tracker = KnowledgeUsageTracker()
             logger.info("知识推荐系统已启用")
 
@@ -1888,16 +2191,24 @@ class LoreBook:
         if HAS_KNOWLEDGE_GRAPH and getattr(settings.agent, "knowledge_graph_enabled", True):
             self.knowledge_graph = KnowledgeGraph(
                 autosave=bool(getattr(settings.agent, "knowledge_graph_autosave", True)),
-                rule_max_ids_per_keyword=getattr(settings.agent, "knowledge_graph_rule_max_ids_per_keyword", 200),
+                rule_max_ids_per_keyword=getattr(
+                    settings.agent, "knowledge_graph_rule_max_ids_per_keyword", 200
+                ),
                 rule_max_keyword_links_per_node=getattr(
                     settings.agent, "knowledge_graph_rule_max_keyword_links_per_node", 12
                 ),
-                rule_category_anchor_count=getattr(settings.agent, "knowledge_graph_rule_category_anchor_count", 2),
-                rule_max_relations=getattr(settings.agent, "knowledge_graph_rule_max_relations", 100_000),
+                rule_category_anchor_count=getattr(
+                    settings.agent, "knowledge_graph_rule_category_anchor_count", 2
+                ),
+                rule_max_relations=getattr(
+                    settings.agent, "knowledge_graph_rule_max_relations", 100_000
+                ),
                 rule_shared_keywords_desc_limit=getattr(
                     settings.agent, "knowledge_graph_rule_shared_keywords_desc_limit", 12
                 ),
-                save_pretty_json=bool(getattr(settings.agent, "knowledge_graph_save_pretty_json", True)),
+                save_pretty_json=bool(
+                    getattr(settings.agent, "knowledge_graph_save_pretty_json", True)
+                ),
                 save_sort=bool(getattr(settings.agent, "knowledge_graph_save_sort", True)),
             )
             logger.info("知识图谱系统已启用")
@@ -1920,7 +2231,9 @@ class LoreBook:
                 enable_redis=getattr(settings.agent, "redis_enabled", True),
                 connect_timeout=getattr(settings.agent, "redis_connect_timeout", 2.0),
                 socket_timeout=getattr(settings.agent, "redis_socket_timeout", 2.0),
-                validate_connection=bool(getattr(settings.agent, "redis_validate_on_startup", False)),
+                validate_connection=bool(
+                    getattr(settings.agent, "redis_validate_on_startup", False)
+                ),
             )
 
             # 异步处理器
@@ -1966,9 +2279,7 @@ class LoreBook:
         existing_knowledge = self.get_all_lores(use_cache=True)
 
         # 评估知识质量
-        assessment = self.quality_manager.assess_knowledge(
-            knowledge_data, existing_knowledge
-        )
+        assessment = self.quality_manager.assess_knowledge(knowledge_data, existing_knowledge)
 
         # 记录评估结果
         if not assessment["is_valid"]:
@@ -1994,7 +2305,10 @@ class LoreBook:
         if not self.knowledge_graph:
             return
 
-        if getattr(settings.agent, "knowledge_graph_auto_update_async", True) and self.async_processor:
+        if (
+            getattr(settings.agent, "knowledge_graph_auto_update_async", True)
+            and self.async_processor
+        ):
             try:
                 self.async_processor.submit(func, *args, **kwargs)
                 return
@@ -2131,6 +2445,7 @@ class LoreBook:
 
         # v2.30.38: 生成唯一ID
         import uuid
+
         lore_id = str(uuid.uuid4())
 
         # v2.48.4: 使用辅助方法创建元数据
@@ -2148,19 +2463,21 @@ class LoreBook:
             )
 
             # v2.30.38: 保存到 JSON 文件
-            self._save_to_json({
-                "id": lore_id,
-                "title": title,
-                "content": content,
-                "category": category,
-                "keywords": keywords or [],
-                "source": source,
-                "timestamp": metadata["timestamp"],
-                "update_count": 0,
-                "usage_count": 0,
-                "positive_feedback": 0,
-                "negative_feedback": 0,
-            })
+            self._save_to_json(
+                {
+                    "id": lore_id,
+                    "title": title,
+                    "content": content,
+                    "category": category,
+                    "keywords": keywords or [],
+                    "source": source,
+                    "timestamp": metadata["timestamp"],
+                    "update_count": 0,
+                    "usage_count": 0,
+                    "positive_feedback": 0,
+                    "negative_feedback": 0,
+                }
+            )
 
             # v2.30.39: 清除缓存
             self._invalidate_cache()
@@ -2201,6 +2518,16 @@ class LoreBook:
             logger.debug("关闭异步处理器失败（可忽略）: %s", exc)
         finally:
             self.async_processor = None
+
+        try:
+            if self.multi_cache:
+                close_fn = getattr(self.multi_cache, "close", None)
+                if callable(close_fn):
+                    close_fn()
+        except Exception as exc:
+            logger.debug("关闭多级缓存失败（可忽略）: %s", exc)
+        finally:
+            self.multi_cache = None
 
     def update_lore(
         self,
@@ -2334,16 +2661,21 @@ class LoreBook:
             return
 
         try:
-            # 获取所有文档
-            all_lores = self.get_all_lores(use_cache=True)
+            with self._hybrid_init_lock:
+                if self.hybrid_retriever is not None:
+                    return
 
-            if all_lores:
-                # 构建混合检索器
-                self.hybrid_retriever = HybridRetriever(
-                    vectorstore=self.vectorstore,
-                    documents=all_lores
-                )
-                logger.info(f"混合检索器初始化完成，文档数量: {len(all_lores)}")
+                # 获取所有文档
+                all_lores = self.get_all_lores(use_cache=True)
+
+                if all_lores:
+                    # 构建混合检索器
+                    self.hybrid_retriever = HybridRetriever(
+                        vectorstore=self.vectorstore,
+                        documents=all_lores,
+                        query_expander=self.query_expander,
+                    )
+                    logger.info(f"混合检索器初始化完成，文档数量: {len(all_lores)}")
         except Exception as e:
             logger.error(f"混合检索器初始化失败: {e}")
 
@@ -2394,11 +2726,13 @@ class LoreBook:
         # 转换格式
         lores = []
         for result in results:
-            lores.append({
-                "content": result.get("content", ""),
-                "similarity": result.get("final_score", result.get("score", 0.0)),
-                "metadata": result.get("metadata", {}),
-            })
+            lores.append(
+                {
+                    "content": result.get("content", ""),
+                    "similarity": result.get("final_score", result.get("score", 0.0)),
+                    "metadata": result.get("metadata", {}),
+                }
+            )
 
         logger.debug(f"混合检索完成: 找到 {len(lores)} 条相关知识")
         return lores
@@ -2434,17 +2768,70 @@ class LoreBook:
             if category and doc.metadata.get("category") != category:
                 continue
 
-            lores.append({
-                "content": doc.page_content,
-                "similarity": similarity,
-                "metadata": doc.metadata,
-            })
+            lores.append(
+                {
+                    "content": doc.page_content,
+                    "similarity": similarity,
+                    "metadata": doc.metadata,
+                }
+            )
 
             if len(lores) >= k:
                 break
 
         logger.debug(f"向量检索完成: 找到 {len(lores)} 条相关知识")
         return lores
+
+    @staticmethod
+    def _summarize_search_hit(lores: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        提取最近一次搜索的首条命中（轻量摘要），用于后续“相关知识”类主动推送上下文。
+
+        search_lore 返回的是 vectorstore 结构：{"content": ..., "similarity": ..., "metadata": {...}}
+        """
+        if not lores:
+            return None
+        first = lores[0]
+        if not isinstance(first, dict):
+            return None
+
+        meta = first.get("metadata") or {}
+        if not isinstance(meta, dict):
+            meta = {}
+
+        lore_id = meta.get("id") or first.get("id")
+        title = meta.get("title") or first.get("title")
+        category = meta.get("category") or first.get("category")
+        source = meta.get("source") or first.get("source")
+
+        raw_keywords = meta.get("keywords") or first.get("keywords") or []
+        if isinstance(raw_keywords, str):
+            keywords = [p.strip() for p in raw_keywords.split(",") if p.strip()]
+        elif isinstance(raw_keywords, list):
+            keywords = [str(k).strip() for k in raw_keywords if str(k).strip()]
+        else:
+            keywords = []
+
+        similarity = first.get("similarity")
+        try:
+            similarity_f = float(similarity) if similarity is not None else None
+        except Exception:
+            similarity_f = None
+
+        hit: Dict[str, Any] = {
+            "id": str(lore_id) if lore_id is not None else None,
+            "title": str(title) if title is not None else "",
+            "category": str(category) if category is not None else "",
+            "source": str(source) if source is not None else "",
+            "keywords": keywords,
+        }
+        if similarity_f is not None:
+            hit["similarity"] = similarity_f
+        return hit
+
+    def get_last_search_hit(self) -> Optional[Dict[str, Any]]:
+        hit = getattr(self, "_last_search_hit", None)
+        return dict(hit) if isinstance(hit, dict) else None
 
     def search_lore(
         self,
@@ -2483,7 +2870,36 @@ class LoreBook:
         # v2.30.44: 尝试从缓存获取
         # 注意：query 可能很长，直接拼接会导致缓存 key 过大/内存放大；这里使用 hash 固定长度
         query_hash = hashlib.md5(str(query).encode("utf-8")).hexdigest()
-        cache_key = f"search:{query_hash}:{k}:{category}:{use_hybrid}:{use_rerank}"
+        # 混合检索的查询扩展开关会改变检索结果，需纳入缓存 key（避免切换配置后命中旧缓存）。
+        qe = False
+        if use_hybrid and HAS_HYBRID_RETRIEVER:
+            qe = bool(getattr(self.query_expander, "enabled", False))
+
+        # 缓存 key 必须覆盖所有“影响结果”的参数：阈值/重排序上下文等
+        try:
+            thr_i = int(round(float(settings.agent.books_thresholds) * 1000))
+        except Exception:
+            thr_i = 0
+
+        ctx_hash = "0"
+        if use_hybrid and use_rerank and HAS_HYBRID_RETRIEVER and isinstance(context, dict):
+            try:
+                topic_cf = str(context.get("topic", "") or "").strip().casefold()
+                raw_keywords = context.get("keywords", [])
+                if isinstance(raw_keywords, list):
+                    kw_set = {
+                        str(k).strip().casefold() for k in raw_keywords[:64] if str(k).strip()
+                    }
+                else:
+                    kw_set = set()
+
+                kw_sorted = sorted(kw_set)
+                sig = f"{topic_cf}|{','.join(kw_sorted)[:512]}"
+                ctx_hash = hashlib.md5(sig.encode("utf-8")).hexdigest()
+            except Exception:
+                ctx_hash = "0"
+
+        cache_key = f"search:{query_hash}:{k}:{category}:{use_hybrid}:{use_rerank}:{int(qe)}:{thr_i}:{ctx_hash}"
         if use_cache and self.multi_cache:
             cached_results = self.multi_cache.get(cache_key, prefix="lorebook")
             if cached_results is not None:
@@ -2497,14 +2913,18 @@ class LoreBook:
         try:
             # v2.48.4: 使用辅助方法进行检索
             if use_hybrid and HAS_HYBRID_RETRIEVER:
-                lores = self._search_with_hybrid_retriever(
-                    query, k, category, use_rerank, context
-                )
+                lores = self._search_with_hybrid_retriever(query, k, category, use_rerank, context)
             else:
                 lores = self._search_with_vector_store(query, k, category)
 
             # 更新使用次数
             self._update_usage_count(lores)
+
+            # v3.3.6: 记录最近命中，供主动推送“相关知识”触发使用
+            try:
+                self._last_search_hit = self._summarize_search_hit(lores)
+            except Exception:
+                self._last_search_hit = None
 
             # v2.30.44: 保存到缓存
             if use_cache and self.multi_cache:
@@ -2514,6 +2934,7 @@ class LoreBook:
 
         except Exception as e:
             logger.error(f"知识库搜索失败: {e}")
+            self._last_search_hit = None
             return []
 
     def _update_usage_count(self, lores: List[Dict[str, Any]]):
@@ -2545,6 +2966,14 @@ class LoreBook:
         should_flush = False
         now = time.monotonic()
         with self._lock:
+            # 将使用次数增量同步到混合检索器的内存文档元数据，避免重排序的 usage 维度长期为 0。
+            try:
+                if self.hybrid_retriever and hasattr(
+                    self.hybrid_retriever, "apply_usage_increments"
+                ):
+                    self.hybrid_retriever.apply_usage_increments(increments)  # type: ignore[call-arg]
+            except Exception:
+                pass
             for lore_id, delta in increments.items():
                 self._usage_buffer[lore_id] = self._usage_buffer.get(lore_id, 0) + int(delta)
                 self._usage_pending_total += int(delta)
@@ -2643,11 +3072,25 @@ class LoreBook:
         if self.json_file is None or not self.json_file.exists():
             return []
 
+        def _build_lore_by_id(lores: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+            result: Dict[str, Dict[str, Any]] = {}
+            for lore in lores:
+                if not isinstance(lore, dict):
+                    continue
+                lore_id = lore.get("id")
+                if lore_id:
+                    result[str(lore_id)] = lore
+            return result
+
         # v2.30.44: 尝试从多级缓存获取
         if use_cache and self.multi_cache:
             cached_data = self.multi_cache.get("all_lores", prefix="lorebook")
             if cached_data is not None:
                 logger.debug("从多级缓存获取所有知识")
+                if self._cache is not None:
+                    self._cache["all_lores"] = cached_data
+                    self._cache["lore_by_id"] = _build_lore_by_id(cached_data)
+                    self._cache["last_update"] = datetime.now()
                 return cached_data
 
         # v2.30.39: 使用本地缓存
@@ -2664,6 +3107,7 @@ class LoreBook:
             # 更新本地缓存
             if self._cache is not None:
                 self._cache["all_lores"] = data
+                self._cache["lore_by_id"] = _build_lore_by_id(data)
                 self._cache["last_update"] = datetime.now()
 
             return data
@@ -2728,6 +3172,7 @@ class LoreBook:
 
         # 最近7天新增数量
         from datetime import timedelta
+
         seven_days_ago = datetime.now() - timedelta(days=7)
         recent_count = 0
         for lore in all_lores:
@@ -2772,8 +3217,7 @@ class LoreBook:
         try:
             all_lores = self.get_all_lores()
             Path(filepath).write_text(
-                json.dumps(all_lores, ensure_ascii=False, indent=2),
-                encoding="utf-8"
+                json.dumps(all_lores, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             logger.info(f"导出知识库成功: {filepath} ({len(all_lores)} 条)")
             return True
@@ -2950,9 +3394,9 @@ class LoreBook:
         imported = 0
         batch_size = max(1, int(batch_size))
         for offset in range(0, len(texts), batch_size):
-            chunk_texts = texts[offset: offset + batch_size]
-            chunk_metas = metadatas[offset: offset + batch_size]
-            chunk_ids = ids[offset: offset + batch_size]
+            chunk_texts = texts[offset : offset + batch_size]
+            chunk_metas = metadatas[offset : offset + batch_size]
+            chunk_ids = ids[offset : offset + batch_size]
             try:
                 self.vectorstore.add_texts(texts=chunk_texts, metadatas=chunk_metas, ids=chunk_ids)
                 imported += len(chunk_texts)
@@ -2979,7 +3423,9 @@ class LoreBook:
         try:
             with self._lock:
                 previous_records = self._read_json_records_unlocked()
-                lore_ids = [str(record.get("id")) for record in previous_records if record.get("id")]
+                lore_ids = [
+                    str(record.get("id")) for record in previous_records if record.get("id")
+                ]
                 self._write_json_records_unlocked([])
 
             if self.vectorstore and lore_ids:
@@ -3120,6 +3566,11 @@ class LoreBook:
             return None
 
         try:
+            if self._cache is not None:
+                lore_by_id = self._cache.get("lore_by_id")
+                if isinstance(lore_by_id, dict) and lore_id in lore_by_id:
+                    return lore_by_id.get(lore_id)
+
             for lore in self.get_all_lores(use_cache=True):
                 if lore.get("id") == lore_id:
                     return lore
@@ -3165,12 +3616,37 @@ class LoreBook:
             # 回退到基于规则的提取
             # 检测是否包含知识性内容
             knowledge_keywords = [
-                "是", "叫", "名字", "介绍", "说明", "解释",
-                "定义", "含义", "意思", "特点", "特征",
-                "位于", "在", "地点", "地方", "位置",
-                "用于", "用来", "作用", "功能", "用途",
-                "喜欢", "讨厌", "爱好", "兴趣", "习惯",  # v2.30.39: 新增情感相关
-                "生日", "年龄", "身高", "体重", "外貌",  # v2.30.39: 新增属性相关
+                "是",
+                "叫",
+                "名字",
+                "介绍",
+                "说明",
+                "解释",
+                "定义",
+                "含义",
+                "意思",
+                "特点",
+                "特征",
+                "位于",
+                "在",
+                "地点",
+                "地方",
+                "位置",
+                "用于",
+                "用来",
+                "作用",
+                "功能",
+                "用途",
+                "喜欢",
+                "讨厌",
+                "爱好",
+                "兴趣",
+                "习惯",  # v2.30.39: 新增情感相关
+                "生日",
+                "年龄",
+                "身高",
+                "体重",
+                "外貌",  # v2.30.39: 新增属性相关
             ]
 
             combined_text = user_message + " " + ai_response
@@ -3393,8 +3869,11 @@ class LoreBook:
             from langchain_core.output_parsers import JsonOutputParser
 
             # 构建提示词
-            extraction_prompt = ChatPromptTemplate.from_messages([
-                ("system", """你是一个知识提取专家。请从对话中提取有价值的知识信息。
+            extraction_prompt = ChatPromptTemplate.from_messages(
+                [
+                    (
+                        "system",
+                        """你是一个知识提取专家。请从对话中提取有价值的知识信息。
 
 提取规则：
 1. 只提取事实性、可记录的知识（人物、地点、事件、物品、特征等）
@@ -3414,21 +3893,26 @@ class LoreBook:
     ]
 }}
 
-如果对话中没有值得记录的知识，返回 {{"has_knowledge": false, "knowledge_list": []}}"""),
-                ("human", "用户: {user_message}\nAI: {ai_response}"),
-            ])
+如果对话中没有值得记录的知识，返回 {{"has_knowledge": false, "knowledge_list": []}}""",
+                    ),
+                    ("human", "用户: {user_message}\nAI: {ai_response}"),
+                ]
+            )
 
             # 创建链
             from src.llm.factory import get_llm
+
             llm = get_llm()
             parser = JsonOutputParser()
             chain = extraction_prompt | llm | parser
 
             # 执行提取
-            result = chain.invoke({
-                "user_message": user_message,
-                "ai_response": ai_response,
-            })
+            result = chain.invoke(
+                {
+                    "user_message": user_message,
+                    "ai_response": ai_response,
+                }
+            )
 
             # 处理结果
             if result.get("has_knowledge") and result.get("knowledge_list"):
@@ -3485,7 +3969,9 @@ class LoreBook:
 
                 # 如果相似度很高，认为是重复
                 if similarity >= threshold:
-                    logger.debug(f"发现相似知识: {doc.metadata.get('title')} (相似度: {similarity:.2f})")
+                    logger.debug(
+                        f"发现相似知识: {doc.metadata.get('title')} (相似度: {similarity:.2f})"
+                    )
                     return True
 
             return False
@@ -3606,6 +4092,7 @@ class LoreBook:
                 # 需要 PyPDF2 或 pdfplumber
                 try:
                     import PyPDF2
+
                     with open(path, "rb") as f:
                         reader = PyPDF2.PdfReader(f)
                         parts: list[str] = []
@@ -3629,6 +4116,7 @@ class LoreBook:
                 # 需要 python-docx
                 try:
                     import docx
+
                     doc = docx.Document(path)
                     parts: list[str] = []
                     total = 0
@@ -3649,6 +4137,7 @@ class LoreBook:
                 # v2.30.39: 支持 HTML 文件
                 try:
                     from bs4 import BeautifulSoup
+
                     data = _read_text_bytes()
                     if data is None:
                         return None
@@ -3748,7 +4237,9 @@ class LoreBook:
                 if current_chunk:
                     chunks.append(current_chunk.strip())
                     # 保存末尾用于重叠
-                    previous_chunk_end = current_chunk[-overlap:] if len(current_chunk) > overlap else current_chunk
+                    previous_chunk_end = (
+                        current_chunk[-overlap:] if len(current_chunk) > overlap else current_chunk
+                    )
 
                 # 开始新块，包含重叠部分
                 if previous_chunk_end:
@@ -3764,10 +4255,13 @@ class LoreBook:
 
     # ==================== 性能优化方法 (v2.30.39 新增) ====================
 
-    def _invalidate_cache(self, *, reset_hybrid: bool = True, clear_search_cache: bool = True) -> None:
+    def _invalidate_cache(
+        self, *, reset_hybrid: bool = True, clear_search_cache: bool = True
+    ) -> None:
         """清除缓存 - v2.30.44 增强版（支持更细粒度的失效策略）。"""
         if self._cache is not None:
             self._cache["all_lores"] = None
+            self._cache["lore_by_id"] = None
             self._cache["statistics"] = None
             self._cache["last_update"] = datetime.now()
             logger.debug("知识库缓存已清除")
@@ -3811,6 +4305,7 @@ class LoreBook:
             json_records: List[Dict[str, Any]] = []
 
             import uuid
+
             for lore in lores:
                 # 生成ID
                 lore_id = str(uuid.uuid4())
@@ -4036,9 +4531,7 @@ class LoreBook:
                 return None
 
             # 评估
-            assessment = self.quality_manager.assess_knowledge(
-                knowledge, all_lores
-            )
+            assessment = self.quality_manager.assess_knowledge(knowledge, all_lores)
 
             return assessment
 
@@ -4069,10 +4562,12 @@ class LoreBook:
             for lore in all_lores:
                 quality_score = self.quality_manager.scorer.calculate_quality_score(lore)
                 if quality_score < threshold:
-                    low_quality.append({
-                        **lore,
-                        "quality_score": quality_score,
-                    })
+                    low_quality.append(
+                        {
+                            **lore,
+                            "quality_score": quality_score,
+                        }
+                    )
 
             # 按质量分数排序
             low_quality.sort(key=lambda x: x["quality_score"])
@@ -4117,17 +4612,13 @@ class LoreBook:
             all_lores = self.get_all_lores(use_cache=True)
 
             # 推荐
-            recommendations = self.recommender.recommend(
-                context, all_lores, k, min_score
-            )
+            recommendations = self.recommender.recommend(context, all_lores, k, min_score)
 
             # 记录使用统计
             if self.usage_tracker:
                 for rec in recommendations:
                     self.usage_tracker.record_usage(
-                        rec.get("id"),
-                        context,
-                        usage_type="recommendation"
+                        rec.get("id"), context, usage_type="recommendation"
                     )
 
             logger.info(f"推荐知识: {len(recommendations)} 条")
@@ -4159,22 +4650,145 @@ class LoreBook:
             return []
 
         try:
-            # 获取所有知识
-            all_lores = self.get_all_lores(use_cache=True)
+            if k <= 0:
+                return []
 
-            # 推送
-            pushed = self.pusher.push_knowledge(
-                user_id, context, all_lores, k
+            # 统一注入全局开关，避免调用方遗漏导致行为不一致
+            ctx = dict(context or {})
+            ctx.setdefault(
+                "proactive_push_enabled",
+                bool(getattr(settings.agent, "proactive_push_enabled", True)),
             )
+
+            # 先做轻量触发判断，避免频繁加载整库
+            triggers = None
+            should_push_with_triggers = getattr(self.pusher, "should_push_with_triggers", None)
+            if callable(should_push_with_triggers):
+                ok, triggers = should_push_with_triggers(user_id, ctx)
+                if not ok:
+                    return []
+            else:
+                if not self.pusher.should_push(user_id, ctx):
+                    return []
+
+            # 优先用向量检索构建候选池（避免全库扫描；为空则回退）
+            candidate_pool_size = int(
+                getattr(settings.agent, "proactive_push_candidate_pool_size", 60)
+            )
+            candidates: List[Dict[str, Any]] = []
+            if (
+                candidate_pool_size > 0
+                and self.vectorstore is not None
+                and hasattr(self.vectorstore, "similarity_search_with_score")
+            ):
+
+                def _normalize_keywords(raw: Any) -> List[str]:
+                    if isinstance(raw, str):
+                        return [p.strip() for p in raw.split(",") if p.strip()]
+                    if isinstance(raw, list):
+                        return [str(k).strip() for k in raw if str(k).strip()]
+                    return []
+
+                def _build_query() -> str:
+                    msg = str(ctx.get("user_message", "") or "").strip()
+                    topic = str(ctx.get("topic", "") or "").strip()
+                    kws = ctx.get("keywords", [])
+                    if not isinstance(kws, list):
+                        kws = []
+                    kw_text = " ".join([str(k).strip() for k in kws[:12] if str(k).strip()])
+
+                    parts: list[str] = []
+                    if msg:
+                        parts.append(msg)
+                    if topic:
+                        parts.append(topic)
+                    if kw_text:
+                        parts.append(kw_text)
+
+                    last_used = ctx.get("last_used_knowledge")
+                    if isinstance(last_used, dict):
+                        title = str(last_used.get("title", "") or "").strip()
+                        last_kws = _normalize_keywords(last_used.get("keywords") or [])
+                        if title:
+                            parts.append(title)
+                        if last_kws:
+                            parts.append(" ".join(last_kws[:12]))
+
+                    query = " ".join([p for p in parts if p]).strip()
+                    if len(query) > 800:
+                        query = query[:800].strip()
+                    return query
+
+                query = _build_query()
+                if query:
+                    try:
+                        results = self.vectorstore.similarity_search_with_score(
+                            query, k=int(candidate_pool_size)
+                        )
+                    except Exception:
+                        results = []
+
+                    seen_ids: set[str] = set()
+                    for doc, score in results or []:
+                        meta = getattr(doc, "metadata", {}) or {}
+                        if not isinstance(meta, dict):
+                            meta = {}
+                        lore_id = meta.get("id")
+                        lore_id = str(lore_id).strip() if lore_id is not None else ""
+                        if lore_id and lore_id in seen_ids:
+                            continue
+                        if lore_id:
+                            seen_ids.add(lore_id)
+
+                        cand = {
+                            "id": lore_id or None,
+                            "title": str(meta.get("title") or "").strip(),
+                            "category": str(meta.get("category") or "").strip(),
+                            "source": str(meta.get("source") or "").strip(),
+                            "keywords": _normalize_keywords(meta.get("keywords") or []),
+                            "content": str(getattr(doc, "page_content", "") or "").strip(),
+                        }
+                        try:
+                            similarity = 1.0 - float(score) if score is not None else None
+                        except Exception:
+                            similarity = None
+                        cand["similarity"] = similarity
+
+                        if "quality_score" not in cand and self.quality_manager:
+                            try:
+                                cand["quality_score"] = (
+                                    self.quality_manager.scorer.calculate_quality_score(cand)
+                                )
+                            except Exception:
+                                pass
+
+                        candidates.append(cand)
+
+            if candidates:
+                pushed = self.pusher.push_knowledge(
+                    user_id,
+                    ctx,
+                    candidates,
+                    k,
+                    triggers=triggers,
+                    checked=triggers is not None,
+                )
+            else:
+                # 回退：获取所有知识（可能较重）
+                all_lores = self.get_all_lores(use_cache=True)
+                pushed = self.pusher.push_knowledge(
+                    user_id,
+                    ctx,
+                    all_lores,
+                    k,
+                    triggers=triggers,
+                    checked=triggers is not None,
+                )
 
             # 记录使用统计
             if self.usage_tracker:
                 for knowledge in pushed:
-                    self.usage_tracker.record_usage(
-                        knowledge.get("id"),
-                        context,
-                        usage_type="push"
-                    )
+                    self.usage_tracker.record_usage(knowledge.get("id"), ctx, usage_type="push")
 
             logger.info(f"主动推送知识: {len(pushed)} 条")
             return pushed
@@ -4202,16 +4816,11 @@ class LoreBook:
 
         try:
             # 更新推荐器的用户偏好
-            self.recommender.update_user_preference(
-                user_id, knowledge, is_positive
-            )
+            self.recommender.update_user_preference(user_id, knowledge, is_positive)
 
             # 记录反馈统计
             if self.usage_tracker:
-                self.usage_tracker.record_feedback(
-                    knowledge.get("id"),
-                    is_positive
-                )
+                self.usage_tracker.record_feedback(knowledge.get("id"), is_positive)
 
             logger.debug(f"更新推荐偏好: {user_id}, 正面={is_positive}")
 
@@ -4301,10 +4910,7 @@ class LoreBook:
             all_lores = self.get_all_lores(use_cache=True)
 
             # 构建图谱
-            self.knowledge_graph.build_graph_from_knowledge(
-                all_lores,
-                use_llm=use_llm
-            )
+            self.knowledge_graph.build_graph_from_knowledge(all_lores, use_llm=use_llm)
 
             logger.info("知识图谱构建完成")
 
@@ -4337,9 +4943,13 @@ class LoreBook:
                 knowledge_id,
                 max_depth,
                 min_confidence,
-                include_incoming=getattr(settings.agent, "knowledge_graph_find_include_incoming", True),
+                include_incoming=getattr(
+                    settings.agent, "knowledge_graph_find_include_incoming", True
+                ),
                 max_results=getattr(settings.agent, "knowledge_graph_find_max_results", 200),
-                max_nodes_visited=getattr(settings.agent, "knowledge_graph_find_max_nodes_visited", 5000),
+                max_nodes_visited=getattr(
+                    settings.agent, "knowledge_graph_find_max_nodes_visited", 5000
+                ),
             )
 
             # 获取完整的知识信息

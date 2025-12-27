@@ -130,19 +130,28 @@ class ToolError(Exception):
 
 # ==================== 全局连接池 (v2.30.23) ====================
 class ConnectionPool:
-    """全局 aiohttp ClientSession 连接池"""
-    _session: Optional[aiohttp.ClientSession] = None
-    _lock: Optional[asyncio.Lock] = None
-    _lock_loop: Optional[asyncio.AbstractEventLoop] = None
+    """全局 aiohttp ClientSession 连接池（按 event loop 隔离）。
+
+    说明：aiohttp.ClientSession 与 asyncio.Lock 都绑定创建它们的 event loop。
+    之前的实现使用单一 session，在多 loop/多线程场景下会出现“loop 变化导致关闭重建”
+    的抖动甚至并发关闭问题。这里改为“每个 loop 独立一份 session+lock”，避免互相干扰。
+    """
+
+    _sessions: Dict[int, aiohttp.ClientSession] = {}
+    _locks: Dict[int, asyncio.Lock] = {}
+    _loops: Dict[int, asyncio.AbstractEventLoop] = {}
+    _thread_lock = threading.Lock()
 
     @classmethod
-    def _get_lock(cls) -> asyncio.Lock:
-        # asyncio.Lock 绑定 event loop；避免在 import 时创建导致跨 loop 使用报错
-        loop = asyncio.get_running_loop()
-        if cls._lock is None or cls._lock_loop is not loop:
-            cls._lock = asyncio.Lock()
-            cls._lock_loop = loop
-        return cls._lock
+    def _get_lock(cls, loop: asyncio.AbstractEventLoop) -> asyncio.Lock:
+        loop_id = id(loop)
+        with cls._thread_lock:
+            existing_loop = cls._loops.get(loop_id)
+            lock = cls._locks.get(loop_id)
+            if lock is None or existing_loop is not loop:
+                cls._locks[loop_id] = asyncio.Lock()
+                cls._loops[loop_id] = loop
+            return cls._locks[loop_id]
 
     @classmethod
     async def get_session(cls) -> aiohttp.ClientSession:
@@ -152,47 +161,66 @@ class ConnectionPool:
         v2.30.26 修复:
         - 检查 session 是否绑定到当前 event loop
         - 如果 event loop 不匹配，重新创建 session
+
+        v3.4.0 优化:
+        - 支持多 event loop 并行使用（每个 loop 独立 session），避免互相关闭导致抖动/超时
         """
         try:
-            # 检查 session 是否存在且未关闭
-            if cls._session is not None and not cls._session.closed:
-                # 检查 session 是否绑定到当前 event loop
-                try:
-                    loop = asyncio.get_running_loop()
-                    # 如果 session 的 loop 与当前 loop 不同，需要重新创建
-                    if hasattr(cls._session, '_loop') and cls._session._loop != loop:
-                        logger.warning("检测到 event loop 变化，重新创建 HTTP 连接池")
-                        await cls._session.close()
-                        cls._session = None
-                except RuntimeError:
-                    pass
+            loop = asyncio.get_running_loop()
+            loop_id = id(loop)
+            with cls._thread_lock:
+                session = cls._sessions.get(loop_id)
+                saved_loop = cls._loops.get(loop_id)
 
-            if cls._session is None or cls._session.closed:
-                async with cls._get_lock():
-                    if cls._session is None or cls._session.closed:
-                        def _make_connector() -> aiohttp.TCPConnector:
-                            connector_kwargs: dict[str, Any] = {
-                                "limit": 100,  # 最大连接数
-                                "limit_per_host": 30,  # 每个主机最大连接数
-                                "ttl_dns_cache": 300,  # DNS 缓存时间（秒）
-                            }
-                            # Python 3.13.5+ 已修复底层问题，aiohttp 会忽略并给出弃用警告
-                            if sys.version_info < (3, 13, 5):
-                                connector_kwargs["enable_cleanup_closed"] = True
-                            return aiohttp.TCPConnector(**connector_kwargs)
+            # 处理极端情况：loop id 复用或残留旧 session（避免跨 loop 误用）
+            if session is not None and saved_loop is not loop:
+                with cls._thread_lock:
+                    cls._sessions.pop(loop_id, None)
+                    cls._locks.pop(loop_id, None)
+                    cls._loops.pop(loop_id, None)
+                session = None
 
-                        # 配置连接池参数
-                        connector = _make_connector()
-                        timeout = aiohttp.ClientTimeout(total=30, connect=10)
-                        cls._session = aiohttp.ClientSession(
-                            connector=connector,
-                            timeout=timeout,
-                            headers={
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                            }
-                        )
-                        logger.info("全局 HTTP 连接池已创建")
-            return cls._session
+            if session is not None and not session.closed:
+                return session
+
+            lock = cls._get_lock(loop)
+            async with lock:
+                with cls._thread_lock:
+                    session = cls._sessions.get(loop_id)
+
+                if session is not None and not session.closed:
+                    return session
+
+                if session is not None and session.closed:
+                    with cls._thread_lock:
+                        cls._sessions.pop(loop_id, None)
+
+                def _make_connector() -> aiohttp.TCPConnector:
+                    connector_kwargs: dict[str, Any] = {
+                        "limit": 100,  # 最大连接数
+                        "limit_per_host": 30,  # 每个主机最大连接数
+                        "ttl_dns_cache": 300,  # DNS 缓存时间（秒）
+                    }
+                    # Python 3.13.5+ 已修复底层问题，aiohttp 会忽略并给出弃用警告
+                    if sys.version_info < (3, 13, 5):
+                        connector_kwargs["enable_cleanup_closed"] = True
+                    return aiohttp.TCPConnector(**connector_kwargs)
+
+                connector = _make_connector()
+                timeout = aiohttp.ClientTimeout(total=30, connect=10)
+                session = aiohttp.ClientSession(
+                    connector=connector,
+                    timeout=timeout,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                    },
+                )
+                with cls._thread_lock:
+                    cls._sessions[loop_id] = session
+                    cls._loops[loop_id] = loop
+                logger.info("全局 HTTP 连接池已创建")
+
+            return session
         except Exception as e:
             logger.error(f"获取 HTTP 连接池失败: {e}")
             # 如果出错，创建新的 session
@@ -203,42 +231,138 @@ class ConnectionPool:
             }
             if sys.version_info < (3, 13, 5):
                 connector_kwargs["enable_cleanup_closed"] = True
+            loop = asyncio.get_running_loop()
             connector = aiohttp.TCPConnector(**connector_kwargs)
             timeout = aiohttp.ClientTimeout(total=30, connect=10)
-            cls._session = aiohttp.ClientSession(
+            session = aiohttp.ClientSession(
                 connector=connector,
                 timeout=timeout,
                 headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                },
             )
+            with cls._thread_lock:
+                cls._sessions[id(loop)] = session
+                cls._loops[id(loop)] = loop
             logger.info("全局 HTTP 连接池已重新创建")
-            return cls._session
+            return session
 
     @classmethod
     async def close(cls):
-        """关闭全局 ClientSession"""
-        if cls._session and not cls._session.closed:
-            await cls._session.close()
+        """关闭当前 event loop 绑定的 ClientSession（幂等）。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        loop_id = id(loop)
+        with cls._thread_lock:
+            session = cls._sessions.pop(loop_id, None)
+            cls._locks.pop(loop_id, None)
+            cls._loops.pop(loop_id, None)
+
+        if session and not session.closed:
+            await session.close()
             logger.info("全局 HTTP 连接池已关闭")
+
+    @classmethod
+    async def close_all(cls, *, timeout_s: float = 2.0) -> None:
+        """尽力关闭所有 event loop 的 session（用于进程退出清理）。"""
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        with cls._thread_lock:
+            sessions = dict(cls._sessions)
+            loops = dict(cls._loops)
+            cls._sessions.clear()
+            cls._locks.clear()
+            cls._loops.clear()
+
+        for loop_id, session in sessions.items():
+            if session is None or session.closed:
+                continue
+            loop = loops.get(loop_id)
+            if current_loop is not None and loop is current_loop:
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+                continue
+
+            if loop is None or loop.is_closed():
+                continue
+
+            try:
+                fut = asyncio.run_coroutine_threadsafe(session.close(), loop)
+                fut.result(timeout=max(0.1, float(timeout_s)))
+            except Exception:
+                # best-effort：避免跨 loop 直接 close 引发异常
+                pass
 
     @classmethod
     def get_pool_stats(cls) -> Dict[str, Any]:
         """获取连接池统计信息（v2.30.25 新增）"""
-        if cls._session is None or cls._session.closed:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return {
+                "status": "无运行中的 event loop",
+                "total_sessions": 0,
+                "total_connections": 0,
+                "active_connections": 0,
+            }
+
+        loop_id = id(loop)
+        with cls._thread_lock:
+            total_sessions = len(cls._sessions)
+            session = cls._sessions.get(loop_id)
+
+        if session is None or session.closed:
             return {
                 "status": "未创建",
+                "total_sessions": total_sessions,
                 "total_connections": 0,
                 "active_connections": 0
             }
 
-        connector = cls._session.connector
+        connector = session.connector
         return {
             "status": "已创建",
+            "total_sessions": total_sessions,
             "total_connections": connector.limit if connector else 0,
             "limit_per_host": connector.limit_per_host if connector else 0,
             "active_connections": len(connector._conns) if connector and hasattr(connector, '_conns') else 0
         }
+
+    @classmethod
+    def get_all_pool_stats(cls) -> Dict[str, Any]:
+        """
+        获取所有 event loop 的连接池概览（无需 running loop）。
+
+        主要用于诊断：当出现多 event loop 并行时，可快速判断是否发生 session 泄露/重复创建。
+        """
+        with cls._thread_lock:
+            sessions = list(cls._sessions.items())
+
+        snapshot: list[Dict[str, Any]] = []
+        for loop_id, session in sessions:
+            if session is None or session.closed:
+                snapshot.append({"loop_id": loop_id, "status": "closed"})
+                continue
+            connector = session.connector
+            snapshot.append(
+                {
+                    "loop_id": loop_id,
+                    "status": "open",
+                    "total_connections": getattr(connector, "limit", 0) if connector else 0,
+                    "limit_per_host": getattr(connector, "limit_per_host", 0) if connector else 0,
+                    "active_connections": len(getattr(connector, "_conns", {})) if connector else 0,
+                }
+            )
+
+        return {"total_sessions": len(snapshot), "sessions": snapshot}
 
 
 # ==================== TTL 缓存 (v2.30.23) ====================
@@ -438,7 +562,7 @@ def shutdown_builtin_tools_runtime(timeout_s: float = 2.0) -> None:
 
     try:
         # aiohttp ClientSession 必须在创建它的 loop 中关闭
-        runtime.run(ConnectionPool.close(), timeout=max(0.1, float(timeout_s)))
+        runtime.run(ConnectionPool.close_all(timeout_s=timeout_s), timeout=max(0.1, float(timeout_s)))
     except Exception as exc:
         logger.debug("关闭 builtin_tools 连接池失败（可忽略）: %s", exc)
     finally:

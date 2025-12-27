@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MintChat - 多模态猫娘女仆智能体（Material Design 3、浅色主题、QQ风格、流式输出、性能优化）"""
+"""MintChat - 多模态猫娘女仆智能体（Material Design 3、浅色主题、流式输出、性能优化）"""
 
 import sys
 import os
@@ -12,7 +12,7 @@ sys.path.insert(0, str(project_root))
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt, qInstallMessageHandler, QtMsgType
+from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
 
 from src.version import __version__, print_version_info
 from src.auth.auth_service import AuthService
@@ -34,6 +34,44 @@ GUI_ANIMATIONS_ENABLED = os.getenv("MINTCHAT_GUI_ANIMATIONS", "0").lower() not i
 _tts_init_started = False
 _asr_init_started = False
 _main_window = None  # Keep a strong reference to the main window (prevents GC-induced "flash quit").
+
+
+def _cleanup_on_exit() -> None:
+    """Best-effort resource cleanup on GUI exit (avoid leaked pools/handles on Windows)."""
+    # 1) 用户会话/用户数据连接池
+    try:
+        close_fn = getattr(user_session, "close", None)
+        if callable(close_fn):
+            close_fn()
+    except Exception:
+        pass
+
+    # 2) 预编译语句（持久 sqlite 连接）
+    try:
+        from src.utils.prepared_statements import close_all_prepared_statement_managers
+
+        close_all_prepared_statement_managers()
+    except Exception:
+        pass
+
+    # 3) TTS runtime（httpx 连接池/后台 loop）
+    try:
+        from src.multimodal.tts_runtime import shutdown_tts_runtime
+
+        shutdown_tts_runtime(timeout_s=1.0)
+    except Exception:
+        pass
+
+    # 4) builtin_tools runtime（aiohttp 连接池/后台 loop）
+    try:
+        import sys as _sys
+
+        if "src.agent.builtin_tools" in _sys.modules:
+            from src.agent.builtin_tools import shutdown_builtin_tools_runtime
+
+            shutdown_builtin_tools_runtime(timeout_s=1.0)
+    except Exception:
+        pass
 
 
 def _start_tts_init_async() -> None:
@@ -162,6 +200,7 @@ def main() -> None:
     app.setOrganizationName("MintChat")
     try:
         app.aboutToQuit.connect(lambda: logger.info("GUI 即将退出（aboutToQuit）"))
+        app.aboutToQuit.connect(_cleanup_on_exit)
     except Exception:
         pass
 

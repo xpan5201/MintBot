@@ -634,6 +634,12 @@ class AgentConfig(BaseModel):
         le=1_000_000,
         description="去重器保留的 content_hash 最大数量（0 表示不限制，但会增加内存占用）",
     )
+    memory_character_consistency_weight: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=1.0,
+        description="长期记忆检索重排序中角色一致性权重（0 表示不参与）。",
+    )
 
     # 长期记忆（向量库）写入策略
     long_term_batch_size: int = Field(
@@ -648,11 +654,47 @@ class AgentConfig(BaseModel):
         le=3600.0,
         description="长期记忆批量写入强制刷新间隔（秒）。0 表示仅按条数触发。",
     )
+    long_term_write_buffer_max: int = Field(
+        default=256,
+        ge=0,
+        le=10000,
+        description="长期记忆后台写入缓冲区最大条数（用于将向量写入移出对话热路径）。0 表示不限制。",
+    )
+    long_term_write_drain_max_items: int = Field(
+        default=32,
+        ge=0,
+        le=10000,
+        description="长期记忆后台写入每次 drain 的最大处理条数（分片执行，避免后台线程池长期占用）。0 表示不限制。",
+    )
+    long_term_write_drain_budget_s: float = Field(
+        default=0.25,
+        ge=0.0,
+        le=10.0,
+        description="长期记忆后台写入每次 drain 的时间预算（秒）。0 表示不限制。",
+    )
 
     # v3.2.1 性能优化配置
     memory_fast_mode: bool = Field(
         default=True,
         description="启用快速模式（异步执行非关键操作，提升响应速度）",
+    )
+    memory_retriever_source_timeout_s: float = Field(
+        default=0.25,
+        ge=0.0,
+        le=10.0,
+        description="并发记忆检索每个来源的超时（秒），0 表示不启用超时保护。",
+    )
+    memory_breaker_threshold: int = Field(
+        default=3,
+        ge=1,
+        le=100,
+        description="记忆检索熔断器阈值（连续失败次数）。",
+    )
+    memory_breaker_cooldown: float = Field(
+        default=3.0,
+        ge=0.0,
+        le=60.0,
+        description="记忆检索熔断器冷却时间（秒）。",
     )
 
     # Redis 缓存配置（用于多级缓存 L2）
@@ -816,6 +858,88 @@ class AgentConfig(BaseModel):
         description="知识去重相似度阈值（相似度 >= 此值认为重复）",
     )
 
+    # 主动知识推送（ProactiveKnowledgePusher）
+    proactive_push_enabled: bool = Field(
+        default=True,
+        description="是否启用主动知识推送（将知识库内容作为辅助角色扮演的轻量提示）",
+    )
+    proactive_push_k: int = Field(
+        default=2,
+        ge=0,
+        description="每次最多推送知识条数（0 为禁用）",
+    )
+    proactive_push_timeout_s: float = Field(
+        default=0.18,
+        ge=0.0,
+        le=10.0,
+        description="主动知识推送在请求热路径的预算超时（秒）。0 表示不限制（可能显著增加延迟）。",
+    )
+    proactive_push_in_fast_mode: bool = Field(
+        default=False,
+        description="在 memory_fast_mode 下是否仍注入主动知识提示（会影响首包延迟）。",
+    )
+    bundle_prepare_timeout_s: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=30.0,
+        description="构建对话上下文/消息列表的总体超时预算（秒）。0 表示不限制。",
+    )
+    proactive_push_recent_topics_max_len: int = Field(
+        default=8,
+        ge=0,
+        description="保留的最近主题数（用于话题转换触发，0 为不保留）",
+    )
+    proactive_push_cooldown_s: float = Field(
+        default=300.0,
+        ge=0.0,
+        description="主动推送冷却时间（秒）",
+    )
+    proactive_push_daily_limit: int = Field(
+        default=10,
+        ge=0,
+        description="每日最大推送次数（0 为不限制）",
+    )
+    proactive_push_min_quality_score: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="推送知识的最低质量分数阈值（0-1）",
+    )
+    proactive_push_min_relevance_score: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="推送知识的最低相关性分数阈值（0-1）",
+    )
+    proactive_push_max_history: int = Field(
+        default=1000,
+        ge=0,
+        description="内部保存的推送历史最大条数（0 为不保留）",
+    )
+    proactive_push_max_pushed_per_user: int = Field(
+        default=500,
+        ge=0,
+        description="每个用户记录的“已推送知识”去重 key 最大条数（0 为不限制）",
+    )
+    proactive_push_candidate_pool_size: int = Field(
+        default=60,
+        ge=0,
+        description="主动推送向量检索候选池大小（0 为禁用，回退为全库扫描）",
+    )
+    proactive_push_persist_state: bool = Field(
+        default=True,
+        description="是否持久化主动推送去重/冷却/每日计数状态（重启后仍生效）",
+    )
+    proactive_push_state_file: str = Field(
+        default="",
+        description="主动推送状态文件路径（留空则使用 data_dir/memory/proactive_push_state.json）",
+    )
+    proactive_push_max_chars_per_item: int = Field(
+        default=480,
+        ge=0,
+        description="注入提示词时，每条知识内容最大字符数（0 为不截断）",
+    )
+
     # 知识图谱配置（关系提取/查询性能保护）
     knowledge_graph_enabled: bool = Field(
         default=True,
@@ -895,11 +1019,32 @@ class AgentConfig(BaseModel):
         default=True,
         description="重启后是否保持情绪值 (v3.1 默认启用)",
     )
+    mood_persist_interval_s: float = Field(
+        default=1.0,
+        ge=0.0,
+        description="情绪系统状态写盘最小间隔（秒）。0 表示每次更新都写盘。",
+    )
+    mood_history_max_len: int = Field(
+        default=500,
+        ge=0,
+        description="情绪系统历史记录最大内存条数（0 表示不限制，不推荐）。",
+    )
+
+    character_state_persist_interval_s: float = Field(
+        default=2.0,
+        ge=0.0,
+        description="角色状态（CharacterState）写盘最小间隔（秒）。0 表示每次更新都写盘。",
+    )
 
     # v3.1 新增情绪系统配置
     emotion_memory_enabled: bool = Field(
         default=True,
         description="是否启用情绪记忆系统",
+    )
+    emotion_persist_interval_s: float = Field(
+        default=1.0,
+        ge=0.0,
+        description="情感引擎状态写盘最小间隔（秒）。0 表示每次更新都写盘。",
     )
 
     dual_source_emotion: bool = Field(
@@ -986,6 +1131,18 @@ class AgentConfig(BaseModel):
         ge=0,
         description="工具执行结果最大字符数（避免 prompt 膨胀导致超时），0 表示不限制",
     )
+    tool_rewrite_timeout_s: float = Field(
+        default=8.0,
+        gt=0.0,
+        description="工具结果兜底重写调用超时（秒）。用于空回复/仅进度回复时，基于工具结果生成最终回答。",
+    )
+    implicit_tool_rescue_enabled: bool = Field(
+        default=True,
+        description=(
+            "当模型输出“我这就去查/让我看看”等进度话术但未实际触发工具调用时，"
+            "允许本地执行轻量工具并生成最终回复（防止时间/日期等问题空回复或只剩进度话术）。"
+        ),
+    )
     tool_direct_grace_s: float = Field(
         default=1.5,
         ge=0.0,
@@ -994,6 +1151,10 @@ class AgentConfig(BaseModel):
     tool_selector_enabled: bool = Field(
         default=True,
         description="启用 LLM 工具筛选中间件（会额外调用一次 LLM）",
+    )
+    tool_selector_in_fast_mode: bool = Field(
+        default=False,
+        description="在 memory_fast_mode 下是否仍启用 LLM 工具筛选（会额外调用一次 LLM，增加首包延迟）。",
     )
     tool_selector_timeout_s: float = Field(
         default=4.0,
@@ -1014,6 +1175,69 @@ class AgentConfig(BaseModel):
         default=16,
         ge=0,
         description="对话上下文准备的缓存最大条目数，0 表示禁用",
+    )
+
+    # 对话风格学习器（v2.5）
+    style_learning_enabled: bool = Field(
+        default=True,
+        description="是否启用对话风格学习器（根据用户消息自适应回复节奏/语气）",
+    )
+    style_persist_interval_s: float = Field(
+        default=15.0,
+        ge=0.0,
+        description="风格学习配置落盘节流间隔（秒）。达到间隔或条数阈值会触发写盘。",
+    )
+    style_persist_every_n_interactions: int = Field(
+        default=10,
+        ge=1,
+        description="风格学习配置按交互次数强制落盘间隔（条）。",
+    )
+    style_history_max_len: int = Field(
+        default=100,
+        ge=10,
+        description="风格学习器统计窗口大小（保留最近 N 条消息长度）。",
+    )
+    style_word_counter_max: int = Field(
+        default=100,
+        ge=0,
+        description="保存的高频词最大数量（0 表示不保存）。",
+    )
+    style_topic_counter_max: int = Field(
+        default=50,
+        ge=0,
+        description="保存的话题统计最大数量（0 表示不保存）。",
+    )
+    style_learning_max_message_chars: int = Field(
+        default=800,
+        ge=50,
+        description="超过该长度的消息将跳过风格学习（防止日志/代码污染）。",
+    )
+    style_learning_max_message_lines: int = Field(
+        default=12,
+        ge=1,
+        description="超过该行数的消息将跳过风格学习（防止日志/代码污染）。",
+    )
+    style_guidance_min_interactions: int = Field(
+        default=6,
+        ge=0,
+        description="累计学习到的有效交互数小于该值时不输出风格指导。",
+    )
+    style_guidance_max_chars: int = Field(
+        default=600,
+        ge=0,
+        description="风格指导最大字符数（0 表示不限制）。",
+    )
+    style_topic_decay: float = Field(
+        default=0.985,
+        ge=0.0,
+        le=1.0,
+        description="话题偏好随时间衰减系数（每次交互乘以该值）。1.0 表示不衰减。",
+    )
+    style_formality_decay: float = Field(
+        default=0.99,
+        ge=0.0,
+        le=1.0,
+        description="语气偏好随时间衰减系数（每次交互乘以该值）。1.0 表示不衰减。",
     )
 
     # 角色设定
@@ -1113,10 +1337,19 @@ class Settings(BaseModel):
     )
     log_quiet_libs: list[str] = Field(
         default_factory=lambda: [
-            "httpx", "asyncio", "urllib3", "charset_normalizer",
-            "multipart.multipart", "httpcore", "openai", "chromadb", "posthog",
-            "langchain", "src.agent.hybrid_retriever",
-            "src.agent.knowledge_quality", "src.agent.knowledge_graph",
+            "httpx",
+            "asyncio",
+            "urllib3",
+            "charset_normalizer",
+            "multipart.multipart",
+            "httpcore",
+            "openai",
+            "chromadb",
+            "posthog",
+            "langchain",
+            "src.agent.hybrid_retriever",
+            "src.agent.knowledge_quality",
+            "src.agent.knowledge_graph",
             "src.agent.performance_optimizer",
         ],
         description="需要降低噪声的三方 logger 名称列表",
@@ -1336,19 +1569,23 @@ class Settings(BaseModel):
             log_rotation = config_data.get("log_rotation", "50 MB")
             log_retention = config_data.get("log_retention", "14 days")
             log_json = config_data.get("log_json", True)
-            log_quiet_libs = config_data.get("log_quiet_libs", [
-                "httpx", "asyncio", "urllib3", "charset_normalizer", "multipart.multipart"
-            ])
+            log_quiet_libs = config_data.get(
+                "log_quiet_libs",
+                ["httpx", "asyncio", "urllib3", "charset_normalizer", "multipart.multipart"],
+            )
             log_quiet_level = config_data.get("log_quiet_level", "WARNING")
-            log_drop_keywords = config_data.get("log_drop_keywords", [
-                "Request options:",
-                "Sending HTTP Request:",
-                "HTTP Response:",
-                "receive_response_body.started",
-                "receive_response_headers.started",
-                "send_request_headers.started",
-                "send_request_body.started",
-            ])
+            log_drop_keywords = config_data.get(
+                "log_drop_keywords",
+                [
+                    "Request options:",
+                    "Sending HTTP Request:",
+                    "HTTP Response:",
+                    "receive_response_body.started",
+                    "receive_response_headers.started",
+                    "send_request_headers.started",
+                    "send_request_body.started",
+                ],
+            )
 
             # 处理 extra_config（可能为 None）
             if "extra_config" in llm_config and llm_config["extra_config"] is None:
@@ -1358,8 +1595,11 @@ class Settings(BaseModel):
 
             # 处理 Agent 配置中可能为 None 的字符串字段
             none_fields = [
-                "char_settings", "char_personalities", "mask",
-                "message_example", "prompt"
+                "char_settings",
+                "char_personalities",
+                "mask",
+                "message_example",
+                "prompt",
             ]
             for field in none_fields:
                 if field in agent_config and agent_config[field] is None:
@@ -1427,11 +1667,10 @@ class Settings(BaseModel):
                                 servers[server_name] = MCPServerConfig(**server_config)
 
                     # ???? MCP ????
-                    enabled_value = mcp_config_data.get("enabled", mcp_config_data.get("enable", True))
-                    mcp_config = MCPConfig(
-                        enabled=enabled_value,
-                        servers=servers
+                    enabled_value = mcp_config_data.get(
+                        "enabled", mcp_config_data.get("enable", True)
                     )
+                    mcp_config = MCPConfig(enabled=enabled_value, servers=servers)
                     settings_kwargs["mcp"] = mcp_config
 
             # TTS 配置 (v2.48.10 新增)
@@ -1534,6 +1773,7 @@ def load_settings(config_path: str = "config.yaml", use_cache: bool = True) -> S
         settings_instance.ensure_directories()
         try:
             from src.utils.logger import apply_settings as apply_logging_settings
+
             apply_logging_settings(settings_instance)
         except Exception as exc:
             logger.warning(f"日志配置应用失败，将使用默认日志: {exc}")
@@ -1551,6 +1791,7 @@ def load_settings(config_path: str = "config.yaml", use_cache: bool = True) -> S
         settings_instance.ensure_directories()
         try:
             from src.utils.logger import apply_settings as apply_logging_settings
+
             apply_logging_settings(settings_instance)
         except Exception as exc:
             logger.warning(f"日志配置应用失败，将使用默认日志: {exc}")

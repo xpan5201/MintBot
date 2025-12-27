@@ -109,6 +109,27 @@ class UserDatabase:
         self._configure_connection(conn)
         return conn
 
+    def close(self) -> None:
+        """关闭预编译语句连接等资源（幂等）。"""
+        if not getattr(self, "use_prepared", False):
+            return
+
+        db_path = getattr(self, "db_path", None)
+        if db_path is None:
+            return
+
+        try:
+            from src.utils.prepared_statements import close_prepared_statement_manager
+
+            close_prepared_statement_manager(db_path)
+        except Exception:
+            pass
+        finally:
+            try:
+                self._prepared_mgr = None
+            except Exception:
+                pass
+
     def _init_database(self):
         """初始化数据库表 (v2.25.0: 修复连接管理)"""
         conn = self._get_connection()

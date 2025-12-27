@@ -155,30 +155,69 @@ class _LegacyLoggerAdapter:
                     return
             except Exception:
                 pass
+        elif hasattr(self._logger, "_core") and hasattr(self._logger, "level"):
+            # loguru 不提供标准 logging 的 isEnabledFor() 接口；使用其内部 min_level 做快速 gating。
+            try:
+                min_level = getattr(getattr(self._logger, "_core", None), "min_level", None)
+                level_no = self._logger.level(level_name).no
+                if isinstance(min_level, int) and isinstance(level_no, int) and level_no < min_level:
+                    return
+            except Exception:
+                pass
 
         exc_info = kwargs.pop("exc_info", None)
         extra = kwargs.pop("extra", None)
         formatted = self._format_message(message, args)
         target = self._logger
 
-        if exc_info:
-            if exc_info is True:
-                target = target.opt(exception=True)
-            elif isinstance(exc_info, BaseException):
-                target = target.opt(exception=exc_info)
-            elif isinstance(exc_info, tuple):
-                target = target.opt(exception=exc_info)
-            else:
-                target = target.opt(exception=True)
+        if hasattr(target, "opt"):
+            # 修复：wrapped logger 的调用位置（function/line）应指向业务代码，而不是本适配器。
+            opt_kwargs: Dict[str, Any] = {"depth": 2}
+            if exc_info:
+                opt_kwargs["exception"] = True if exc_info is True else exc_info
+            try:
+                target = target.opt(**opt_kwargs)
+            except Exception:
+                pass
 
-        if extra and hasattr(target, "bind"):
-            target = target.bind(**extra)
+            if isinstance(extra, dict) and extra and hasattr(target, "bind"):
+                try:
+                    target = target.bind(**extra)
+                except Exception:
+                    pass
+
+            log_callable = getattr(target, method, None)
+            try:
+                if callable(log_callable):
+                    log_callable(formatted)
+                else:
+                    target.log(level_name, formatted)
+            except Exception:
+                try:
+                    target.log("INFO", formatted)
+                except Exception:
+                    pass
+            return
+
+        # 标准 logging 兜底（无 loguru）
+        call_kwargs: Dict[str, Any] = {}
+        if exc_info:
+            call_kwargs["exc_info"] = exc_info
+        if isinstance(extra, dict) and extra:
+            call_kwargs["extra"] = extra
 
         log_callable = getattr(target, method, None)
-        if log_callable is None:
-            target.log(method.upper(), formatted)
-        else:
-            log_callable(formatted)
+        if callable(log_callable):
+            log_callable(formatted, **call_kwargs)
+            return
+        try:
+            level_no = getattr(logging, level_name, logging.INFO)
+            target.log(level_no, formatted, **call_kwargs)
+        except Exception:
+            try:
+                target.log(formatted)
+            except Exception:
+                pass
 
     def bind(self, **kwargs: Any) -> "_LegacyLoggerAdapter":
         if hasattr(self._logger, "bind"):
@@ -247,6 +286,23 @@ class _LegacyLoggerAdapter:
                 return bool(self._logger.is_enabled(_normalize_level_name(level)))
             except Exception:
                 pass
+        if hasattr(self._logger, "_core") and hasattr(self._logger, "level"):
+            try:
+                min_level = getattr(getattr(self._logger, "_core", None), "min_level", None)
+                if not isinstance(min_level, int):
+                    raise TypeError("min_level")
+                if isinstance(level, int):
+                    return level >= min_level
+                level_name = _normalize_level_name(level)
+                level_no = None
+                try:
+                    level_no = self._logger.level(level_name).no
+                except Exception:
+                    level_no = getattr(logging, level_name, None)
+                if isinstance(level_no, int):
+                    return level_no >= min_level
+            except Exception:
+                pass
 
         # 最后兜底为 True，避免业务代码因缺少方法而异常
         return True
@@ -264,15 +320,48 @@ class _InterceptHandler(logging.Handler):
         except Exception:
             level = record.levelno
 
-        frame, depth = logging.currentframe(), 2
-        while frame and frame.f_code.co_filename == logging.__file__:
+        frame, depth = logging.currentframe(), 0
+        while frame:
+            filename = frame.f_code.co_filename
+            is_logging = filename == logging.__file__
+            is_frozen = "importlib" in filename and "_bootstrap" in filename
+            if depth > 0 and not (is_logging or is_frozen):
+                break
             frame = frame.f_back
             depth += 1
 
-        target = (_loguru_base or loguru_logger).patch(_inject_context)
-        target.bind(logger_name=record.name).opt(
-            depth=depth, exception=record.exc_info
-        ).log(level, record.getMessage())
+        try:
+            message = record.getMessage()
+        except Exception:
+            msg = getattr(record, "msg", "")
+            message = str(msg) if msg is not None else ""
+
+        target = _loguru_base or loguru_logger
+        target.bind(logger_name=record.name).opt(depth=depth, exception=record.exc_info).log(level, message)
+
+
+class _ContextInjectFilter(logging.Filter):
+    """为标准 logging 路径注入 context_str，避免格式化 KeyError。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            context = LOG_CONTEXT.get({})
+        except Exception:
+            context = {}
+        if not isinstance(context, dict):
+            context = {}
+        record.context_str = _format_context(context)
+        return True
+
+
+def _ensure_context_filter() -> None:
+    root = logging.getLogger()
+    try:
+        if any(isinstance(f, _ContextInjectFilter) for f in getattr(root, "filters", [])):
+            return
+    except Exception:
+        pass
+    root.addFilter(_ContextInjectFilter())
 
 
 def _format_context(context: Dict[str, Any]) -> str:
@@ -296,13 +385,20 @@ def _inject_context(record: Dict[str, Any]) -> Dict[str, Any]:
     return record
 
 
+def _normalize_drop_keywords(keywords: List[str]) -> List[str]:
+    try:
+        return [str(kw).strip().lower() for kw in keywords if str(kw).strip()]
+    except Exception:
+        return []
+
+
 def _should_drop(message: str, keywords: List[str]) -> bool:
     if not message or not keywords:
         return False
     try:
         lower_msg = message.lower()
         for kw in keywords:
-            if kw and kw.lower() in lower_msg:
+            if kw and kw in lower_msg:
                 return True
     except Exception:
         return False
@@ -365,6 +461,7 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
     _current_config = cfg
     cfg.log_dir.mkdir(parents=True, exist_ok=True)
     _ensure_utf8_stdio()
+    drop_keywords = _normalize_drop_keywords(cfg.drop_keywords)
 
     if HAS_LOGURU:
         loguru_logger.remove()
@@ -390,7 +487,7 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
             enqueue=cfg.enqueue,
             backtrace=cfg.backtrace,
             diagnose=cfg.diagnose,
-            filter=lambda record: not _should_drop(record.get("message", ""), cfg.drop_keywords),
+            filter=lambda record, kws=drop_keywords: not _should_drop(record.get("message", ""), kws),
         )
 
         _loguru_base.add(
@@ -406,7 +503,7 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
             enqueue=cfg.enqueue,
             backtrace=cfg.backtrace,
             diagnose=cfg.diagnose,
-            filter=lambda record: not _should_drop(record.get("message", ""), cfg.drop_keywords),
+            filter=lambda record, kws=drop_keywords: not _should_drop(record.get("message", ""), kws),
         )
 
         if cfg.enable_json:
@@ -418,7 +515,7 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
                 encoding="utf-8",
                 enqueue=cfg.enqueue,
                 serialize=True,
-                filter=lambda record: not _should_drop(record.get("message", ""), cfg.drop_keywords),
+                filter=lambda record, kws=drop_keywords: not _should_drop(record.get("message", ""), kws),
             )
 
         logging.basicConfig(
@@ -434,9 +531,10 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
         return _LegacyLoggerAdapter(_loguru_base.bind(logger_name="mintchat"))
 
     numeric_level = getattr(logging, cfg.normalized_level(), logging.INFO)
+    _ensure_context_filter()
     logging.basicConfig(
         level=numeric_level,
-        format="%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s",
+        format="%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s %(context_str)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[logging.StreamHandler(sys.stderr)],
         force=True,
@@ -451,13 +549,13 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
     file_handler.setLevel(numeric_level)
     file_handler.setFormatter(
         logging.Formatter(
-            "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s",
+            "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s %(context_str)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
     )
     class _DropFilter(logging.Filter):
         def filter(self, record: logging.LogRecord) -> bool:
-            return not _should_drop(getattr(record, "msg", ""), cfg.drop_keywords)
+            return not _should_drop(getattr(record, "msg", ""), drop_keywords)
 
     drop_filter = _DropFilter()
     for handler in logging.getLogger().handlers:

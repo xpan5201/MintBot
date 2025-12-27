@@ -5,6 +5,10 @@
 基于最新情感AI研究的双源情绪模型、角色感知推理、目的论驱动计算。
 """
 
+import json
+import os
+import secrets
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -15,6 +19,20 @@ from src.config.settings import settings
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _atomic_write_json(path: str, data: Dict[str, Any]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f"{target.name}.tmp.{secrets.token_hex(6)}")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, target)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 class EmotionType(Enum):
@@ -144,6 +162,49 @@ class EmotionEngine:
     # v2.48.5: 类级常量 - 特殊情绪触发器（猫娘女仆特色）
     JEALOUSY_TRIGGERS: List[str] = ["别人", "其他人", "她", "他", "朋友", "同事", "忙", "没空", "不在"]
     AFFECTION_TRIGGERS: List[str] = ["抱", "摸", "亲", "蹭", "陪", "喜欢", "爱", "想你", "陪我"]
+    EMOTION_STYLE_MODIFIERS: Dict[EmotionType, Dict[str, str]] = {
+        EmotionType.HAPPY: {"high": "非常开心地", "medium": "愉快地", "low": "微笑着"},
+        EmotionType.SAD: {"high": "难过地", "medium": "有些失落地", "low": "略带忧伤地"},
+        EmotionType.EXCITED: {"high": "兴奋地", "medium": "期待地", "low": "有些激动地"},
+        EmotionType.CALM: {"high": "平静地", "medium": "淡定地", "low": "从容地"},
+        EmotionType.WORRIED: {"high": "非常担心地", "medium": "有些担忧地", "low": "略带关切地"},
+        EmotionType.PLAYFUL: {"high": "调皮地", "medium": "俏皮地", "low": "带着玩心地"},
+        EmotionType.AFFECTIONATE: {"high": "亲昵地", "medium": "温柔地", "low": "柔声地"},
+        EmotionType.CURIOUS: {"high": "好奇地", "medium": "感兴趣地", "low": "略带疑问地"},
+    }
+    INTENSIFIER_KEYWORDS: Tuple[str, ...] = (
+        "非常",
+        "超级",
+        "太",
+        "特别",
+        "真的",
+        "极其",
+        "气死",
+        "最",
+    )
+    NEGATIVE_INTERACTION_KEYWORDS: Tuple[str, ...] = (
+        "滚",
+        "去死",
+        "傻逼",
+        "脑残",
+        "垃圾",
+        "废物",
+        "讨厌你",
+        "别烦",
+    )
+    INTENSITY_BASELINE: Dict[EmotionType, float] = {
+        EmotionType.AFFECTIONATE: 0.75,
+        EmotionType.ANGRY: 0.78,
+        EmotionType.EXCITED: 0.70,
+        EmotionType.SURPRISED: 0.70,
+        EmotionType.HAPPY: 0.60,
+        EmotionType.PLAYFUL: 0.60,
+        EmotionType.WORRIED: 0.60,
+        EmotionType.SAD: 0.55,
+        EmotionType.CONFUSED: 0.55,
+        EmotionType.CURIOUS: 0.55,
+        EmotionType.CALM: 0.40,
+    }
 
     def __init__(
         self,
@@ -190,6 +251,7 @@ class EmotionEngine:
         self._emotion_cache: Dict[str, EmotionType] = {}
         self._cache_timestamp: Optional[datetime] = None
         self._cache_ttl_seconds = 60  # 缓存有效期60秒
+        self._last_persist_monotonic: float = 0.0
 
         # v3.1 持久化支持
         if persist_file:
@@ -280,10 +342,17 @@ class EmotionEngine:
         except Exception as e:
             logger.warning("加载情绪状态失败: %s，使用默认值", e)
 
-    def _save_emotion_state(self) -> None:
+    def _save_emotion_state(self, *, force: bool = False) -> None:
         """保存情绪状态 (v3.1 新增)"""
         try:
-            import json
+            interval_s = float(getattr(settings.agent, "emotion_persist_interval_s", 0.0) or 0.0)
+            if not force and interval_s > 0.0:
+                now_mono = time.monotonic()
+                if (now_mono - self._last_persist_monotonic) < interval_s:
+                    return
+                self._last_persist_monotonic = now_mono
+            else:
+                self._last_persist_monotonic = time.monotonic()
 
             # 序列化当前情绪
             current_emotion_data = {
@@ -342,10 +411,7 @@ class EmotionEngine:
                 "last_update": datetime.now().isoformat(),
             }
 
-            Path(self.persist_file).write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
+            _atomic_write_json(self.persist_file, data)
 
             logger.debug(
                 "情绪状态已保存: %s (%.2f)",
@@ -355,12 +421,21 @@ class EmotionEngine:
         except Exception as e:
             logger.error("保存情绪状态失败: %s", e)
 
+    def persist(self, *, force: bool = False) -> None:
+        """将当前情绪/用户档案状态持久化到磁盘。"""
+        self._save_emotion_state(force=force)
+
+    def flush(self) -> None:
+        """强制落盘（用于程序退出或显式保存）。"""
+        self.persist(force=True)
+
     def update_emotion(
         self,
         emotion_type: EmotionType,
         intensity: float,
         trigger: Optional[str] = None,
         source: str = "interaction",
+        persist: bool = True,
     ) -> EmotionState:
         """
         更新当前情感状态 (v3.1 优化)
@@ -408,7 +483,8 @@ class EmotionEngine:
         )
 
         # v3.1 保存情绪状态
-        self._save_emotion_state()
+        if persist:
+            self._save_emotion_state()
 
         logger.debug("情感更新: %s", self.current_emotion)
         return self.current_emotion
@@ -426,17 +502,41 @@ class EmotionEngine:
         Returns:
             推断的情感类型
         """
+        message = (message or "").strip()
+        if not message:
+            return EmotionType.HAPPY
+
         # v2.48.5: 使用小写转换一次，避免重复调用
         message_lower = message.lower()
+
+        # v3.1: 轻量缓存（避免重复分析同一句话）
+        now = datetime.now()
+        if self._cache_timestamp is None or (now - self._cache_timestamp).total_seconds() >= self._cache_ttl_seconds:
+            self._emotion_cache.clear()
+            self._cache_timestamp = now
+        else:
+            cache_key = message_lower if len(message_lower) <= 200 else message_lower[:200]
+            cached = self._emotion_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        if len(self._emotion_cache) >= 512:
+            self._emotion_cache.clear()
+            self._cache_timestamp = now
 
         # v2.48.5: 优先检查特殊情绪触发器（早期返回优化）
         # 检测"撒娇"相关内容（优先级更高，符合猫娘特性）
         if any(trigger in message_lower for trigger in self.AFFECTION_TRIGGERS):
-            return EmotionType.AFFECTIONATE
+            result = EmotionType.AFFECTIONATE
+            cache_key = message_lower if len(message_lower) <= 200 else message_lower[:200]
+            self._emotion_cache[cache_key] = result
+            return result
 
         # 检测"吃醋"相关内容
         if any(trigger in message_lower for trigger in self.JEALOUSY_TRIGGERS):
-            return EmotionType.WORRIED
+            result = EmotionType.WORRIED
+            cache_key = message_lower if len(message_lower) <= 200 else message_lower[:200]
+            self._emotion_cache[cache_key] = result
+            return result
 
         # v2.48.5: 优化关键词匹配 - 使用生成器表达式减少内存分配
         emotion_scores: Dict[EmotionType, int] = {}
@@ -447,10 +547,81 @@ class EmotionEngine:
 
         # 返回得分最高的情感，如果没有匹配则返回开心（默认活泼状态）
         if emotion_scores:
-            return max(emotion_scores.items(), key=lambda x: x[1])[0]
-        return EmotionType.HAPPY  # v2.29.13: 改为HAPPY，保持活泼
+            result = max(emotion_scores.items(), key=lambda x: x[1])[0]
+        else:
+            result = EmotionType.HAPPY  # v2.29.13: 改为HAPPY，保持活泼
 
-    def decay_emotion(self) -> None:
+        cache_key = message_lower if len(message_lower) <= 200 else message_lower[:200]
+        self._emotion_cache[cache_key] = result
+        return result
+
+    def estimate_message_intensity(self, message: str, emotion_type: EmotionType) -> float:
+        """
+        基于消息文本粗略估计情感强度（0.0-1.0）。
+
+        目标：
+        - 足够快（纯字符串操作）
+        - 稳定可解释（可预测）
+        """
+        text = (message or "").strip()
+        if not text:
+            return 0.0
+
+        message_lower = text.lower()
+        base = float(self.INTENSITY_BASELINE.get(emotion_type, 0.6))
+
+        exclam = message_lower.count("!") + message_lower.count("！")
+        ques = message_lower.count("?") + message_lower.count("？")
+        base += 0.08 * min(exclam, 3)
+        base += 0.05 * min(ques, 2)
+
+        keywords = self.EMOTION_KEYWORDS.get(emotion_type, [])
+        hits = 0
+        for kw in keywords:
+            if kw and kw in message_lower:
+                hits += 1
+                if hits >= 4:
+                    break
+        base += 0.03 * min(hits, 4)
+
+        if any(w in message_lower for w in self.INTENSIFIER_KEYWORDS):
+            base += 0.05
+
+        if len(text) <= 4:
+            base -= 0.10
+        elif len(text) >= 120:
+            base += 0.05
+
+        return max(0.0, min(1.0, base))
+
+    def is_negative_interaction(
+        self,
+        message: str,
+        emotion_type: Optional[EmotionType] = None,
+    ) -> bool:
+        """
+        粗略判断一次互动是否“关系受损”（用于档案更新的负面信号）。
+
+        约定：
+        - 只对“明显攻击/辱骂/驱赶”类内容判为负面，避免把“难过/担心”误判为负面互动。
+        """
+        text = (message or "").strip()
+        if not text:
+            return False
+
+        message_lower = text.lower()
+        if any(w in message_lower for w in self.NEGATIVE_INTERACTION_KEYWORDS):
+            return True
+
+        if emotion_type is None:
+            try:
+                emotion_type = self.analyze_message(text)
+            except Exception:
+                return False
+
+        return emotion_type == EmotionType.ANGRY
+
+    def decay_emotion(self, persist: bool = True) -> None:
         """
         情感自然衰减 (v2.29.13 优化)
 
@@ -466,11 +637,18 @@ class EmotionEngine:
             )
             if new_intensity < 0.2:
                 # v2.29.13: 强度过低时回归开心状态（而非平静）
-                self.update_emotion(EmotionType.HAPPY, 0.6, "自然衰减回归开心", source="decay")
+                self.update_emotion(
+                    EmotionType.HAPPY,
+                    0.6,
+                    "自然衰减回归开心",
+                    source="decay",
+                    persist=persist,
+                )
             else:
                 self.current_emotion.intensity = new_intensity
                 # v3.1 保存衰减后的状态
-                self._save_emotion_state()
+                if persist:
+                    self._save_emotion_state()
 
     def get_emotion_modifier(self) -> str:
         """
@@ -482,51 +660,15 @@ class EmotionEngine:
         emotion = self.current_emotion
         intensity = emotion.intensity
 
-        modifiers = {
-            EmotionType.HAPPY: {
-                "high": "非常开心地",
-                "medium": "愉快地",
-                "low": "微笑着",
-            },
-            EmotionType.SAD: {
-                "high": "难过地",
-                "medium": "有些失落地",
-                "low": "略带忧伤地",
-            },
-            EmotionType.EXCITED: {
-                "high": "兴奋地",
-                "medium": "期待地",
-                "low": "有些激动地",
-            },
-            EmotionType.CALM: {"high": "平静地", "medium": "淡定地", "low": "从容地"},
-            EmotionType.WORRIED: {
-                "high": "非常担心地",
-                "medium": "有些担忧地",
-                "low": "略带关切地",
-            },
-            EmotionType.PLAYFUL: {
-                "high": "调皮地",
-                "medium": "俏皮地",
-                "low": "带着玩心地",
-            },
-            EmotionType.AFFECTIONATE: {
-                "high": "亲昵地",
-                "medium": "温柔地",
-                "low": "柔声地",
-            },
-            EmotionType.CURIOUS: {
-                "high": "好奇地",
-                "medium": "感兴趣地",
-                "low": "略带疑问地",
-            },
-        }
-
         # 根据强度选择修饰符
         level = "high" if intensity > 0.7 else "medium" if intensity > 0.4 else "low"
-        return modifiers.get(emotion.emotion_type, {}).get(level, "")
+        return self.EMOTION_STYLE_MODIFIERS.get(emotion.emotion_type, {}).get(level, "")
 
     def update_user_profile(
-        self, interaction_positive: bool, memorable_moment: Optional[str] = None
+        self,
+        interaction_positive: bool,
+        memorable_moment: Optional[str] = None,
+        persist: bool = True,
     ) -> None:
         """
         更新用户情感档案 (v3.1 优化)
@@ -565,7 +707,8 @@ class EmotionEngine:
                 self.user_profile.memorable_moments.pop(0)
 
         # v3.1 保存用户档案
-        self._save_emotion_state()
+        if persist:
+            self._save_emotion_state()
 
         logger.debug(
             f"用户档案更新: 亲密度={self.user_profile.relationship_level:.2f}"
@@ -594,36 +737,27 @@ class EmotionEngine:
         Returns:
             情感上下文描述
         """
-        from src.config.settings import settings
-
-        context_parts = []
-
-        # v2.29.19: 强化角色身份和自称规范
+        user_name = settings.agent.user
         char_name = settings.agent.char
-        context_parts.append(
-            f"## 当前状态提醒\n"
-            f"你是 **{char_name}**（雪糕），一个活泼开朗、爱撒娇、爱吃醋的猫娘女仆。\n"
-            f"**提醒**: 自称时优先使用'小雪糕'，不要使用'小喵'等其他称呼。"
-        )
 
-        # 当前情感
-        context_parts.append(
-            f"\n当前情感: {self.current_emotion.emotion_type.value}"
-            f" (强度: {self.current_emotion.intensity:.1f})"
-        )
-
-        # 关系描述
-        context_parts.append(
-            f"与主人的关系: {self.get_relationship_description()}"
-            f" (亲密度: {self.user_profile.relationship_level:.2f})"
-        )
-
-        # 情感修饰符
+        emotion_label = self.current_emotion.emotion_type.value
+        intensity = float(self.current_emotion.intensity or 0.0)
+        relationship_desc = self.get_relationship_description()
         modifier = self.get_emotion_modifier()
-        if modifier:
-            context_parts.append(f"\n回复风格: {modifier}")
 
-        return "\n".join(context_parts)
+        intensity_label = "高" if intensity > 0.7 else "中" if intensity > 0.4 else "低"
+        line = (
+            "\n【情感】"
+            f"{emotion_label}（强度：{intensity_label}）；"
+            f"与{user_name}关系：{relationship_desc}。\n"
+        )
+        if modifier:
+            line += f"语气基调：{modifier}。"
+        line += (
+            "把情感融入表达，不要在回复里直接复述“情感/强度/数值”。"
+            f"自称优先用“{char_name}”。"
+        )
+        return line
 
     def add_emotion_memory(
         self,

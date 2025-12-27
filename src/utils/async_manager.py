@@ -6,11 +6,13 @@
 
 import asyncio
 import functools
-from concurrent.futures import ThreadPoolExecutor, Future
+import threading
+from concurrent.futures import ThreadPoolExecutor, Future, TimeoutError as FuturesTimeoutError
 from typing import Any, Callable, Coroutine, Optional, TypeVar, List
 import time
 
 from src.utils.logger import get_logger
+from src.utils.async_loop_thread import AsyncLoopThread
 
 logger = get_logger(__name__)
 
@@ -31,20 +33,39 @@ class AsyncTaskManager:
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="MintChat-Worker"
         )
-        self._tasks: List[Future] = []
+        self._tasks: set[Future[Any]] = set()
+        self._tasks_lock = threading.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop_owned = False
+        self._runner: Optional[AsyncLoopThread] = None
 
         logger.info(f"异步任务管理器初始化 (工作线程数: {max_workers})")
 
     def get_or_create_loop(self) -> asyncio.AbstractEventLoop:
-        """获取或创建事件循环"""
+        """获取或创建事件循环。
+
+        注意：
+        - 若当前线程已有运行中的 event loop，则复用该 loop（不会在 shutdown 时关闭）。
+        - 若当前线程无运行中的 loop，会创建一个新 loop（仅供 run_sync 使用）。
+        - create_task 在“无运行中 loop”的情况下会自动回退到后台 AsyncLoopThread 执行，
+          避免“创建 task 但 loop 不运行导致任务永远不执行”的坑。
+        """
         if self._loop is None or self._loop.is_closed():
             try:
                 self._loop = asyncio.get_running_loop()
+                self._loop_owned = False
             except RuntimeError:
                 self._loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(self._loop)
+                self._loop_owned = True
         return self._loop
+
+    def _get_or_create_runner(self) -> AsyncLoopThread:
+        runner = self._runner
+        if runner is not None:
+            return runner
+        self._runner = AsyncLoopThread(thread_name="mintchat-task-manager")
+        return self._runner
 
     def run_in_thread(
         self,
@@ -66,17 +87,33 @@ class AsyncTaskManager:
             Future对象
         """
         future = self._executor.submit(func, *args, **kwargs)
-        self._tasks.append(future)
+        with self._tasks_lock:
+            self._tasks.add(future)
+
+        def _cleanup(_f: Future[Any]) -> None:
+            with self._tasks_lock:
+                self._tasks.discard(_f)
+
+        future.add_done_callback(_cleanup)
 
         if timeout:
             # 添加超时检查
-            def check_timeout():
+            def check_timeout() -> None:
                 if not future.done():
                     future.cancel()
                     logger.warning(f"任务超时: {func.__name__} ({timeout}秒)")
 
             timer = threading.Timer(timeout, check_timeout)
             timer.start()
+
+            # 任务结束时停止 timer，避免 timer 长时间存活造成资源浪费
+            def _stop_timer(_f: Future[Any]) -> None:
+                try:
+                    timer.cancel()
+                except Exception:
+                    pass
+
+            future.add_done_callback(_stop_timer)
 
         return future
 
@@ -149,22 +186,20 @@ class AsyncTaskManager:
         Returns:
             协程返回值
         """
-        loop = self.get_or_create_loop()
+        # 统一通过后台 AsyncLoopThread 执行：
+        # - 避免在不同线程之间复用/缓存 event loop（潜在非线程安全）
+        # - 避免每次调用创建/销毁 event loop 的开销
+        runner = self._get_or_create_runner()
         try:
-            if timeout:
-                return loop.run_until_complete(
-                    asyncio.wait_for(coro, timeout=timeout)
-                )
-            else:
-                return loop.run_until_complete(coro)
-        except asyncio.TimeoutError:
+            return runner.run(coro, timeout=timeout)
+        except FuturesTimeoutError:
             raise TimeoutError(f"同步执行异步任务超时 ({timeout}秒): {str(coro)}")
 
     def create_task(
         self,
         coro: Coroutine[Any, Any, T],
         name: Optional[str] = None,
-    ) -> asyncio.Task[T]:
+    ) -> Any:
         """
         创建异步任务（不阻塞）
 
@@ -173,11 +208,18 @@ class AsyncTaskManager:
             name: 任务名称
 
         Returns:
-            Task对象
+            Task/Future 对象：
+            - 若当前线程有运行中的 event loop：返回 asyncio.Task
+            - 否则：返回 concurrent.futures.Future（在后台 AsyncLoopThread 执行）
         """
-        loop = self.get_or_create_loop()
-        task = loop.create_task(coro, name=name)
-        return task
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 无运行中的 loop：回退到后台 loop 执行（避免任务永远不执行）
+            runner = self._get_or_create_runner()
+            return runner.submit(coro)
+
+        return loop.create_task(coro, name=name)
 
     def wait_for_tasks(self, timeout: Optional[float] = None) -> None:
         """
@@ -190,7 +232,10 @@ class AsyncTaskManager:
         completed = 0
         failed = 0
 
-        for future in self._tasks:
+        with self._tasks_lock:
+            futures = list(self._tasks)
+
+        for future in futures:
             try:
                 remaining_time = None
                 if timeout:
@@ -206,7 +251,8 @@ class AsyncTaskManager:
                 failed += 1
                 logger.error(f"任务执行失败: {e}")
 
-        self._tasks.clear()
+        with self._tasks_lock:
+            self._tasks.clear()
         logger.info(f"任务完成: {completed} 成功, {failed} 失败")
 
     def shutdown(self, wait: bool = True, timeout: Optional[float] = None) -> None:
@@ -224,8 +270,18 @@ class AsyncTaskManager:
 
         self._executor.shutdown(wait=wait)
 
-        if self._loop and not self._loop.is_closed():
-            self._loop.close()
+        if self._runner is not None:
+            try:
+                self._runner.close(timeout=max(0.1, float(timeout or 2.0)))
+            except Exception:
+                pass
+            self._runner = None
+
+        if self._loop_owned and self._loop and not self._loop.is_closed():
+            try:
+                self._loop.close()
+            except Exception:
+                pass
 
         logger.info("异步任务管理器已关闭")
 
@@ -304,7 +360,3 @@ def get_task_manager() -> AsyncTaskManager:
     if _global_task_manager is None:
         _global_task_manager = AsyncTaskManager()
     return _global_task_manager
-
-
-# 导入threading用于超时检查
-import threading

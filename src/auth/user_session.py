@@ -81,6 +81,33 @@ class UserSession:
         if username:
             logger.info("用户 %s 已登出", username)
 
+    def close(self) -> None:
+        """释放会话相关资源（幂等）。
+
+        - 关闭 UserDataManager 的数据库连接池
+        - 关闭用户认证数据库的预编译语句连接（若启用）
+        """
+        with self._state_lock:
+            auth_db = getattr(self, "_auth_db", None)
+            self._auth_db = None
+            data_manager = getattr(self, "data_manager", None)
+
+        if data_manager is not None:
+            try:
+                close_fn = getattr(data_manager, "close", None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception:
+                pass
+
+        if auth_db is not None:
+            try:
+                close_fn = getattr(auth_db, "close", None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception:
+                pass
+
     def is_logged_in(self) -> bool:
         """检查是否已登录
 

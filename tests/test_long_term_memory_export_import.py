@@ -209,3 +209,37 @@ def test_search_memories_prefers_timestamp_unix_over_invalid_timestamp(monkeypat
     results = lt.search_memories("query", k=1)
     assert results
     assert results[0]["recency_score"] == pytest.approx(0.5)
+
+
+def test_search_memories_rerank_uses_character_consistency(monkeypatch, temp_dir: Path):
+    _patch_dummy_chroma(monkeypatch)
+    lt = memory_mod.LongTermMemory(persist_directory=temp_dir / "lt", collection_name="t")
+
+    # 让角色一致性对 rerank 有明显影响，避免只依赖插入顺序
+    monkeypatch.setattr(memory_mod.settings.agent, "memory_character_consistency_weight", 1.0, raising=False)
+
+    scorer_version = 2
+    if getattr(memory_mod, "CharacterConsistencyScorer", None) is not None:
+        scorer_version = int(getattr(memory_mod.CharacterConsistencyScorer, "SCORER_VERSION", 2))
+
+    meta = {
+        "type": "conversation",
+        "importance": 0.5,
+        "timestamp": "2020-01-01T00:00:00",
+        "character_consistency_version": scorer_version,
+    }
+
+    lt.add_memory(
+        "主人: 你好\n小雪糕: 好的",
+        metadata={**meta, "character_consistency": 0.1},
+        batch=False,
+    )
+    lt.add_memory(
+        "主人: 你好\n小雪糕: 主人我在喵~",
+        metadata={**meta, "character_consistency": 0.9},
+        batch=False,
+    )
+
+    results = lt.search_memories("query", k=2)
+    assert len(results) == 2
+    assert results[0]["character_consistency"] == pytest.approx(0.9)

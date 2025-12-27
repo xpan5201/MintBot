@@ -72,3 +72,5 @@ third_party/*
 !third_party/README.md
 
 live2d/Blue_cat/
+
+times.txt

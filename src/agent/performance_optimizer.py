@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Callable
 from functools import wraps
 
 from src.utils.logger import get_logger
+from src.utils.async_loop_thread import AsyncLoopThread
 
 logger = get_logger(__name__)
 
@@ -131,18 +132,28 @@ class MultiLevelCache:
     def _disable_redis(self, reason: str, *, action: str) -> None:
         """运行时禁用 Redis，避免每次访问都报错/超时。"""
         should_log = False
+        client_to_close = None
         with self._state_lock:
             if self.redis_client is None:
                 self.redis_enabled = False
                 self._redis_disabled_reason = self._redis_disabled_reason or reason
                 return
 
+            client_to_close = self.redis_client
             self.redis_client = None
             self.redis_enabled = False
             self._redis_disabled_reason = reason
             if not self._redis_error_logged:
                 self._redis_error_logged = True
                 should_log = True
+
+        if client_to_close is not None:
+            try:
+                close_fn = getattr(client_to_close, "close", None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception:
+                pass
 
         if should_log:
             logger.warning("Redis %s 失败，已自动禁用 Redis 缓存: %s", action, reason)
@@ -233,11 +244,11 @@ class MultiLevelCache:
             bool: 是否成功
         """
         cache_key = self._make_key(key, prefix)
-        ttl = ttl or self.default_ttl
+        ttl_seconds = self.default_ttl if ttl is None else max(0, int(ttl))
         
         # L1 缓存：内存缓存
         if self.max_memory_items > 0:
-            self._set_memory_cache(cache_key, value, ttl)
+            self._set_memory_cache(cache_key, value, ttl_seconds)
         
         # L2 缓存：Redis 缓存
         with self._state_lock:
@@ -251,10 +262,12 @@ class MultiLevelCache:
                     # value 不可 JSON 序列化：仅跳过 Redis 写入，不要禁用 Redis
                     value_json = None
 
-                if value_json is not None:
-                    redis_client.setex(cache_key, ttl, value_json)
-                else:
+                if value_json is None:
                     logger.debug("跳过 Redis 缓存写入（不可序列化）: %s", cache_key)
+                elif ttl_seconds <= 0:
+                    logger.debug("跳过 Redis 缓存写入（ttl<=0）: %s", cache_key)
+                else:
+                    redis_client.setex(cache_key, ttl_seconds, value_json)
             except Exception as e:
                 self._disable_redis(f"{type(e).__name__}: {e}", action="写入")
         
@@ -359,6 +372,23 @@ class MultiLevelCache:
 
         logger.info("缓存已清除: %s", prefix)
 
+    def close(self) -> None:
+        """关闭缓存并释放底层资源（幂等）。"""
+        client_to_close = None
+        with self._state_lock:
+            client_to_close = self.redis_client
+            self.redis_client = None
+            self.redis_enabled = False
+            self._memory_cache.clear()
+
+        if client_to_close is not None:
+            try:
+                close_fn = getattr(client_to_close, "close", None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception:
+                pass
+
     def get_stats(self) -> Dict[str, Any]:
         """获取缓存统计信息"""
         with self._state_lock:
@@ -396,7 +426,13 @@ class AsyncProcessor:
     4. 错误处理
     """
 
-    def __init__(self, max_workers: int = 4):
+    def __init__(
+        self,
+        max_workers: int = 4,
+        *,
+        use_async_loop_thread: bool = True,
+        loop_start_timeout_s: float = 5.0,
+    ):
         """
         初始化异步处理器（线程池版，适配同步 GUI/CLI 场景）。
 
@@ -404,36 +440,33 @@ class AsyncProcessor:
         这里改为 ThreadPoolExecutor，保证 submit 后立即开始执行。
         """
         self.max_workers = max(1, int(max_workers))
+        self._use_async_loop_thread = bool(use_async_loop_thread)
+        self._loop_start_timeout_s = max(0.1, float(loop_start_timeout_s))
         self._executor = ThreadPoolExecutor(
             max_workers=self.max_workers,
             thread_name_prefix="mintchat-async",
         )
         self._lock = Lock()
         self._futures: set[Future] = set()
+        self._loop_thread: Optional[AsyncLoopThread] = None
 
         logger.info("异步处理器初始化完成，最大并发数: %d", self.max_workers)
 
-    def submit(self, func: Callable, *args, **kwargs) -> Future:
-        """
-        提交异步任务（后台线程执行）。
+    def _get_or_create_loop_thread(self) -> AsyncLoopThread:
+        loop_thread = self._loop_thread
+        if loop_thread is not None:
+            return loop_thread
+        with self._lock:
+            loop_thread = self._loop_thread
+            if loop_thread is None:
+                loop_thread = AsyncLoopThread(
+                    thread_name="mintchat-async-processor",
+                    start_timeout_s=self._loop_start_timeout_s,
+                )
+                self._loop_thread = loop_thread
+        return loop_thread
 
-        Returns:
-            Future: 可用于取消/等待的 future。
-        """
-
-        def _runner() -> Any:
-            try:
-                if asyncio.iscoroutinefunction(func):
-                    return asyncio.run(func(*args, **kwargs))
-                result = func(*args, **kwargs)
-                if asyncio.iscoroutine(result):
-                    return asyncio.run(result)
-                return result
-            except Exception as e:
-                logger.error("异步任务执行失败: %s", e)
-                raise
-
-        future = self._executor.submit(_runner)
+    def _track_future(self, future: Future) -> Future:
         with self._lock:
             self._futures.add(future)
 
@@ -443,6 +476,40 @@ class AsyncProcessor:
 
         future.add_done_callback(_cleanup)
         return future
+
+    def submit(self, func: Callable, *args, **kwargs) -> Future:
+        """
+        提交异步任务（后台线程执行）。
+
+        Returns:
+            Future: 可用于取消/等待的 future。
+        """
+
+        if self._use_async_loop_thread and asyncio.iscoroutinefunction(func):
+            try:
+                coro = func(*args, **kwargs)
+                return self._track_future(self._get_or_create_loop_thread().submit(coro))
+            except Exception as exc:
+                logger.debug("AsyncLoopThread 提交失败，回退线程池执行: %s", exc)
+
+        def _runner() -> Any:
+            try:
+                if asyncio.iscoroutinefunction(func):
+                    coro = func(*args, **kwargs)
+                    if self._use_async_loop_thread:
+                        return self._get_or_create_loop_thread().run(coro)
+                    return asyncio.run(coro)
+                result = func(*args, **kwargs)
+                if asyncio.iscoroutine(result):
+                    if self._use_async_loop_thread:
+                        return self._get_or_create_loop_thread().run(result)
+                    return asyncio.run(result)
+                return result
+            except Exception:
+                logger.exception("异步任务执行失败")
+                raise
+
+        return self._track_future(self._executor.submit(_runner))
 
     def wait_all(self, timeout: Optional[float] = None) -> List[Any]:
         """
@@ -477,6 +544,8 @@ class AsyncProcessor:
         with self._lock:
             futures = list(self._futures)
             self._futures.clear()
+            loop_thread = self._loop_thread
+            self._loop_thread = None
 
         for fut in futures:
             if not fut.done():
@@ -486,6 +555,25 @@ class AsyncProcessor:
             self._executor.shutdown(wait=False, cancel_futures=True)
         except TypeError:
             self._executor.shutdown(wait=False)
+        finally:
+            if loop_thread is not None:
+                try:
+                    loop_thread.close(timeout=2.0)
+                except Exception:
+                    pass
+
+    def __enter__(self) -> "AsyncProcessor":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001 - context manager protocol
+        self.close()
+
+    def __del__(self) -> None:
+        # 析构阶段尽量避免留下非守护线程（忽略所有异常）
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class ChromaDBOptimizer:

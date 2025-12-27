@@ -9,6 +9,7 @@ ASR 语音输入后台线程（FunASR + QAudioSource）
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import re
 import time
 from threading import Event
@@ -23,7 +24,11 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 _UNEXPECTED_KW_RE = re.compile(r"unexpected keyword argument '([^']+)'")
+_RICH_TOKEN_RE = re.compile(r"<\|[^>]*\|>")
+_WHITESPACE_RE = re.compile(r"\s+")
 _FAST_INFERENCE_DEPS: tuple[Any, Any, Any] | bool | None = None  # (torch, prepare_data_iterator, deep_update)
+_TORCH: Any | bool | None = None
+_RICH_POSTPROCESS: Any | bool | None = None
 
 
 def _get_funasr_fast_inference_deps() -> tuple[Any, Any, Any] | None:
@@ -41,6 +46,38 @@ def _get_funasr_fast_inference_deps() -> tuple[Any, Any, Any] | None:
         return _FAST_INFERENCE_DEPS
     except Exception:
         _FAST_INFERENCE_DEPS = False
+        return None
+
+
+def _get_torch() -> Any | None:
+    global _TORCH
+    if _TORCH is False:
+        return None
+    if _TORCH is not None:
+        return _TORCH
+    try:
+        import torch
+
+        _TORCH = torch
+        return torch
+    except Exception:
+        _TORCH = False
+        return None
+
+
+def _get_rich_postprocess() -> Any | None:
+    global _RICH_POSTPROCESS
+    if _RICH_POSTPROCESS is False:
+        return None
+    if callable(_RICH_POSTPROCESS):
+        return _RICH_POSTPROCESS
+    try:
+        from funasr.utils.postprocess_utils import rich_transcription_postprocess  # type: ignore
+
+        _RICH_POSTPROCESS = rich_transcription_postprocess
+        return rich_transcription_postprocess
+    except Exception:
+        _RICH_POSTPROCESS = False
         return None
 
 
@@ -81,16 +118,16 @@ def _postprocess_asr_text(text: str) -> str:
         return ""
 
     # Prefer FunASR official postprocess for SenseVoice rich transcription.
-    try:
-        from funasr.utils.postprocess_utils import rich_transcription_postprocess  # type: ignore
-
-        text = str(rich_transcription_postprocess(text) or "").strip()
-    except Exception:
-        pass
+    rich_post = _get_rich_postprocess()
+    if rich_post is not None:
+        try:
+            text = str(rich_post(text) or "").strip()
+        except Exception:
+            pass
 
     # Remove leftover rich tokens like `<|zh|>` / `<|HAPPY|>` etc.
-    text = re.sub(r"<\|[^>]*\|>", "", text)
-    text = re.sub(r"\\s+", " ", text).strip()
+    text = _RICH_TOKEN_RE.sub("", text)
+    text = _WHITESPACE_RE.sub(" ", text).strip()
     return text
 
 
@@ -199,7 +236,11 @@ def _call_funasr_inference_fast(automodel: Any, kwargs: dict[str, Any]) -> Any:
             batch["data_in"] = data_batch[0]
             batch["data_lengths"] = input_len
 
-        with torch.no_grad():
+        try:
+            inference_ctx = torch.inference_mode()
+        except Exception:
+            inference_ctx = torch.no_grad()
+        with inference_ctx:
             res = _call_funasr_model_inference_with_fallback(model_impl, batch, model_kwargs)
 
         if isinstance(res, (list, tuple)):
@@ -243,11 +284,14 @@ class ASRListenThread(QThread):
         self._last_infer_at = 0.0
         self._last_infer_bytes = 0
         self._funasr_cache: dict[str, Any] = {}
+        self._skip_final = False
 
         # Soft cap: avoid unbounded growth if user forgets to stop recording.
         self._max_record_s = 120.0
 
-    def stop(self) -> None:
+    def stop(self, *, skip_final: bool = False) -> None:
+        if skip_final:
+            self._skip_final = True
         self._stop_event.set()
         try:
             self.requestInterruption()
@@ -258,7 +302,7 @@ class ASRListenThread(QThread):
     def _infer_text(
         model: Any,
         model_lock: Any,
-        pcm_bytes: bytes,
+        pcm_bytes: bytes | memoryview,
         *,
         sample_rate: int,
         is_final: bool,
@@ -277,7 +321,14 @@ class ASRListenThread(QThread):
 
         # FunASR 不同版本的参数签名存在差异：做少量兼容尝试。
         result: Any = None
-        with model_lock:
+        torch = _get_torch()
+        inference_ctx = nullcontext()
+        if torch is not None:
+            try:
+                inference_ctx = torch.inference_mode()
+            except Exception:
+                inference_ctx = torch.no_grad()
+        with model_lock, inference_ctx:
             for base in (
                 {"input": wav, "sampling_rate": sample_rate},
                 {"input": wav, "fs": sample_rate},
@@ -479,7 +530,8 @@ class ASRListenThread(QThread):
                 if vad.speech_started and self._should_infer(now, bytes_per_second):
                     self._last_infer_at = now
                     self._last_infer_bytes = len(self._pcm)
-                    segment = bytes(self._pcm[-window_bytes:]) if len(self._pcm) > window_bytes else bytes(self._pcm)
+                    pcm_view = memoryview(self._pcm)
+                    segment = pcm_view[-window_bytes:] if len(pcm_view) > window_bytes else pcm_view
                     if silence_skip and last_rms < last_threshold:
                         # Skip noisy inference on silence to reduce CPU.
                         self.msleep(20)
@@ -509,6 +561,8 @@ class ASRListenThread(QThread):
                 pass
 
             # 最终推理（全量音频）
+            if bool(getattr(self, "_skip_final", False)):
+                return
             final_pcm = bytes(self._pcm) if vad.speech_started else vad.captured_audio_bytes()
             final = self._infer_text(
                 model,

@@ -8,6 +8,8 @@
 日期: 2025-11-18
 """
 
+from __future__ import annotations
+
 import asyncio
 import sys
 import aiohttp
@@ -21,7 +23,17 @@ class HTTPConnectionPool:
     """统一HTTP连接池管理器（单例模式）"""
     
     _instance: Optional['HTTPConnectionPool'] = None
-    _lock = asyncio.Lock()
+    _lock: Optional[asyncio.Lock] = None
+    _lock_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    @classmethod
+    def _get_lock(cls) -> asyncio.Lock:
+        # asyncio.Lock 绑定 event loop；避免在 import 时创建导致跨 loop 使用报错
+        loop = asyncio.get_running_loop()
+        if cls._lock is None or cls._lock_loop is not loop:
+            cls._lock = asyncio.Lock()
+            cls._lock_loop = loop
+        return cls._lock
     
     def __init__(self):
         """初始化HTTP连接池"""
@@ -39,7 +51,7 @@ class HTTPConnectionPool:
     async def get_instance(cls) -> 'HTTPConnectionPool':
         """获取单例实例"""
         if cls._instance is None:
-            async with cls._lock:
+            async with cls._get_lock():
                 if cls._instance is None:
                     cls._instance = cls()
                     await cls._instance._init_session()
@@ -47,6 +59,17 @@ class HTTPConnectionPool:
     
     async def _init_session(self):
         """初始化HTTP会话"""
+        if self._session is not None and not self._session.closed:
+            # session 绑定 event loop；如果当前 loop 不一致则重建
+            try:
+                loop = asyncio.get_running_loop()
+                if hasattr(self._session, "_loop") and self._session._loop is not loop:  # type: ignore[attr-defined]
+                    await self._session.close()
+                    self._session = None
+                    self._connector = None
+            except RuntimeError:
+                pass
+
         if self._session is not None and not self._session.closed:
             return
         

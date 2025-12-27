@@ -17,6 +17,7 @@ from typing import Optional, Dict, Tuple
 from PIL import Image
 import time
 from concurrent.futures import ThreadPoolExecutor
+import threading
 
 from src.utils.logger import get_logger
 
@@ -43,6 +44,7 @@ class AsyncImageLoader:
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.cache_size = cache_size
         self.thumbnail_size = thumbnail_size
+        self._cache_lock = threading.Lock()
         
         # 图片缓存 {path: (image, timestamp)}
         self._cache: Dict[str, Tuple[Image.Image, float]] = {}
@@ -89,16 +91,21 @@ class AsyncImageLoader:
         path_str = str(image_path)
         
         # 检查缓存
-        if use_cache and path_str in self._cache:
-            self._stats["cache_hits"] += 1
-            image, _ = self._cache[path_str]
-            
-            # 更新LRU顺序
-            self._cache_order.remove(path_str)
-            self._cache_order.append(path_str)
-            
-            logger.debug(f"图片缓存命中: {image_path.name}")
-            return image
+        if use_cache:
+            with self._cache_lock:
+                if path_str in self._cache:
+                    self._stats["cache_hits"] += 1
+                    image, _ = self._cache[path_str]
+
+                    # 更新LRU顺序
+                    try:
+                        self._cache_order.remove(path_str)
+                    except ValueError:
+                        pass
+                    self._cache_order.append(path_str)
+
+                    logger.debug(f"图片缓存命中: {image_path.name}")
+                    return image
         
         # 缓存未命中，异步加载
         self._stats["cache_misses"] += 1
@@ -113,7 +120,8 @@ class AsyncImageLoader:
             
             # 添加到缓存
             if use_cache:
-                self._add_to_cache(path_str, image)
+                with self._cache_lock:
+                    self._add_to_cache(path_str, image)
             
             # 更新统计
             elapsed = time.perf_counter() - start_time
@@ -195,8 +203,9 @@ class AsyncImageLoader:
 
     def clear_cache(self):
         """清空缓存"""
-        self._cache.clear()
-        self._cache_order.clear()
+        with self._cache_lock:
+            self._cache.clear()
+            self._cache_order.clear()
         logger.info("图片缓存已清空")
 
     def get_stats(self) -> Dict:
@@ -282,4 +291,3 @@ if __name__ == "__main__":
 
     # 运行测试
     asyncio.run(test())
-

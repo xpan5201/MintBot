@@ -13,11 +13,12 @@
 """
 
 import asyncio
+import threading
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future
 from dataclasses import dataclass
-from typing import Any, Callable, Deque, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Deque, Dict, List, Optional, TypeVar, Set
 
 from src.utils.logger import get_logger
 
@@ -74,6 +75,7 @@ class AdaptiveBatchProcessor:
         self._last_flush = time.time()
         self._avg_process_time = 0.0
         self._metrics = PerformanceMetrics(operation="batch_processing")
+        self._lock = threading.Lock()
 
     def add(self, item: Any) -> Optional[List[Any]]:
         """
@@ -85,13 +87,15 @@ class AdaptiveBatchProcessor:
         Returns:
             如果触发批处理，返回批次；否则返回None
         """
-        self._buffer.append(item)
+        should_flush = False
+        with self._lock:
+            self._buffer.append(item)
 
-        # 检查是否需要刷新
-        should_flush = (
-            len(self._buffer) >= self.current_batch_size
-            or (time.time() - self._last_flush) >= self.max_wait_time
-        )
+            # 检查是否需要刷新
+            should_flush = (
+                len(self._buffer) >= self.current_batch_size
+                or (time.time() - self._last_flush) >= self.max_wait_time
+            )
 
         if should_flush:
             return self.flush()
@@ -104,12 +108,13 @@ class AdaptiveBatchProcessor:
         Returns:
             待处理项目列表
         """
-        if not self._buffer:
-            return []
+        with self._lock:
+            if not self._buffer:
+                return []
 
-        batch = list(self._buffer)
-        self._buffer.clear()
-        self._last_flush = time.time()
+            batch = list(self._buffer)
+            self._buffer.clear()
+            self._last_flush = time.time()
 
         # 自适应调整批大小
         self._adjust_batch_size(len(batch))
@@ -123,15 +128,30 @@ class AdaptiveBatchProcessor:
         Args:
             processed_count: 本次处理的项目数量
         """
-        # 如果处理速度快，增加批大小
-        if self._avg_process_time < 0.05 and self.current_batch_size < self.max_batch_size:
-            self.current_batch_size = min(self.current_batch_size + 5, self.max_batch_size)
-            logger.debug(f"增加批大小到 {self.current_batch_size}")
+        with self._lock:
+            # 如果处理速度快，增加批大小
+            if self._avg_process_time < 0.05 and self.current_batch_size < self.max_batch_size:
+                self.current_batch_size = min(self.current_batch_size + 5, self.max_batch_size)
+                logger.debug(f"增加批大小到 {self.current_batch_size}")
 
-        # 如果处理速度慢，减小批大小
-        elif self._avg_process_time > 0.2 and self.current_batch_size > self.min_batch_size:
-            self.current_batch_size = max(self.current_batch_size - 5, self.min_batch_size)
-            logger.debug(f"减小批大小到 {self.current_batch_size}")
+            # 如果处理速度慢，减小批大小
+            elif self._avg_process_time > 0.2 and self.current_batch_size > self.min_batch_size:
+                self.current_batch_size = max(self.current_batch_size - 5, self.min_batch_size)
+                logger.debug(f"减小批大小到 {self.current_batch_size}")
+
+    def record_process_time(self, elapsed_s: float, processed_count: int) -> None:
+        """记录批处理耗时，用于自适应调整（EMA）。"""
+        elapsed_s = max(0.0, float(elapsed_s))
+        with self._lock:
+            alpha = 0.2
+            self._avg_process_time = (
+                elapsed_s if self._avg_process_time <= 0 else (alpha * elapsed_s + (1 - alpha) * self._avg_process_time)
+            )
+            self._metrics.count += int(processed_count)
+            self._metrics.total_time += elapsed_s
+            self._metrics.last_execution = time.time()
+            self._metrics.min_time = min(self._metrics.min_time, elapsed_s)
+            self._metrics.max_time = max(self._metrics.max_time, elapsed_s)
 
 
 class SmartPreloader:
@@ -148,6 +168,9 @@ class SmartPreloader:
         self._cache: Dict[str, Any] = {}
         self._access_count: Dict[str, int] = {}
         self._last_access: Dict[str, float] = {}
+        self._inflight: Set[str] = set()
+        self._lock = threading.Lock()
+        self._closed = False
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="preloader")
 
     def preload(self, key: str, loader: Callable[[], T]) -> None:
@@ -158,20 +181,41 @@ class SmartPreloader:
             key: 资源键
             loader: 加载函数
         """
-        if key in self._cache:
-            return
+        with self._lock:
+            if self._closed:
+                return
+            if key in self._cache or key in self._inflight:
+                return
+            self._inflight.add(key)
 
         def _load():
             try:
                 result = loader()
+            except Exception as e:
+                logger.error(f"预加载失败 {key}: {e}")
+                result = None
+
+            with self._lock:
+                self._inflight.discard(key)
+                if self._closed:
+                    return
+                # 失败时不写入缓存，允许后续重试
+                if result is None:
+                    return
                 self._cache[key] = result
                 self._access_count[key] = 0
                 self._last_access[key] = time.time()
-                logger.debug(f"预加载完成: {key}")
-            except Exception as e:
-                logger.error(f"预加载失败 {key}: {e}")
+                self._evict_if_needed_locked()
 
-        self._executor.submit(_load)
+            logger.debug("预加载完成: %s", key)
+
+        with self._lock:
+            executor = self._executor
+        try:
+            executor.submit(_load)
+        except Exception:
+            with self._lock:
+                self._inflight.discard(key)
 
     def get(self, key: str, loader: Optional[Callable[[], T]] = None) -> Optional[T]:
         """
@@ -184,20 +228,25 @@ class SmartPreloader:
         Returns:
             资源对象，如果不存在且没有loader则返回None
         """
-        # 更新访问统计
-        if key in self._cache:
-            self._access_count[key] = self._access_count.get(key, 0) + 1
-            self._last_access[key] = time.time()
-            return self._cache[key]
+        with self._lock:
+            if key in self._cache:
+                self._access_count[key] = self._access_count.get(key, 0) + 1
+                self._last_access[key] = time.time()
+                return self._cache[key]
+            if self._closed:
+                return None
 
         # 如果提供了loader，同步加载
         if loader:
             try:
                 result = loader()
-                self._cache[key] = result
-                self._access_count[key] = 1
-                self._last_access[key] = time.time()
-                self._evict_if_needed()
+                with self._lock:
+                    if self._closed:
+                        return result
+                    self._cache[key] = result
+                    self._access_count[key] = 1
+                    self._last_access[key] = time.time()
+                    self._evict_if_needed_locked()
                 return result
             except Exception as e:
                 logger.error(f"加载资源失败 {key}: {e}")
@@ -205,8 +254,9 @@ class SmartPreloader:
 
         return None
 
-    def _evict_if_needed(self) -> None:
+    def _evict_if_needed_locked(self) -> None:
         """如果缓存超过限制，驱逐最少使用的项"""
+        # 必须在持有 self._lock 的情况下调用
         if len(self._cache) <= self.max_cache_size:
             return
 
@@ -229,10 +279,42 @@ class SmartPreloader:
 
     def cleanup(self) -> None:
         """清理资源"""
-        self._executor.shutdown(wait=False)
-        self._cache.clear()
-        self._access_count.clear()
-        self._last_access.clear()
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            executor = self._executor
+            self._cache.clear()
+            self._access_count.clear()
+            self._last_access.clear()
+            self._inflight.clear()
+
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            executor.shutdown(wait=False)
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        """cleanup 的别名。"""
+        self.cleanup()
+
+    def get_stats(self) -> Dict[str, Any]:
+        """获取预加载器统计信息。"""
+        with self._lock:
+            return {
+                "cache_size": len(self._cache),
+                "inflight": len(self._inflight),
+                "max_cache_size": self.max_cache_size,
+                "closed": self._closed,
+            }
+
+    def __del__(self) -> None:
+        try:
+            self.cleanup()
+        except Exception:
+            pass
 
 
 class AsyncTaskQueue:
@@ -247,10 +329,11 @@ class AsyncTaskQueue:
         """
         self.max_workers = max_workers
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="async_task")
-        self._pending_tasks: List[asyncio.Future] = []
+        self._pending_tasks: Set[Future[Any]] = set()
+        self._lock = threading.Lock()
         self._metrics = PerformanceMetrics(operation="async_tasks")
 
-    def submit(self, func: Callable, *args, **kwargs) -> asyncio.Future:
+    def submit(self, func: Callable, *args, **kwargs) -> Future[Any]:
         """
         提交异步任务
 
@@ -263,8 +346,15 @@ class AsyncTaskQueue:
             Future对象
         """
         future = self._executor.submit(func, *args, **kwargs)
-        self._pending_tasks.append(future)
+        with self._lock:
+            self._pending_tasks.add(future)
         self._metrics.count += 1
+
+        def _cleanup(_f: Future[Any]) -> None:
+            with self._lock:
+                self._pending_tasks.discard(_f)
+
+        future.add_done_callback(_cleanup)
         return future
 
     def wait_all(self, timeout: Optional[float] = None) -> List[Any]:
@@ -278,7 +368,10 @@ class AsyncTaskQueue:
             所有任务的结果列表
         """
         results = []
-        for future in self._pending_tasks:
+        with self._lock:
+            pending = list(self._pending_tasks)
+
+        for future in pending:
             try:
                 result = future.result(timeout=timeout)
                 results.append(result)
@@ -286,13 +379,47 @@ class AsyncTaskQueue:
                 logger.error(f"任务执行失败: {e}")
                 self._metrics.errors += 1
 
-        self._pending_tasks.clear()
+        with self._lock:
+            self._pending_tasks.clear()
         return results
 
     def cleanup(self) -> None:
         """清理资源"""
-        self._executor.shutdown(wait=False)
-        self._pending_tasks.clear()
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            self._executor.shutdown(wait=False)
+        except Exception:
+            pass
+        with self._lock:
+            self._pending_tasks.clear()
+
+    def close(self) -> None:
+        """cleanup 的别名。"""
+        self.cleanup()
+
+    def get_stats(self) -> Dict[str, Any]:
+        """获取任务队列统计信息。"""
+        with self._lock:
+            pending = len(self._pending_tasks)
+        return {
+            "pending_tasks": pending,
+            "max_workers": self.max_workers,
+            "metrics": {
+                "count": self._metrics.count,
+                "errors": self._metrics.errors,
+                "total_time": self._metrics.total_time,
+                "min_time": self._metrics.min_time,
+                "max_time": self._metrics.max_time,
+                "last_execution": self._metrics.last_execution,
+            },
+        }
+
+    def __del__(self) -> None:
+        try:
+            self.cleanup()
+        except Exception:
+            pass
 
 
 # 全局实例

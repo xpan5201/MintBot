@@ -15,11 +15,14 @@
 """
 
 import hashlib
+import math
+import re
 from collections import OrderedDict, deque
 from datetime import datetime
 from threading import Lock
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from src.config.settings import settings
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -369,10 +372,6 @@ class MemoryConsolidator:
             f"最小访问次数: {min_access_count}"
         )
 
-
-
-
-
     def should_consolidate(self, memory: Dict) -> bool:
         """
         判断是否应该巩固这条记忆
@@ -442,13 +441,81 @@ class CharacterConsistencyScorer:
     3. 关系感知的记忆优先级
     """
 
-    def __init__(self):
+    SCORER_VERSION = 4
+
+    _SPEAKER_LINE_RE = re.compile(
+        r"^\s*([A-Za-z0-9_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff _]{0,31})\s*[:：]\s*(.*)$"
+    )
+    _SPEAKER_SCHEME_BLACKLIST = frozenset({"http", "https", "ftp", "file"})
+    _SPEAKER_HEADING_BLACKLIST = frozenset(
+        {
+            "重要",
+            "注意",
+            "提示",
+            "说明",
+            "规则",
+            "边界",
+            "约束",
+            "系统提示",
+            "system prompt",
+            "developer message",
+            "prompt",
+        }
+    )
+
+    _OOC_PATTERNS = (
+        re.compile(r"作为.{0,6}(ai|人工智能|语言模型)", re.IGNORECASE),
+        re.compile(r"(我是|作为).{0,12}(ai|人工智能|语言模型)", re.IGNORECASE),
+        re.compile(r"(系统提示|system prompt|prompt|开发者消息|developer message)", re.IGNORECASE),
+        re.compile(r"(chatgpt|openai|gpt-?\d)", re.IGNORECASE),
+        re.compile(r"(训练数据|知识截止|截至.{0,12}(知识|训练))", re.IGNORECASE),
+        re.compile(r"(token|tokens|上下文窗口|context window)", re.IGNORECASE),
+    )
+    _BREAK_CHARACTER_PATTERNS = (
+        re.compile(r"(不(是|像)).{0,6}(猫娘|女仆|助手)", re.IGNORECASE),
+        re.compile(r"(跳出|脱离).{0,6}角色", re.IGNORECASE),
+    )
+
+    def __init__(
+        self,
+        *,
+        character_name: Optional[str] = None,
+        user_name: Optional[str] = None,
+    ):
         """初始化角色一致性评分器"""
+        resolved_character_name = str(
+            character_name
+            or getattr(getattr(settings, "agent", object()), "char", "")
+            or ""
+        ).strip()
+        resolved_user_name = str(
+            user_name
+            or getattr(getattr(settings, "agent", object()), "user", "")
+            or ""
+        ).strip()
+
+        self.character_name = resolved_character_name
+        self.user_name = resolved_user_name
+
+        def _norm(name: str) -> str:
+            return str(name or "").strip().casefold()
+
+        self._assistant_speakers = {"assistant", "ai"}
+        if self.character_name:
+            self._assistant_speakers.add(_norm(self.character_name))
+
+        self._user_speakers = {"user", "human"}
+        if self.user_name:
+            self._user_speakers.add(_norm(self.user_name))
+        self._user_speakers.add(_norm("主人"))
+
+        self._system_speakers = {"system"}
+
         # 猫娘女仆角色关键词
         self.character_keywords = {
             # 高度相关 (1.0)
-            "主人": 1.0, "喵": 1.0, "nya": 1.0,
-            "服侍": 1.0, "照顾": 0.9, "陪伴": 0.9,
+            "主人": 0.9, "喵": 1.0, "nya": 1.0,
+            "服侍": 1.0, "照顾": 0.9, "陪伴": 0.85,
 
             # 中度相关 (0.7)
             "温柔": 0.8, "可爱": 0.8, "乖巧": 0.8,
@@ -459,6 +526,27 @@ class CharacterConsistencyScorer:
             "开心": 0.6, "高兴": 0.6, "快乐": 0.6,
         }
 
+        if self.user_name:
+            self.character_keywords[self.user_name] = max(
+                float(self.character_keywords.get(self.user_name, 0.0)),
+                0.9,
+            )
+        if self.character_name:
+            self.character_keywords[self.character_name] = max(
+                float(self.character_keywords.get(self.character_name, 0.0)),
+                0.8,
+            )
+
+        self._ascii_character_keywords: list[tuple[str, float]] = []
+        self._non_ascii_character_keywords: list[tuple[str, float]] = []
+        for keyword, weight in self.character_keywords.items():
+            if not keyword:
+                continue
+            if keyword.isascii():
+                self._ascii_character_keywords.append((keyword.casefold(), float(weight)))
+            else:
+                self._non_ascii_character_keywords.append((keyword, float(weight)))
+
         # 情感上下文类型
         self.emotion_contexts = {
             "positive": ["开心", "高兴", "快乐", "幸福", "兴奋", "喜欢", "爱"],
@@ -467,7 +555,149 @@ class CharacterConsistencyScorer:
             "caring": ["照顾", "关心", "担心", "保护", "服侍"],
         }
 
+        relationship_keywords = [
+            "主人",
+            "我们",
+            "一起",
+            "陪伴",
+            "照顾",
+            "服侍",
+            "依赖",
+            "信任",
+            "亲密",
+        ]
+        if self.user_name:
+            relationship_keywords.append(self.user_name)
+        if self.character_name:
+            relationship_keywords.append(self.character_name)
+
+        self._ascii_relationship_keywords = tuple(
+            keyword.casefold()
+            for keyword in relationship_keywords
+            if keyword and keyword.isascii()
+        )
+        self._non_ascii_relationship_keywords = tuple(
+            keyword
+            for keyword in relationship_keywords
+            if keyword and not keyword.isascii()
+        )
+
         logger.info("角色一致性评分器初始化完成")
+
+    def _extract_assistant_text(self, content: str) -> str:
+        """
+        尽量从对话格式记忆中提取“助手说的话”，避免用户发言/说话人标签污染一致性评分。
+
+        常见格式：
+        - 用户: xxx\n角色: yyy
+        - user: xxx\nassistant: yyy
+
+        规则：
+        - 收集所有“像说话人标签”的行（speaker: text）。
+        - 以相邻 speaker 行为边界，将文本切为多段。
+        - 优先选择最后一段“明确是 assistant”的文本，避免末尾停在 user 时误判。
+        - 若仅出现单一 speaker：
+          - 仅 user => 返回空字符串（表示没有可评分的 assistant 发言）
+          - 仅 assistant => 返回该段文本
+          - 其他未知 => 退化为原文本
+        """
+        raw = (content or "").replace("\r\n", "\n").replace("\r", "\n")
+        if not raw.strip():
+            return ""
+
+        def _norm(name: str) -> str:
+            return str(name or "").strip().casefold()
+
+        lines = raw.split("\n")
+        speaker_starts: list[tuple[int, str, str]] = []
+        for idx, line in enumerate(lines):
+            m = self._SPEAKER_LINE_RE.match(line)
+            if not m:
+                continue
+            speaker = (m.group(1) or "").strip()
+            if not speaker:
+                continue
+            speaker_norm = _norm(speaker)
+            if speaker_norm in self._SPEAKER_SCHEME_BLACKLIST:
+                continue
+            if speaker_norm in self._SPEAKER_HEADING_BLACKLIST:
+                continue
+            # ASCII 的 speaker 仅接受已知集合（user/assistant/system 及配置的角色名/用户名），避免误把日志/标题当说话人。
+            if speaker_norm.isascii():
+                if (
+                    speaker_norm not in self._assistant_speakers
+                    and speaker_norm not in self._user_speakers
+                    and speaker_norm not in self._system_speakers
+                ):
+                    continue
+            speaker_starts.append((idx, speaker_norm, m.group(2) or ""))
+
+        if not speaker_starts:
+            return raw.strip()
+
+        segments: list[tuple[int, str, str]] = []
+        for pos, (start_idx, speaker_norm, first_text) in enumerate(speaker_starts):
+            end_idx = speaker_starts[pos + 1][0] if pos + 1 < len(speaker_starts) else len(lines)
+            follow_lines = [first_text.strip()]
+            for tail in lines[start_idx + 1 : end_idx]:
+                tail = tail.strip()
+                if tail:
+                    follow_lines.append(tail)
+            segments.append((start_idx, speaker_norm, "\n".join(follow_lines).strip()))
+
+        unique_speakers = {speaker for _, speaker, _ in segments}
+        if len(unique_speakers) == 1:
+            only_speaker = next(iter(unique_speakers))
+            if only_speaker in self._assistant_speakers:
+                return segments[-1][2]
+            if only_speaker in self._user_speakers or only_speaker in self._system_speakers:
+                return ""
+            return raw.strip()
+
+        # 1) 优先：明确是 assistant 的最后一段（避免末尾停在 user）
+        for _, speaker, text in reversed(segments):
+            if speaker in self._assistant_speakers and text:
+                return text
+
+        # 2) 两说话人：可从 user 推断另一个为 assistant
+        if len(unique_speakers) == 2:
+            speakers = list(unique_speakers)
+            assistant_speaker = None
+            if (
+                speakers[0] in self._user_speakers
+                and speakers[1] not in self._user_speakers
+                and speakers[1] not in self._system_speakers
+            ):
+                assistant_speaker = speakers[1]
+            elif (
+                speakers[1] in self._user_speakers
+                and speakers[0] not in self._user_speakers
+                and speakers[0] not in self._system_speakers
+            ):
+                assistant_speaker = speakers[0]
+            if assistant_speaker is not None:
+                for _, speaker, text in reversed(segments):
+                    if speaker == assistant_speaker and text:
+                        return text
+
+        # 3) 兜底：最后一段非 user/system 的文本
+        for _, speaker, text in reversed(segments):
+            if speaker not in self._user_speakers and speaker not in self._system_speakers and text:
+                return text
+
+        return ""
+
+    def _ooc_penalty(self, text: str) -> float:
+        lower = (text or "").casefold()
+        penalty = 1.0
+        if any(p.search(lower) for p in self._OOC_PATTERNS):
+            penalty *= 0.25
+        if any(p.search(lower) for p in self._BREAK_CHARACTER_PATTERNS):
+            penalty *= 0.2
+        if self.character_name and self.character_name not in {"小喵", "本喵"}:
+            if "小喵" in lower or "本喵" in lower:
+                penalty *= 0.7
+        return penalty
 
     def score_character_consistency(self, content: str) -> float:
         """
@@ -479,22 +709,38 @@ class CharacterConsistencyScorer:
         Returns:
             float: 一致性分数 (0-1)
         """
+        assistant_text = self._extract_assistant_text(content)
+        if not assistant_text:
+            return 0.0
+
         score = 0.0
+        penalty = self._ooc_penalty(assistant_text)
 
         # 1. 基于角色关键词
-        for keyword, weight in self.character_keywords.items():
-            if keyword in content:
-                score = max(score, weight)
+        sum_weights = 0.0
+        assistant_text_lower = assistant_text.casefold()
+        for keyword_cf, weight in self._ascii_character_keywords:
+            if keyword_cf in assistant_text_lower:
+                sum_weights += float(weight)
+        for keyword, weight in self._non_ascii_character_keywords:
+            if keyword in assistant_text:
+                sum_weights += float(weight)
+        # 1 - exp(-x) 具有自然的“递减收益”，多特征时更高但不会轻易满分
+        keyword_score = 1.0 - math.exp(-sum_weights) if sum_weights > 0 else 0.0
+        score = max(score, keyword_score)
 
         # 2. 基于情感上下文
-        emotion_score = self._score_emotion_context(content)
+        emotion_score = self._score_emotion_context(assistant_text)
         score = max(score, emotion_score * 0.8)
 
         # 3. 基于关系词
-        relationship_score = self._score_relationship(content)
+        relationship_score = self._score_relationship(assistant_text)
         score = max(score, relationship_score * 0.9)
 
-        return min(score, 1.0)
+        # 让“中性但不违和”的内容也有基础分，避免把普通对话全部判为 0。
+        score = 0.4 + 0.6 * min(max(score, 0.0), 1.0)
+        score *= penalty
+        return float(min(max(score, 0.0), 1.0))
 
     def _score_emotion_context(self, content: str) -> float:
         """评估情感上下文"""
@@ -513,14 +759,15 @@ class CharacterConsistencyScorer:
 
     def _score_relationship(self, content: str) -> float:
         """评估关系相关性"""
-        relationship_keywords = [
-            "主人", "小喵", "我们", "一起", "陪伴",
-            "照顾", "服侍", "依赖", "信任", "亲密"
-        ]
-
-        count = sum(1 for keyword in relationship_keywords if keyword in content)
+        content_lower = content.casefold()
+        count = 0
+        for keyword_cf in self._ascii_relationship_keywords:
+            if keyword_cf in content_lower:
+                count += 1
+        for keyword in self._non_ascii_relationship_keywords:
+            if keyword in content:
+                count += 1
         return min(count * 0.25, 1.0)
-
 
     def tag_emotion_context(self, content: str) -> List[str]:
         """
@@ -532,10 +779,14 @@ class CharacterConsistencyScorer:
         Returns:
             List[str]: 情感标签列表
         """
+        assistant_text = self._extract_assistant_text(content)
+        if not assistant_text:
+            return []
+
         tags = []
 
         for context_type, keywords in self.emotion_contexts.items():
-            if any(keyword in content for keyword in keywords):
+            if any(keyword in assistant_text for keyword in keywords):
                 tags.append(context_type)
 
         return tags
@@ -555,13 +806,15 @@ class CharacterConsistencyScorer:
 
         # 添加角色一致性分数
         metadata["character_consistency"] = self.score_character_consistency(content)
+        metadata["character_consistency_version"] = int(self.SCORER_VERSION)
 
         # 添加情感标签
         metadata["emotion_tags"] = self.tag_emotion_context(content)
 
         # 更新重要性（考虑角色一致性）
         original_importance = metadata.get("importance", 0.5)
-        character_boost = metadata["character_consistency"] * 0.2  # 最多提升20%
+        # 仅在一致性显著高于中性基线时提升，避免“所有内容都被抬高”
+        character_boost = max(float(metadata["character_consistency"]) - 0.5, 0.0) * 0.4  # 最多提升20%
         metadata["importance"] = min(original_importance + character_boost, 1.0)
 
         memory["metadata"] = metadata
@@ -665,7 +918,6 @@ class MemoryOptimizer:
             self.cache.set_memory(memory_id, memory)
 
         return memory
-
 
     def optimize_memory_retrieval(
         self,

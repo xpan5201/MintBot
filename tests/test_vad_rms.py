@@ -118,14 +118,15 @@ def test_asr_listen_infer_text_uses_inference_for_partial_and_generate_for_final
             return {"text": "world"}
 
     pcm = _pcm_chunk(amplitude=10000, duration_ms=200)
+    pcm_view = memoryview(pcm)
     lock = threading.Lock()
     model = DummyModel()
 
-    partial = ASRListenThread._infer_text(model, lock, pcm, sample_rate=16000, is_final=False, gen_kwargs={})
+    partial = ASRListenThread._infer_text(model, lock, pcm_view, sample_rate=16000, is_final=False, gen_kwargs={})
     assert partial == "hello"
     assert model.calls == ["inference"]
 
     model.calls.clear()
-    final = ASRListenThread._infer_text(model, lock, pcm, sample_rate=16000, is_final=True, gen_kwargs={})
+    final = ASRListenThread._infer_text(model, lock, pcm_view, sample_rate=16000, is_final=True, gen_kwargs={})
     assert final == "world"
     assert model.calls == ["generate"]

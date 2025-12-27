@@ -13,7 +13,11 @@
 """
 
 import json
-from typing import List, Dict, Any, Optional, Tuple
+import hashlib
+import re
+import threading
+from collections import defaultdict, deque
+from typing import Deque, List, Dict, Any, Optional, Set, Tuple
 from datetime import datetime, timedelta
 from pathlib import Path
 from src.utils.logger import get_logger
@@ -24,7 +28,7 @@ logger = get_logger(__name__)
 class KnowledgeRecommender:
     """
     知识推荐器 - 基于上下文推荐相关知识
-    
+
     推荐策略：
     1. 主题相关性 - 与当前对话主题相关
     2. 时效性 - 最近使用或更新的知识
@@ -32,13 +36,13 @@ class KnowledgeRecommender:
     4. 使用频率 - 常用知识优先
     5. 用户偏好 - 根据历史反馈调整
     """
-    
+
     def __init__(self):
         """初始化推荐器"""
         self.recommendation_history = []  # 推荐历史
         self.user_preferences = {}  # 用户偏好
         logger.info("知识推荐器初始化完成")
-    
+
     def recommend(
         self,
         context: Dict[str, Any],
@@ -48,7 +52,7 @@ class KnowledgeRecommender:
     ) -> List[Dict[str, Any]]:
         """
         推荐知识
-        
+
         Args:
             context: 上下文信息
                 - query: 当前查询
@@ -59,44 +63,46 @@ class KnowledgeRecommender:
             all_knowledge: 所有知识列表
             k: 推荐数量
             min_score: 最低推荐分数
-        
+
         Returns:
             List[Dict]: 推荐的知识列表，包含推荐分数和理由
         """
         if not all_knowledge:
             return []
-        
+
         # 提取上下文信息
         query = context.get("query", "")
         topic = context.get("topic", "")
         keywords = context.get("keywords", [])
         recent_topics = context.get("recent_topics", [])
         user_id = context.get("user_id", "default")
-        
+
         # 计算每个知识的推荐分数
         scored_knowledge = []
         for knowledge in all_knowledge:
             score, reasons = self._calculate_recommendation_score(
                 knowledge, query, topic, keywords, recent_topics, user_id
             )
-            
+
             if score >= min_score:
-                scored_knowledge.append({
-                    **knowledge,
-                    "recommendation_score": score,
-                    "recommendation_reasons": reasons,
-                })
-        
+                scored_knowledge.append(
+                    {
+                        **knowledge,
+                        "recommendation_score": score,
+                        "recommendation_reasons": reasons,
+                    }
+                )
+
         # 排序并返回 top-k
         scored_knowledge.sort(key=lambda x: x["recommendation_score"], reverse=True)
         recommendations = scored_knowledge[:k]
-        
+
         # 记录推荐历史
         self._record_recommendation(user_id, recommendations, context)
-        
+
         logger.debug(f"推荐知识: {len(recommendations)} 条")
         return recommendations
-    
+
     def _calculate_recommendation_score(
         self,
         knowledge: Dict[str, Any],
@@ -108,13 +114,13 @@ class KnowledgeRecommender:
     ) -> Tuple[float, List[str]]:
         """
         计算推荐分数
-        
+
         Returns:
             Tuple[float, List[str]]: (推荐分数, 推荐理由列表)
         """
         score = 0.0
         reasons = []
-        
+
         # 1. 主题相关性 (30%)
         topic_score = self._calculate_topic_relevance(knowledge, topic, recent_topics)
         if topic_score > 0:
@@ -123,7 +129,7 @@ class KnowledgeRecommender:
                 reasons.append(f"与当前主题 '{topic}' 高度相关")
             elif topic_score > 0.4:
                 reasons.append(f"与当前主题 '{topic}' 相关")
-        
+
         # 2. 关键词匹配 (25%)
         keyword_score = self._calculate_keyword_match(knowledge, keywords, query)
         if keyword_score > 0:
@@ -132,34 +138,34 @@ class KnowledgeRecommender:
                 reasons.append("包含多个关键词")
             elif keyword_score > 0.4:
                 reasons.append("包含相关关键词")
-        
+
         # 3. 时效性 (15%)
         recency_score = self._calculate_recency(knowledge)
         if recency_score > 0:
             score += recency_score * 0.15
             if recency_score > 0.8:
                 reasons.append("最近更新或使用")
-        
+
         # 4. 质量分数 (15%)
         quality_score = knowledge.get("quality_score", 0.5)
         score += quality_score * 0.15
         if quality_score > 0.7:
             reasons.append("高质量知识")
-        
+
         # 5. 使用频率 (10%)
         usage_score = self._calculate_usage_score(knowledge)
         if usage_score > 0:
             score += usage_score * 0.1
             if usage_score > 0.7:
                 reasons.append("常用知识")
-        
+
         # 6. 用户偏好 (5%)
         preference_score = self._calculate_user_preference(knowledge, user_id)
         if preference_score > 0:
             score += preference_score * 0.05
             if preference_score > 0.7:
                 reasons.append("符合您的偏好")
-        
+
         return score, reasons
 
     def _calculate_topic_relevance(
@@ -369,16 +375,170 @@ class ProactiveKnowledgePusher:
     推送策略：
     1. 话题转换时 - 检测到新话题时推送相关知识
     2. 知识缺失时 - 检测到用户可能不知道某些信息时推送
-    3. 定期推送 - 定期推送高质量但未使用的知识
-    4. 相关知识 - 在使用某个知识后推送相关知识
+    3. 相关知识 - 在使用某个知识后推送相关知识
+    4. 定期推送 - 预留：可结合 usage tracker 做“未使用知识”推送（当前未启用）
     """
 
-    def __init__(self):
+    _QUESTION_RE = re.compile(r"[?？]")
+    _QUESTION_ENDING_RE = re.compile(r"(吗|嘛)([?？]|\s*$)")
+    _DEFAULT_QUESTION_WORDS = ("什么", "怎么", "为什么", "哪里", "谁", "如何")
+    _TOPIC_IGNORE = frozenset({"", "other", "general", "misc", "其它", "其他"})
+
+    def __init__(
+        self,
+        *,
+        push_cooldown_s: float = 300.0,
+        max_history: int = 1000,
+        max_pushed_per_user: int = 500,
+        max_pushes_per_day: int = 10,
+        min_quality_score: float = 0.5,
+        min_relevance_score: float = 0.3,
+        persist_state: bool = False,
+        state_file: Optional[Path] = None,
+    ):
         """初始化推送器"""
         self.push_history = []  # 推送历史
         self.last_push_time = {}  # 每个用户的最后推送时间
-        self.push_cooldown = 300  # 推送冷却时间（秒）
+        self.push_cooldown = float(push_cooldown_s)  # 推送冷却时间（秒）
+        self.max_history = max(0, int(max_history))
+        self.max_pushed_per_user = max(0, int(max_pushed_per_user))
+        self.max_pushes_per_day = max(0, int(max_pushes_per_day))
+        self.min_quality_score = float(min_quality_score)
+        self.min_relevance_score = float(min_relevance_score)
+
+        # 性能：避免每次推送都线性扫描 history
+        self._pushed_keys: Dict[str, Set[str]] = defaultdict(set)
+        self._pushed_keys_order: Dict[str, Deque[str]] = defaultdict(deque)
+        self._push_day: Dict[str, str] = {}
+        self._push_count_today: Dict[str, int] = defaultdict(int)
+
+        self._state_lock = threading.Lock()
+        self._persist_state = bool(persist_state) and state_file is not None
+        self._state_file = Path(state_file) if state_file is not None else None
+
+        if self._persist_state and self._state_file is not None:
+            try:
+                self._state_file.parent.mkdir(parents=True, exist_ok=True)
+                self._load_state()
+            except Exception as exc:
+                logger.debug("加载主动推送状态失败（可忽略）: %s", exc)
         logger.info("主动知识推送器初始化完成")
+
+    def _load_state(self) -> None:
+        if not self._persist_state or self._state_file is None:
+            return
+        if not self._state_file.exists():
+            return
+
+        with self._state_lock:
+            try:
+                payload = json.loads(self._state_file.read_text(encoding="utf-8"))
+            except Exception:
+                return
+
+            users = payload.get("users") if isinstance(payload, dict) else None
+            if not isinstance(users, dict):
+                return
+
+            for user_id, state in users.items():
+                if not isinstance(user_id, str) or not isinstance(state, dict):
+                    continue
+
+                last_push_time = state.get("last_push_time")
+                if isinstance(last_push_time, str) and last_push_time.strip():
+                    try:
+                        self.last_push_time[user_id] = datetime.fromisoformat(last_push_time)
+                    except Exception:
+                        pass
+
+                push_day = state.get("push_day")
+                if isinstance(push_day, str) and push_day.strip():
+                    self._push_day[user_id] = push_day.strip()
+
+                push_count_today = state.get("push_count_today")
+                if isinstance(push_count_today, int):
+                    self._push_count_today[user_id] = max(0, int(push_count_today))
+
+                pushed_keys_order = state.get("pushed_keys_order")
+                if isinstance(pushed_keys_order, list):
+                    max_items = self.max_pushed_per_user
+                    cleaned: list[str] = []
+                    seen: set[str] = set()
+                    for item in pushed_keys_order:
+                        token = str(item).strip()
+                        if not token or token in seen:
+                            continue
+                        seen.add(token)
+                        cleaned.append(token)
+                        if max_items > 0 and len(cleaned) >= max_items:
+                            break
+                    if cleaned:
+                        self._pushed_keys_order[user_id] = deque(cleaned)
+                        self._pushed_keys[user_id] = set(cleaned)
+
+    def _save_state(self) -> None:
+        if not self._persist_state or self._state_file is None:
+            return
+
+        with self._state_lock:
+            users: Dict[str, Any] = {}
+            for user_id, pushed_order in self._pushed_keys_order.items():
+                if not isinstance(user_id, str):
+                    continue
+                pushed_list = list(pushed_order)
+                if not pushed_list and user_id not in self.last_push_time:
+                    continue
+
+                last_push_time = self.last_push_time.get(user_id)
+                users[user_id] = {
+                    "last_push_time": (
+                        last_push_time.isoformat() if isinstance(last_push_time, datetime) else None
+                    ),
+                    "push_day": self._push_day.get(user_id),
+                    "push_count_today": int(self._push_count_today.get(user_id, 0) or 0),
+                    "pushed_keys_order": pushed_list,
+                }
+
+            data = {"version": 1, "saved_at": datetime.now().isoformat(), "users": users}
+
+            try:
+                target = self._state_file
+                temp_file = target.with_suffix(".tmp")
+                temp_file.write_text(
+                    json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                temp_file.replace(target)
+            except Exception as exc:
+                logger.debug("保存主动推送状态失败（可忽略）: %s", exc)
+
+    def should_push_with_triggers(
+        self,
+        user_id: str,
+        context: Dict[str, Any],
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """
+        与 should_push 类似，但会返回触发标记，供上层做候选筛选/日志使用。
+        """
+        if not self._is_enabled(context):
+            return False, {
+                "should_push": False,
+                "topic_change": False,
+                "knowledge_gap": False,
+                "related_knowledge": False,
+            }
+
+        triggers = self._get_trigger_flags(context)
+        if not triggers.get("should_push"):
+            return False, triggers
+
+        force_push = bool(context.get("force_push", False))
+        if not force_push:
+            if not self._check_cooldown(user_id):
+                return False, triggers
+            if not self._check_daily_limit(user_id):
+                return False, triggers
+
+        return True, triggers
 
     def should_push(
         self,
@@ -395,18 +555,8 @@ class ProactiveKnowledgePusher:
         Returns:
             bool: 是否应该推送
         """
-        # 检查冷却时间
-        if not self._check_cooldown(user_id):
-            return False
-
-        # 检查推送触发条件
-        triggers = [
-            self._detect_topic_change(context),
-            self._detect_knowledge_gap(context),
-            self._detect_related_knowledge_opportunity(context),
-        ]
-
-        return any(triggers)
+        ok, _triggers = self.should_push_with_triggers(user_id, context)
+        return ok
 
     def push_knowledge(
         self,
@@ -414,6 +564,9 @@ class ProactiveKnowledgePusher:
         context: Dict[str, Any],
         all_knowledge: List[Dict[str, Any]],
         k: int = 3,
+        *,
+        triggers: Optional[Dict[str, Any]] = None,
+        checked: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         推送知识
@@ -427,12 +580,18 @@ class ProactiveKnowledgePusher:
         Returns:
             List[Dict]: 推送的知识列表
         """
-        if not self.should_push(user_id, context):
-            return []
+        if checked:
+            triggers = triggers or self._get_trigger_flags(context)
+            if not triggers.get("should_push"):
+                return []
+        else:
+            ok, triggers = self.should_push_with_triggers(user_id, context)
+            if not ok:
+                return []
 
         # 筛选候选知识
         candidates = self._filter_push_candidates(
-            all_knowledge, context, user_id
+            all_knowledge, context, user_id, triggers=triggers
         )
 
         if not candidates:
@@ -442,10 +601,12 @@ class ProactiveKnowledgePusher:
         pushed_knowledge = candidates[:k]
 
         # 记录推送
-        self._record_push(user_id, pushed_knowledge, context)
+        self._record_push(user_id, pushed_knowledge, context, triggers=triggers)
 
         # 更新最后推送时间
         self.last_push_time[user_id] = datetime.now()
+        self._increment_daily_count(user_id)
+        self._save_state()
 
         logger.info(f"主动推送知识: {len(pushed_knowledge)} 条")
         return pushed_knowledge
@@ -461,119 +622,310 @@ class ProactiveKnowledgePusher:
 
         return elapsed >= self.push_cooldown
 
+    def _check_daily_limit(self, user_id: str) -> bool:
+        if self.max_pushes_per_day <= 0:
+            return True
+        today = datetime.now().date().isoformat()
+        if self._push_day.get(user_id) != today:
+            self._push_day[user_id] = today
+            self._push_count_today[user_id] = 0
+        return self._push_count_today[user_id] < self.max_pushes_per_day
+
+    def _increment_daily_count(self, user_id: str) -> None:
+        today = datetime.now().date().isoformat()
+        if self._push_day.get(user_id) != today:
+            self._push_day[user_id] = today
+            self._push_count_today[user_id] = 0
+        self._push_count_today[user_id] += 1
+
+    def _is_enabled(self, context: Dict[str, Any]) -> bool:
+        disabled = context.get("disable_proactive_push")
+        if disabled is True:
+            return False
+        enabled = context.get("proactive_push_enabled")
+        if enabled is False:
+            return False
+        return True
+
+    def _get_trigger_flags(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        topic_change = self._detect_topic_change(context)
+        knowledge_gap = self._detect_knowledge_gap(context)
+        related = self._detect_related_knowledge_opportunity(context)
+        should_push = topic_change or knowledge_gap or related
+        return {
+            "should_push": should_push,
+            "topic_change": topic_change,
+            "knowledge_gap": knowledge_gap,
+            "related_knowledge": related,
+        }
+
     def _detect_topic_change(self, context: Dict[str, Any]) -> bool:
         """检测话题转换"""
-        current_topic = context.get("topic", "")
+        current_topic = str(context.get("topic", "") or "").strip()
+        if not current_topic or current_topic.casefold() in self._TOPIC_IGNORE:
+            return False
+
         recent_topics = context.get("recent_topics", [])
+        if not isinstance(recent_topics, list) or not recent_topics:
+            return False
 
-        # 如果当前话题不在最近话题中，说明话题转换了
-        if current_topic and current_topic not in recent_topics:
-            return True
-
-        return False
+        last_topic = str(recent_topics[-1] or "").strip()
+        if not last_topic:
+            return False
+        return current_topic.casefold() != last_topic.casefold()
 
     def _detect_knowledge_gap(self, context: Dict[str, Any]) -> bool:
         """检测知识缺失"""
-        # 检查用户消息中的疑问词
-        user_message = context.get("user_message", "").lower()
-        question_words = ["什么", "怎么", "为什么", "哪里", "谁", "如何", "吗", "？"]
-
-        for word in question_words:
-            if word in user_message:
-                return True
-
-        return False
+        user_message = str(context.get("user_message", "") or "").strip()
+        if not user_message:
+            return False
+        if self._QUESTION_RE.search(user_message):
+            return True
+        if any(word in user_message for word in self._DEFAULT_QUESTION_WORDS):
+            return True
+        return bool(self._QUESTION_ENDING_RE.search(user_message))
 
     def _detect_related_knowledge_opportunity(self, context: Dict[str, Any]) -> bool:
         """检测相关知识推送机会"""
         # 如果刚刚使用了某个知识，可以推送相关知识
         last_used_knowledge = context.get("last_used_knowledge")
-        if last_used_knowledge:
-            return True
+        if not isinstance(last_used_knowledge, dict):
+            return False
+        if not any(last_used_knowledge.get(key) for key in ("keywords", "title", "category", "id")):
+            return False
 
-        return False
+        user_message = str(context.get("user_message", "") or "").strip()
+        if not user_message:
+            return False
+
+        # 避免在“嗯/好的/收到”这类确认语上触发推送（体验上更像打断）
+        msg_cf = user_message.casefold()
+        filler = {
+            "嗯",
+            "嗯嗯",
+            "嗯哼",
+            "好",
+            "好的",
+            "行",
+            "可以",
+            "收到",
+            "明白",
+            "明白了",
+            "了解",
+            "了解了",
+            "ok",
+            "okay",
+            "kk",
+            "谢谢",
+            "谢了",
+            "多谢",
+        }
+        if len(user_message) <= 3 and (user_message in filler or msg_cf in filler):
+            return False
+
+        return True
 
     def _filter_push_candidates(
         self,
         all_knowledge: List[Dict[str, Any]],
         context: Dict[str, Any],
         user_id: str,
+        *,
+        triggers: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """筛选推送候选知识"""
         candidates = []
+        triggers = triggers or {}
+        pushed_keys = self._pushed_keys[user_id]
+        pushed_keys_order = self._pushed_keys_order[user_id]
 
-        # 获取已推送的知识ID
-        pushed_ids = set()
-        for record in self.push_history:
-            if record["user_id"] == user_id:
-                pushed_ids.update([k["id"] for k in record["pushed_knowledge"]])
+        topic_cf = str(context.get("topic", "") or "").strip().casefold()
+        context_keywords = context.get("keywords", [])
+        keyword_set = {
+            str(k).strip().casefold()
+            for k in (context_keywords if isinstance(context_keywords, list) else [])
+            if str(k).strip()
+        }
+
+        last_used_keywords_set: Set[str] = set()
+        last_used = context.get("last_used_knowledge")
+        if isinstance(last_used, dict):
+            last_used_keywords = last_used.get("keywords", [])
+            if isinstance(last_used_keywords, list):
+                last_used_keywords_set = {
+                    str(k).strip().casefold() for k in last_used_keywords if str(k).strip()
+                }
+
+        local_seen_keys: Set[str] = set()
 
         # 筛选候选知识
         for knowledge in all_knowledge:
-            knowledge_id = knowledge.get("id")
-
-            # 跳过已推送的知识
-            if knowledge_id in pushed_ids:
+            knowledge_key = self._get_knowledge_key(knowledge)
+            signature_key = self._get_knowledge_signature(knowledge)
+            if not knowledge_key or not signature_key:
                 continue
 
+            # 跳过已推送的知识
+            if (
+                knowledge_key in pushed_keys
+                or signature_key in pushed_keys
+                or knowledge_key in local_seen_keys
+                or signature_key in local_seen_keys
+            ):
+                continue
+            local_seen_keys.add(knowledge_key)
+            local_seen_keys.add(signature_key)
+
             # 检查质量分数
-            quality_score = knowledge.get("quality_score", 0.5)
-            if quality_score < 0.5:
+            quality_score = float(knowledge.get("quality_score", 0.5) or 0.5)
+            if quality_score < self.min_quality_score:
                 continue
 
             # 检查相关性
-            relevance_score = self._calculate_push_relevance(knowledge, context)
-            if relevance_score < 0.3:
+            relevance_score, reasons = self._calculate_push_relevance(
+                knowledge,
+                topic_cf=topic_cf,
+                keyword_set=keyword_set,
+                last_used_keywords_set=last_used_keywords_set,
+                triggers=triggers,
+            )
+            if relevance_score < self.min_relevance_score:
                 continue
 
-            candidates.append({
-                **knowledge,
-                "push_relevance": relevance_score,
-            })
+            candidates.append(
+                {
+                    **knowledge,
+                    "push_relevance": relevance_score,
+                    "push_reasons": reasons,
+                    "push_key": knowledge_key,
+                    "push_signature": signature_key,
+                }
+            )
 
         # 排序
         candidates.sort(key=lambda x: x["push_relevance"], reverse=True)
+        pushed_limit = self.max_pushed_per_user
+        if pushed_limit > 0:
+            while len(pushed_keys_order) > pushed_limit:
+                old = pushed_keys_order.popleft()
+                pushed_keys.discard(old)
 
         return candidates
 
     def _calculate_push_relevance(
         self,
         knowledge: Dict[str, Any],
-        context: Dict[str, Any],
-    ) -> float:
-        """计算推送相关性"""
+        *,
+        topic_cf: str,
+        keyword_set: Set[str],
+        last_used_keywords_set: Set[str],
+        triggers: Dict[str, Any],
+    ) -> Tuple[float, List[str]]:
+        """计算推送相关性（返回分数与原因，0-1）。"""
         score = 0.0
+        reasons: List[str] = []
+
+        category_cf = str(knowledge.get("category", "") or "").strip().casefold()
+        title = str(knowledge.get("title", "") or "")
+        title_cf = title.casefold()
+        content = str(knowledge.get("content", "") or "")
+        content_cf = content.casefold()
 
         # 主题相关性
-        topic = context.get("topic", "")
-        category = knowledge.get("category", "")
-        if topic and category.lower() == topic.lower():
-            score += 0.5
+        if topic_cf and category_cf and category_cf == topic_cf:
+            score += 0.45
+            reasons.append("话题高度相关")
+        elif topic_cf and (topic_cf in title_cf or topic_cf in content_cf):
+            score += 0.2
+            reasons.append("包含当前话题关键词")
 
-        # 关键词匹配
-        keywords = context.get("keywords", [])
+        # 关键词匹配（上下文 keywords 与知识 keywords）
         knowledge_keywords = knowledge.get("keywords", [])
-        if keywords and knowledge_keywords:
-            match_count = len(set(keywords) & set(knowledge_keywords))
-            score += min(0.3, match_count * 0.1)
+        knowledge_kw_set = {
+            str(k).strip().casefold()
+            for k in (knowledge_keywords if isinstance(knowledge_keywords, list) else [])
+            if str(k).strip()
+        }
+        if keyword_set and knowledge_kw_set:
+            match_count = len(keyword_set & knowledge_kw_set)
+            if match_count > 0:
+                score += min(0.35, 0.1 * match_count + 0.05)
+                reasons.append("关键词匹配")
+
+        # 相关知识机会：与刚使用的知识重叠
+        if triggers.get("related_knowledge") and last_used_keywords_set and knowledge_kw_set:
+            related_count = len(last_used_keywords_set & knowledge_kw_set)
+            if related_count > 0:
+                score += min(0.2, 0.07 * related_count + 0.06)
+                reasons.append("与刚用过的知识相关")
 
         # 质量分数
-        quality_score = knowledge.get("quality_score", 0.5)
+        quality_score = float(knowledge.get("quality_score", 0.5) or 0.5)
+        quality_score = max(0.0, min(1.0, quality_score))
         score += quality_score * 0.2
+        if quality_score >= 0.8:
+            reasons.append("高质量")
 
-        return score
+        return min(1.0, score), reasons
+
+    def _get_knowledge_key(self, knowledge: Dict[str, Any]) -> str:
+        knowledge_id = knowledge.get("id")
+        if knowledge_id:
+            return str(knowledge_id)
+
+        title = str(knowledge.get("title", "") or "").strip()
+        category = str(knowledge.get("category", "") or "").strip()
+        source = str(knowledge.get("source", "") or "").strip()
+        content = str(knowledge.get("content", "") or "").strip()
+        if not (title or content):
+            return ""
+
+        seed = f"{source}|{category}|{title}|{content[:256]}"
+        digest = hashlib.md5(seed.encode("utf-8")).hexdigest()
+        return f"h:{digest}"
+
+    def _get_knowledge_signature(self, knowledge: Dict[str, Any]) -> str:
+        title = str(knowledge.get("title", "") or "").strip()
+        category = str(knowledge.get("category", "") or "").strip()
+        source = str(knowledge.get("source", "") or "").strip()
+        content = str(knowledge.get("content", "") or "").strip()
+        if not (title or content):
+            return ""
+
+        seed = f"{source}|{category}|{title}|{content[:256]}"
+        digest = hashlib.md5(seed.encode("utf-8")).hexdigest()
+        return f"s:{digest}"
 
     def _record_push(
         self,
         user_id: str,
         pushed_knowledge: List[Dict[str, Any]],
         context: Dict[str, Any],
+        *,
+        triggers: Optional[Dict[str, Any]] = None,
     ):
         """记录推送历史"""
+        triggers = triggers or {}
+        pushed_keys = self._pushed_keys[user_id]
+        pushed_keys_order = self._pushed_keys_order[user_id]
+
+        def _snapshot() -> Dict[str, Any]:
+            keywords = context.get("keywords", [])
+            if not isinstance(keywords, list):
+                keywords = []
+            topic = str(context.get("topic", "") or "").strip()
+            return {
+                "topic": topic,
+                "keywords": [str(k) for k in keywords[:20] if str(k).strip()],
+                "trigger_topic_change": bool(triggers.get("topic_change")),
+                "trigger_knowledge_gap": bool(triggers.get("knowledge_gap")),
+                "trigger_related": bool(triggers.get("related_knowledge")),
+            }
+
         record = {
             "user_id": user_id,
             "timestamp": datetime.now().isoformat(),
-            "context": context,
+            "context": _snapshot(),
             "pushed_knowledge": [
                 {
                     "id": k.get("id"),
@@ -586,9 +938,26 @@ class ProactiveKnowledgePusher:
 
         self.push_history.append(record)
 
+        # 更新已推送集合（避免未来重复推送）
+        for item in pushed_knowledge:
+            key = item.get("push_key") or self._get_knowledge_key(item)
+            signature = item.get("push_signature") or self._get_knowledge_signature(item)
+            for token in (key, signature):
+                if not token:
+                    continue
+                if token not in pushed_keys:
+                    pushed_keys.add(token)
+                    pushed_keys_order.append(token)
+
         # 保持历史记录在合理范围内
-        if len(self.push_history) > 1000:
-            self.push_history = self.push_history[-1000:]
+        if self.max_history > 0 and len(self.push_history) > self.max_history:
+            self.push_history = self.push_history[-self.max_history :]
+
+        pushed_limit = self.max_pushed_per_user
+        if pushed_limit > 0:
+            while len(pushed_keys_order) > pushed_limit:
+                old = pushed_keys_order.popleft()
+                pushed_keys.discard(old)
 
 
 class KnowledgeUsageTracker:

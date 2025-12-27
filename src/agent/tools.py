@@ -78,12 +78,146 @@ _CONFIG_LOCK = Lock()
 _AMAP_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _AMAP_CACHE_LOCK = Lock()
 _AMAP_CACHE_TTL_S = 600.0
+_AMAP_CACHE_MAXSIZE = 200
 _WEB_SEARCH_CACHE: Dict[str, Tuple[float, List[Dict[str, str]]]] = {}
 _WEB_SEARCH_CACHE_LOCK = Lock()
 _WEB_SEARCH_CACHE_TTL_S = 300.0
+_WEB_SEARCH_CACHE_MAXSIZE = 200
 _TAVILY_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _TAVILY_CACHE_LOCK = Lock()
 _TAVILY_CACHE_TTL_S = 300.0
+_TAVILY_CACHE_MAXSIZE = 200
+
+
+def _effective_network_timeout_s(
+    default_timeout_s: float,
+    *,
+    min_s: float = 0.05,
+    max_s: float = 20.0,
+    cushion_s: float = 0.15,
+) -> float:
+    """Derive a per-request timeout bounded by the current tool timeout context."""
+    try:
+        timeout_s = float(default_timeout_s)
+    except Exception:
+        timeout_s = 10.0
+
+    timeout_ctx = tool_timeout_s_var.get(None)
+    max_allowed: Optional[float] = None
+    if timeout_ctx is not None:
+        try:
+            ctx_value = float(timeout_ctx)
+            if ctx_value > 0:
+                max_allowed = max(0.01, ctx_value - float(cushion_s))
+        except Exception:
+            max_allowed = None
+
+    if max_allowed is not None:
+        timeout_s = min(timeout_s, max_allowed)
+
+    try:
+        max_s_value = float(max_s)
+    except Exception:
+        max_s_value = 20.0
+
+    if max_s_value > 0:
+        timeout_s = min(timeout_s, max_s_value)
+
+    try:
+        min_s_value = float(min_s)
+    except Exception:
+        min_s_value = 0.01
+
+    if min_s_value > 0:
+        timeout_s = max(timeout_s, min_s_value)
+
+    if max_allowed is not None:
+        timeout_s = min(timeout_s, max_allowed)
+
+    return max(0.01, float(timeout_s))
+
+
+def _read_url_bytes(
+    url: str,
+    *,
+    timeout_s: float,
+    method: str = "GET",
+    headers: Optional[Dict[str, str]] = None,
+    data: Optional[bytes] = None,
+) -> bytes:
+    """
+    Read response bytes with best-effort pooled HTTP.
+
+    优先使用 builtin_tools 的 aiohttp 连接池（若启用），失败则回退到 stdlib urlopen。
+    这样默认工具仍可在“无可选依赖”的环境下工作，同时在完整环境下获得连接复用与更稳定的超时行为。
+    """
+    timeout_s = _effective_network_timeout_s(timeout_s, min_s=0.05, max_s=30.0)
+
+    if bool(getattr(settings.agent, "enable_builtin_tools", True)):
+        try:
+            import aiohttp  # 延迟导入：可选依赖
+
+            from src.agent.builtin_tools import ConnectionPool, _get_async_runtime  # type: ignore
+        except (ImportError, ModuleNotFoundError, RuntimeError) as exc:
+            logger.debug("pooled http unavailable, fallback to urlopen: %s", exc)
+        else:
+            async def _fetch() -> Tuple[int, bytes]:
+                session = await ConnectionPool.get_session()
+                per_req_timeout = aiohttp.ClientTimeout(
+                    total=timeout_s,
+                    connect=max(0.05, min(5.0, timeout_s)),
+                    sock_read=max(0.05, timeout_s),
+                )
+                async with session.request(
+                    method.upper(),
+                    url,
+                    headers=headers,
+                    data=data,
+                    timeout=per_req_timeout,
+                ) as resp:
+                    raw = await resp.read()
+                    return int(resp.status), raw
+
+            try:
+                status, raw = _get_async_runtime().run(_fetch(), timeout=timeout_s + 0.2)
+            except ResourceError:
+                raise
+            except Exception as exc:
+                # 仅在“池不可用”的情况下回退，避免网络错误导致二次请求/额外延迟
+                if isinstance(exc, (ImportError, ModuleNotFoundError, RuntimeError)):
+                    logger.debug("pooled http failed, fallback to urlopen: %s", exc)
+                else:
+                    raise
+            else:
+                if status >= 400:
+                    raise ResourceError(f"HTTP {status}", resource_type="http")
+                return raw
+
+    try:
+        from urllib.request import Request
+
+        req = Request(url, data=data, headers=headers or {}, method=method.upper())
+        with urlopen(req, timeout=timeout_s) as response:
+            return response.read()
+    except Exception:
+        # 让调用方决定如何包装/降级
+        raise
+
+
+def _prune_ttl_cache(cache: Dict[str, Tuple[float, Any]], *, maxsize: int) -> None:
+    """Prune an in-memory TTL cache (must be called under its lock)."""
+    try:
+        limit = int(maxsize)
+    except Exception:
+        return
+    if limit <= 0:
+        return
+    excess = len(cache) - limit
+    if excess <= 0:
+        return
+    oldest = sorted(cache.items(), key=lambda kv: float(kv[1][0]))[:excess]
+    for key, _ in oldest:
+        cache.pop(key, None)
 
 
 def _truncate_tool_output(text: str, max_chars: int) -> str:
@@ -133,6 +267,10 @@ def _load_local_config() -> Dict[str, Any]:
 
 
 def _get_amap_key() -> str:
+    env_key = str(os.environ.get("AMAP_API_KEY") or os.environ.get("GAODE_API_KEY") or "").strip()
+    if env_key:
+        return env_key
+
     cfg = _load_local_config()
     amap = cfg.get("AMAP", {}) if isinstance(cfg, dict) else {}
     key = ""
@@ -145,6 +283,8 @@ def _amap_http_call(endpoint: str, params: Dict[str, Any], *, timeout_s: float =
     api_key = _get_amap_key()
     if not api_key:
         raise ResourceError("高德 API Key 未配置", resource_type="amap")
+
+    timeout_s = _effective_network_timeout_s(timeout_s, min_s=0.1, max_s=15.0)
 
     payload = dict(params or {})
     payload["key"] = api_key
@@ -159,8 +299,7 @@ def _amap_http_call(endpoint: str, params: Dict[str, Any], *, timeout_s: float =
 
     url = f"https://restapi.amap.com/v3/{endpoint}?{urlencode(payload)}"
     try:
-        with urlopen(url, timeout=timeout_s) as response:
-            raw = response.read()
+        raw = _read_url_bytes(url, timeout_s=timeout_s)
     except URLError as exc:
         raise ResourceError(f"高德 API 网络错误: {exc}", resource_type="amap") from exc
     except Exception as exc:
@@ -179,6 +318,7 @@ def _amap_http_call(endpoint: str, params: Dict[str, Any], *, timeout_s: float =
 
     with _AMAP_CACHE_LOCK:
         _AMAP_CACHE[cache_key] = (now, data)
+        _prune_ttl_cache(_AMAP_CACHE, maxsize=_AMAP_CACHE_MAXSIZE)
     return data
 
 
@@ -186,6 +326,8 @@ def _duckduckgo_search(query: str, *, count: int = 5, timeout_s: float = 8.0) ->
     q = (query or "").strip()
     if not q:
         return []
+
+    timeout_s = _effective_network_timeout_s(timeout_s, min_s=0.1, max_s=12.0)
     cache_key = f"ddg:{q}:{count}"
     now = time.time()
     with _WEB_SEARCH_CACHE_LOCK:
@@ -197,8 +339,7 @@ def _duckduckgo_search(query: str, *, count: int = 5, timeout_s: float = 8.0) ->
         {"q": q, "format": "json", "no_redirect": 1, "no_html": 1}
     )
     try:
-        with urlopen(url, timeout=timeout_s) as response:
-            payload = response.read()
+        payload = _read_url_bytes(url, timeout_s=timeout_s)
     except Exception:
         return []
 
@@ -241,6 +382,7 @@ def _duckduckgo_search(query: str, *, count: int = 5, timeout_s: float = 8.0) ->
     results = results[:count]
     with _WEB_SEARCH_CACHE_LOCK:
         _WEB_SEARCH_CACHE[cache_key] = (now, list(results))
+        _prune_ttl_cache(_WEB_SEARCH_CACHE, maxsize=_WEB_SEARCH_CACHE_MAXSIZE)
     return results
 
 
@@ -314,8 +456,13 @@ def _tavily_search(
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urlopen(req, timeout=timeout_s) as response:
-            raw = response.read()
+        raw = _read_url_bytes(
+            str(req.full_url),
+            timeout_s=timeout_s,
+            method="POST",
+            headers=dict(req.header_items()),
+            data=req.data,
+        )
     except Exception as exc:
         logger.debug("Tavily search failed: %s", exc)
         return {}
@@ -330,6 +477,7 @@ def _tavily_search(
 
     with _TAVILY_CACHE_LOCK:
         _TAVILY_CACHE[cache_key] = (now, dict(data))
+        _prune_ttl_cache(_TAVILY_CACHE, maxsize=_TAVILY_CACHE_MAXSIZE)
 
     return data
 
@@ -343,19 +491,25 @@ def _format_search_results(
     max_snippet_len: int = 140,
 ) -> str:
     q = (query or "").strip()
-    header = f"关于「{q}」的搜索结果（{provider}）："
-    lines: List[str] = [header]
+    lines: List[str] = [
+        "TOOL_RESULT: web_search",
+        f"query: {q}",
+        f"provider: {provider}",
+    ]
 
     ans = (answer or "").strip()
     if ans:
-        lines.append(ans)
+        lines.append(f"answer: {ans}")
 
     if not results:
-        lines.append("没有找到合适的结果。")
+        lines.append("results: []")
         return "\n".join(lines).strip()
 
+    limit = 5
+    lines.append("results:")
+
     for idx, item in enumerate(results, start=1):
-        if idx > 10:
+        if idx > limit:
             break
         if not isinstance(item, dict):
             continue
@@ -366,24 +520,29 @@ def _format_search_results(
             snippet = snippet[: max_snippet_len - 1].rstrip() + "…"
         if not title:
             title = link or f"结果 {idx}"
+        line = f"{idx}. {title}"
         if link:
-            lines.append(f"{idx}. {title}  {link}")
-        else:
-            lines.append(f"{idx}. {title}")
+            line += f" | {link}"
         if snippet:
-            lines.append(f"   {snippet}")
+            line += f" | {snippet}"
+        lines.append(line.strip())
 
     return "\n".join(lines).strip()
 
 
 def _format_poi_results(keywords: str, pois: List[Dict[str, Any]], *, city: str = "") -> str:
     kw = (keywords or "").strip()
-    city_text = f"（城市：{city}）" if city else ""
-    lines: List[str] = [f"地点搜索：{kw}{city_text}"]
+    where = city or ""
+    lines: List[str] = [
+        "TOOL_RESULT: map_search",
+        f"keywords: {kw}",
+        f"city: {where}",
+    ]
     if not pois:
-        lines.append("没有找到相关地点。")
+        lines.append("results: []")
         return "\n".join(lines).strip()
 
+    lines.append("results:")
     for idx, poi in enumerate(pois, start=1):
         if idx > 20:
             break
@@ -394,19 +553,19 @@ def _format_poi_results(keywords: str, pois: List[Dict[str, Any]], *, city: str 
         location = str(poi.get("location") or "").strip()
         tel = str(poi.get("tel") or "").strip()
         distance = str(poi.get("distance") or "").strip()
-        parts: List[str] = [name]
-        if address:
-            parts.append(address)
+        line = f"{idx}. {name}"
+        extra: list[str] = []
         if distance:
-            parts.append(f"距离 {distance}m")
-        lines.append(f"{idx}. " + " — ".join(parts))
-        extra: List[str] = []
+            extra.append(f"distance_m={distance}")
+        if address:
+            extra.append(f"address={address}")
         if tel:
-            extra.append(f"电话 {tel}")
+            extra.append(f"tel={tel}")
         if location:
-            extra.append(f"坐标 {location}")
+            extra.append(f"location={location}")
         if extra:
-            lines.append("   " + "，".join(extra))
+            line += " | " + " | ".join(extra)
+        lines.append(line.strip())
 
     return "\n".join(lines).strip()
 
@@ -667,7 +826,12 @@ def get_current_time() -> str:
         str: 当前时间的字符串表示
     """
     now = datetime.now()
-    return now.strftime("%Y年%m月%d日 %H:%M:%S")
+    return "\n".join(
+        [
+            "TOOL_RESULT: get_current_time",
+            f"local_time: {now.strftime('%Y-%m-%d %H:%M:%S')}",
+        ]
+    ).strip()
 
 
 @tool
@@ -681,7 +845,13 @@ def get_current_date() -> str:
     today = datetime.now()
     weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
     weekday = weekdays[today.weekday()]
-    return f"{today.strftime('%Y年%m月%d日')} {weekday}"
+    return "\n".join(
+        [
+            "TOOL_RESULT: get_current_date",
+            f"local_date: {today.strftime('%Y-%m-%d')}",
+            f"weekday: {weekday}",
+        ]
+    ).strip()
 
 
 # ==================== 计算器工具 ====================
@@ -741,6 +911,49 @@ def get_weather(city: str) -> str:
     if not city_name:
         return "\u62b1\u6b49\u4e3b\u4eba\uff0c\u57ce\u5e02\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u55b5~"
 
+    if not _get_amap_key():
+        return "\n".join(
+            [
+                "TOOL_RESULT: get_weather",
+                f"city: {city_name}",
+                "error: missing_amap_key",
+                "hint: set AMAP.api_key (config.yaml) or AMAP_API_KEY env var.",
+            ]
+        ).strip()
+
+    def _build_tip(weather: str, temperature: str, humidity: str) -> str:
+        tips: list[str] = []
+        w = (weather or "").strip()
+        if any(token in w for token in ("雨", "雷", "阵雨", "小雨", "大雨")):
+            tips.append("记得带伞")
+        if "雪" in w:
+            tips.append("注意防滑保暖")
+        if any(token in w for token in ("雾", "霾")):
+            tips.append("出门注意能见度，必要时戴口罩")
+
+        t: Optional[float]
+        try:
+            t = float(str(temperature).strip())
+        except Exception:
+            t = None
+        if t is not None:
+            if t >= 32:
+                tips.append("有点热，注意防晒补水")
+            elif t <= 5:
+                tips.append("偏冷，注意保暖")
+
+        h: Optional[float]
+        try:
+            h = float(str(humidity).strip())
+        except Exception:
+            h = None
+        if h is not None and h >= 85:
+            tips.append("湿度比较高，会有点闷")
+
+        if not tips:
+            return ""
+        return "小提醒：" + "，".join(tips) + "。"
+
     try:
         data = _amap_http_call(
             "weather/weatherInfo",
@@ -755,28 +968,30 @@ def get_weather(city: str) -> str:
             wind_power = live.get("windpower") or ""
             humidity = live.get("humidity") or ""
             report_time = live.get("reporttime") or ""
-            return (
-                f"{live.get('city', city_name)} \u5929\u6c14\uff1a{weather}\uff0c\u6e29\u5ea6 {temperature}\u00b0C\uff0c"
-                f"\u98ce\u5411 {wind_dir}\uff0c\u98ce\u529b {wind_power} \u7ea7\uff0c\u6e7f\u5ea6 {humidity}%"
-                + (f"\uff0c\u66f4\u65b0\u65f6\u95f4 {report_time}" if report_time else "")
-            )
+            tip = _build_tip(str(weather), str(temperature), str(humidity))
+            lines = [
+                "TOOL_RESULT: get_weather",
+                f"city: {str(live.get('city') or city_name).strip()}",
+                f"weather: {str(weather).strip()}",
+                f"temperature_c: {str(temperature).strip()}",
+                f"wind: {str(wind_dir).strip()}{str(wind_power).strip()}",
+                f"humidity_percent: {str(humidity).strip()}",
+            ]
+            if report_time:
+                lines.append(f"report_time: {str(report_time).strip()}")
+            if tip:
+                lines.append(f"tip: {tip}")
+            return "\n".join(lines).strip()
     except Exception as exc:
-        logger.debug("AMap weather failed, fallback to mock: %s", exc)
-
-    weather_data = {
-        "\u5317\u4eac": "\u6674\u5929\uff0c\u6e29\u5ea615-25\u00b0C\uff0c\u7a7a\u6c14\u8d28\u91cf\u826f\u597d",
-        "\u4e0a\u6d77": "\u591a\u4e91\uff0c\u6e29\u5ea618-26\u00b0C\uff0c\u6709\u8f7b\u5fae\u96fe\u973e",
-        "\u5e7f\u5dde": "\u9634\u5929\uff0c\u6e29\u5ea622-30\u00b0C\uff0c\u6e7f\u5ea6\u8f83\u5927",
-        "\u6df1\u5733": "\u5c0f\u96e8\uff0c\u6e29\u5ea620-28\u00b0C\uff0c\u5efa\u8bae\u643a\u5e26\u96e8\u5177",
-    }
-
-    weather = weather_data.get(
-        city_name,
-        f"{city_name}\u7684\u5929\u6c14\uff1a\u6674\u6717\uff0c\u6e29\u5ea6\u9002\u5b9c\uff0c\u9002\u5408\u5916\u51fa\u6d3b\u52a8",
-    )
-
-    logger.info("\u67e5\u8be2\u5929\u6c14: %s -> %s", city_name, weather)
-    return weather
+        logger.debug("AMap weather failed: %s", exc)
+        return "\n".join(
+            [
+                "TOOL_RESULT: get_weather",
+                f"city: {city_name}",
+                "error: request_failed",
+                f"detail: {str(exc) or repr(exc)}",
+            ]
+        ).strip()
 @tool
 def set_reminder(content: str, time: str) -> str:
     """
@@ -851,8 +1066,16 @@ def web_search(query: str, count: int = 5) -> str:
     if results:
         return _format_search_results(q, results, provider="DuckDuckGo")
 
-    logger.info("\u7f51\u7edc\u641c\u7d22: %s (fallback)", q)
-    return f"\u5173\u4e8e'{q}'\u7684\u641c\u7d22\u7ed3\u679c\uff1a\u8fd9\u662f\u4e00\u4e2a\u6a21\u62df\u7684\u641c\u7d22\u7ed3\u679c\u3002\u5b9e\u9645\u4f7f\u7528\u65f6\u4f1a\u8c03\u7528\u771f\u5b9e\u7684\u641c\u7d22\u5f15\u64ce\u3002"
+    logger.info("网络搜索无结果或不可用: %s", q)
+    return "\n".join(
+        [
+            "TOOL_RESULT: web_search",
+            f"query: {q}",
+            "error: no_results_or_unavailable",
+            "providers_tried: Tavily,Bing,DuckDuckGo",
+            "hint: configure TAVILY.api_key / TAVILY_API_KEY, or change query.",
+        ]
+    ).strip()
 
 
 @tool
@@ -863,6 +1086,16 @@ def map_search(keywords: str, city: str = "", limit: int = 5) -> str:
     kw = (keywords or "").strip()
     if not kw:
         return "\u62b1\u6b49\u4e3b\u4eba\uff0c\u5730\u70b9\u5173\u952e\u8bcd\u4e0d\u80fd\u4e3a\u7a7a\u55b5~"
+    if not _get_amap_key():
+        return "\n".join(
+            [
+                "TOOL_RESULT: map_search",
+                f"keywords: {kw}",
+                f"city: {(city or '').strip()}",
+                "error: missing_amap_key",
+                "hint: set AMAP.api_key (config.yaml) or AMAP_API_KEY env var.",
+            ]
+        ).strip()
     try:
         limit = int(limit)
     except Exception:
@@ -876,12 +1109,27 @@ def map_search(keywords: str, city: str = "", limit: int = 5) -> str:
         )
         pois = data.get("pois") or []
         if not pois:
-            return f"\u672a\u627e\u5230{kw}\u7684\u76f8\u5173\u5730\u70b9\u55b5~"
+            return "\n".join(
+                [
+                    "TOOL_RESULT: map_search",
+                    f"keywords: {kw}",
+                    f"city: {(city or '').strip()}",
+                    "results: []",
+                ]
+            ).strip()
         trimmed = list(pois[:limit])
         return _format_poi_results(kw, trimmed, city=city or "")
     except Exception as exc:
         logger.error("Map search failed: %s", exc)
-        return f"\u62b1\u6b49\u4e3b\u4eba\uff0c\u5730\u56fe\u641c\u7d22\u5931\u8d25\u4e86\u55b5~ {exc}"
+        return "\n".join(
+            [
+                "TOOL_RESULT: map_search",
+                f"keywords: {kw}",
+                f"city: {(city or '').strip()}",
+                "error: request_failed",
+                f"detail: {str(exc) or repr(exc)}",
+            ]
+        ).strip()
 
 
 @tool

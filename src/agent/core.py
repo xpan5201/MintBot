@@ -13,10 +13,12 @@
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import time
+from difflib import SequenceMatcher
 from pathlib import Path
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from queue import Empty, Full, Queue
@@ -55,6 +57,7 @@ try:
         ModelResponse,
         ToolCallLimitMiddleware,
     )
+
     HAS_AGENT_MIDDLEWARE = True
     HAS_TOOL_SELECTOR = LLMToolSelectorMiddleware is not None
 except ImportError:  # pragma: no cover - 旧版 LangChain
@@ -78,6 +81,7 @@ except Exception as exc:  # pragma: no cover - 环境依赖差异
 # 可选的 LLM 提供商（优雅降级）
 try:
     from langchain_anthropic import ChatAnthropic
+
     HAS_ANTHROPIC = True
 except ImportError:
     HAS_ANTHROPIC = False
@@ -85,6 +89,7 @@ except ImportError:
 
 try:
     from langchain_google_genai import ChatGoogleGenerativeAI
+
     HAS_GOOGLE = True
 except ImportError:
     HAS_GOOGLE = False
@@ -94,8 +99,9 @@ from src.character.config_loader import CharacterConfigLoader
 from src.character.personality import CharacterPersonality, default_character
 from src.config.settings import settings
 from src.utils.logger import get_logger
+from src.utils.async_loop_thread import AsyncLoopThread
 from src.utils.performance import monitor_performance, performance_monitor
-from src.utils.tool_context import tool_timeout_s_var
+from src.utils.tool_context import ToolTraceRecorder, tool_timeout_s_var, tool_trace_recorder_var
 
 from .advanced_memory import CoreMemory, DiaryMemory, LoreBook
 from .character_state import CharacterState
@@ -107,6 +113,7 @@ from .memory_scorer import MemoryScorer
 from .mood_system import MoodSystem
 from .style_learner import StyleLearner
 from .tools import ToolRegistry, tool_registry
+from .tool_trace_middleware import ToolTraceMiddleware
 
 BaseAgentMiddleware = AgentMiddleware or object  # type: ignore[misc]
 
@@ -122,6 +129,7 @@ _CODE_FENCE_RE = re.compile(
 )
 _MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
 _IDENT_TOKEN_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
+_MEANINGFUL_CHAR_RE = re.compile(r"[0-9A-Za-z\u4e00-\u9fff]")
 _DEFAULT_EMPTY_REPLY = "抱歉主人，我好像没有理解您的意思喵~"
 
 
@@ -259,11 +267,17 @@ def _looks_like_tool_call_payload(data: Any) -> bool:
                 return True
 
         # Common LangChain-style forms
-        if "tool" in keys and ("args" in keys or "arguments" in keys or "tool_input" in keys or "toolinput" in keys):
+        if "tool" in keys and (
+            "args" in keys or "arguments" in keys or "tool_input" in keys or "toolinput" in keys
+        ):
             return True
 
         # Some gateways emit {"id": "...", "name": "...", "arguments": "..."}.
-        if "name" in keys and ("arguments" in keys or "args" in keys) and ("id" in keys or "tool" in keys):
+        if (
+            "name" in keys
+            and ("arguments" in keys or "args" in keys)
+            and ("id" in keys or "tool" in keys)
+        ):
             return True
 
         return False
@@ -308,11 +322,11 @@ def _strip_tool_json_blocks(text: str, *, max_blocks: int = 3) -> str:
                 or '"tool_calls"' in lowered_fragment
                 or '"tools"' in lowered_fragment
                 or (
-                    "\"function\"" in lowered_fragment
-                    and "\"arguments\"" in lowered_fragment
-                    and "\"name\"" in lowered_fragment
+                    '"function"' in lowered_fragment
+                    and '"arguments"' in lowered_fragment
+                    and '"name"' in lowered_fragment
                 )
-                or ("\"type\"" in lowered_fragment and "\"function\"" in lowered_fragment)
+                or ('"type"' in lowered_fragment and '"function"' in lowered_fragment)
             )
             if not looks_like_tool:
                 break
@@ -387,7 +401,7 @@ def _strip_route_tag_lists(text: str, *, max_blocks: int = 5) -> str:
         # or followed by another JSON/brace block.
         remove_trailing_brace = after_lstrip.startswith("}")
         next_char = after_lstrip[:1]
-        if not remove_trailing_brace and next_char not in {"", "{", "[", "}", "]"}:
+        if not remove_trailing_brace and next_char not in {"{", "[", "}", "]"}:
             # Looks like a normal JSON list in prose – keep it.
             pos = idx + 1
             continue
@@ -641,7 +655,9 @@ class StreamStructuredPrefixStripper:
             if candidate_lower.startswith(marker):
                 nl = candidate.find("\n")
                 if nl < 0:
-                    if force or (self._max_buffer_chars and len(candidate) > self._max_buffer_chars):
+                    if force or (
+                        self._max_buffer_chars and len(candidate) > self._max_buffer_chars
+                    ):
                         self._done = True
                         self._buffer = ""
                         return ""
@@ -719,8 +735,10 @@ class StreamStructuredPrefixStripper:
 
         if cleaned[0] in "{[":
             fragment = _extract_leading_json_fragment(cleaned)
-            if fragment is None and not force and (
-                not self._max_buffer_chars or len(cleaned) <= self._max_buffer_chars
+            if (
+                fragment is None
+                and not force
+                and (not self._max_buffer_chars or len(cleaned) <= self._max_buffer_chars)
             ):
                 return ""
 
@@ -729,7 +747,9 @@ class StreamStructuredPrefixStripper:
         return cleaned
 
     @staticmethod
-    def _should_drop_fragment(fragment: str, has_trailing_brace: bool, rest_after_braces: str) -> bool:
+    def _should_drop_fragment(
+        fragment: str, has_trailing_brace: bool, rest_after_braces: str
+    ) -> bool:
         lowered_fragment = fragment.lower()
         parsed: Any = None
         if len(fragment) <= 50_000:
@@ -743,7 +763,11 @@ class StreamStructuredPrefixStripper:
         if parsed is None:
             # Heuristic for very large fragments (or parse failures): keep it conservative.
             # Only drop when it strongly resembles tool-call payloads.
-            if "tool_calls" in lowered_fragment or '"tool_calls"' in lowered_fragment or '"tools"' in lowered_fragment:
+            if (
+                "tool_calls" in lowered_fragment
+                or '"tool_calls"' in lowered_fragment
+                or '"tools"' in lowered_fragment
+            ):
                 return True
             if (
                 '"type":"function"' in lowered_fragment
@@ -768,6 +792,10 @@ class StreamStructuredPrefixStripper:
 
 
 _LINESTART_JSON_OPEN_RE = re.compile(r"(?:^|\n)[ \t]*(?P<open>[\\[{])")
+_LINESTART_TOOL_PREFIX_RE = re.compile(r"(?:^|\n)[ \t]*(?P<tool>(?i:tool_))")
+_TOOL_RESULT_HEADER_RE = re.compile(r"(?i)^tool_result\s*:\s*")
+_TOOL_RESULT_KV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*:\s*")
+_TOOL_RESULT_NUMBERED_RE = re.compile(r"^\d+\.\s*")
 
 
 class StreamToolTraceScrubber:
@@ -792,6 +820,7 @@ class StreamToolTraceScrubber:
         self._buffer = ""
         self._max_buffer_chars = max(0, int(max_buffer_chars))
         self._max_scan_blocks = max(1, int(max_scan_blocks))
+        self._in_tool_result = False
 
     @staticmethod
     def _is_suspicious(text: str) -> bool:
@@ -804,22 +833,93 @@ class StreamToolTraceScrubber:
             return True
 
         lower = text.lower()
+        if "tool_result" in lower or stripped.lower().startswith("tool_") or "\ntool_" in lower:
+            return True
         if "toolselectionresponse" in lower:
             return True
-        if "tool_calls" in lower or "\"tool_calls\"" in lower or "\"tools\"" in lower:
+        if "tool_calls" in lower or '"tool_calls"' in lower or '"tools"' in lower:
             return True
-        if ("{" in text or "[" in text) and ("_\"" in text or "_" in text):
+        if ("{" in text or "[" in text) and ('_"' in text or "_" in text):
             # route tag list often contains underscores and quote brackets
             if '["' in text:
                 return True
-        if "\"function\"" in lower and "\"arguments\"" in lower and "\"name\"" in lower:
+        if '"function"' in lower and '"arguments"' in lower and '"name"' in lower:
             return True
         return False
+
+    def _tool_result_line_is_continuation(self, line: str) -> bool:
+        stripped = (line or "").strip()
+        if not stripped:
+            return True
+        lower = stripped.lower()
+        if lower == "results:":
+            return True
+        if stripped.startswith("[...工具输出已截断"):
+            return True
+        if _TOOL_RESULT_KV_RE.match(stripped):
+            return True
+        if _TOOL_RESULT_NUMBERED_RE.match(stripped):
+            return True
+        return False
+
+    def _consume_tool_result_frontier(self, s: str, *, force: bool) -> tuple[str, bool]:
+        """
+        Consume TOOL_RESULT blocks and their continuation lines at the frontier.
+
+        Returns:
+        - (new_s, needs_more): if needs_more is True, keep buffering `new_s` and stop draining.
+        """
+        while True:
+            if not s:
+                return "", False
+
+            # TOOL_RESULT blocks are line-oriented; drop leading whitespace while we're in this mode.
+            s_stripped = s.lstrip()
+            if s_stripped != s:
+                s = s_stripped
+                if not s:
+                    return "", False
+
+            nl = s.find("\n")
+            if nl < 0:
+                probe = s.strip()
+                if not probe:
+                    return "", False
+                if _TOOL_RESULT_HEADER_RE.match(probe) or (
+                    self._in_tool_result and self._tool_result_line_is_continuation(probe)
+                ):
+                    if not force:
+                        return s, True
+                    return "", False
+                # Looks like normal text: exit tool-result mode and keep it.
+                self._in_tool_result = False
+                return s, False
+
+            line = s[: nl + 1]
+            rest = s[nl + 1 :]
+            line_stripped = line.strip()
+
+            if not line_stripped:
+                s = rest
+                continue
+
+            if _TOOL_RESULT_HEADER_RE.match(line_stripped):
+                self._in_tool_result = True
+                s = rest
+                continue
+
+            if self._in_tool_result and self._tool_result_line_is_continuation(line_stripped):
+                s = rest
+                continue
+
+            # Not a tool-result continuation line: exit mode and keep the remaining text.
+            self._in_tool_result = False
+            return s, False
 
     def process(self, delta: str) -> str:
         if not delta:
             return ""
-        if not self._buffer and not self._is_suspicious(delta):
+        if not self._buffer and not self._in_tool_result and not self._is_suspicious(delta):
             return delta
 
         self._buffer += delta
@@ -861,17 +961,63 @@ class StreamToolTraceScrubber:
                     s = candidate[nl + 1 :].lstrip()
                     continue
 
-            # 2) Find next "line-start JSON" opener.
-            match = _LINESTART_JSON_OPEN_RE.search(s)
-            if not match:
+            # 2) Consume TOOL_RESULT blocks (tool outputs accidentally echoed by the model).
+            if self._in_tool_result:
+                s, needs_more = self._consume_tool_result_frontier(s, force=force)
+                if needs_more:
+                    break
+                if not s:
+                    break
+
+            # 3) Find next marker: JSON blocks or TOOL_RESULT/TOOL_ prefixes at line start.
+            json_match = _LINESTART_JSON_OPEN_RE.search(s)
+            tool_match = _LINESTART_TOOL_PREFIX_RE.search(s)
+            if not json_match and not tool_match:
                 out_parts.append(s)
                 s = ""
                 break
 
-            open_idx = match.start("open")
-            if open_idx > 0:
-                out_parts.append(s[:open_idx])
-                s = s[open_idx:]
+            json_idx = json_match.start("open") if json_match else None
+            tool_idx = tool_match.start("tool") if tool_match else None
+            indices = [i for i in (json_idx, tool_idx) if isinstance(i, int)]
+            if not indices:
+                out_parts.append(s)
+                s = ""
+                break
+
+            next_idx = min(indices)
+            if next_idx > 0:
+                out_parts.append(s[:next_idx])
+                s = s[next_idx:]
+
+            if tool_idx is not None and tool_idx == next_idx:
+                lowered = s.lower()
+                if lowered.startswith("tool_result"):
+                    # Drop header line; the remaining continuation lines will be discarded in subsequent iterations.
+                    nl = s.find("\n")
+                    if nl < 0:
+                        if not force:
+                            break
+                        s = ""
+                        self._in_tool_result = False
+                        continue
+                    self._in_tool_result = True
+                    s = s[nl + 1 :]
+                    continue
+
+                if lowered.startswith("tool_re") and not force:
+                    # Likely a split TOOL_RESULT prefix; keep buffering.
+                    break
+
+                out_parts.append(s)
+                s = ""
+                break
+
+            # JSON marker path (existing behavior).
+            if json_match is None:
+                out_parts.append(s)
+                s = ""
+                break
 
             fragment = _extract_leading_json_fragment(s)
             if fragment is None:
@@ -889,15 +1035,27 @@ class StreamToolTraceScrubber:
                 parsed = None
 
             if parsed is not None:
-                if _looks_like_tool_call_payload(parsed) or _looks_like_route_tag_list(parsed):
+                if _looks_like_tool_call_payload(parsed):
                     remove_fragment = True
+                elif _looks_like_route_tag_list(parsed):
+                    # Be conservative: only remove tag lists when they behave like leaked internal markers
+                    # (e.g., followed by a stray brace or another JSON block). Otherwise the user might
+                    # legitimately be asking the model to output a JSON array.
+                    after = s[len(fragment) :]
+                    after_lstrip = after.lstrip()
+                    if after_lstrip.startswith("}") or after_lstrip[:1] in {"{", "["}:
+                        remove_fragment = True
             else:
                 lowered_fragment = fragment.lower()
                 if (
                     "tool_calls" in lowered_fragment
-                    or "\"tool_calls\"" in lowered_fragment
-                    or "\"tools\"" in lowered_fragment
-                    or ("\"function\"" in lowered_fragment and "\"arguments\"" in lowered_fragment and "\"name\"" in lowered_fragment)
+                    or '"tool_calls"' in lowered_fragment
+                    or '"tools"' in lowered_fragment
+                    or (
+                        '"function"' in lowered_fragment
+                        and '"arguments"' in lowered_fragment
+                        and '"name"' in lowered_fragment
+                    )
                 ):
                     remove_fragment = True
 
@@ -1016,6 +1174,48 @@ def _metadata_looks_like_internal_routing(metadata: Any) -> bool:
     return False
 
 
+_STREAM_MODE_NAMES: frozenset[str] = frozenset({"messages", "updates", "values", "debug", "custom"})
+
+
+def _unwrap_stream_item(item: Any) -> tuple[Any, Any]:
+    """
+    Normalize streamed items to a common (chunk, metadata) shape.
+
+    Supported shapes:
+    - (chunk, metadata)                     (LangChain agent.stream(stream_mode="messages"))
+    - (mode, payload)                       (LangGraph stream(stream_mode=[...]))
+    - (mode, (chunk, metadata))             (LangGraph multi-mode + messages payload carries metadata)
+    - chunk                                 (fallback: no metadata)
+    """
+    stream_mode: Optional[str] = None
+    chunk: Any = item
+    metadata: Any = None
+
+    if isinstance(item, tuple) and len(item) == 2:
+        first, second = item
+        if isinstance(first, str) and first in _STREAM_MODE_NAMES:
+            stream_mode = first
+            payload = second
+            if isinstance(payload, tuple) and len(payload) == 2:
+                chunk, metadata = payload
+            else:
+                chunk, metadata = payload, None
+        else:
+            chunk, metadata = first, second
+
+    if stream_mode:
+        if metadata is None:
+            metadata = {"stream_mode": stream_mode}
+        elif isinstance(metadata, dict):
+            merged = dict(metadata)
+            merged.setdefault("stream_mode", stream_mode)
+            metadata = merged
+        else:
+            metadata = {"stream_mode": stream_mode, "metadata": metadata}
+
+    return chunk, metadata
+
+
 @dataclass(slots=True)
 class AgentConversationBundle:
     """封装一次对话请求需要的上下文，方便在不同模式间复用。"""
@@ -1026,6 +1226,7 @@ class AgentConversationBundle:
     processed_message: str
     image_analysis: Optional[dict] = None
     image_path: Optional[str] = None
+    tool_recorder: Optional[ToolTraceRecorder] = None
 
 
 class PermissionScopedToolMiddleware(BaseAgentMiddleware):
@@ -1081,6 +1282,57 @@ class PermissionScopedToolMiddleware(BaseAgentMiddleware):
         return profile or self._default_profile
 
 
+class RequestStageTimer:
+    """轻量级请求分段计时器（用于本地链路耗时剖析）。"""
+
+    __slots__ = ("enabled", "label", "_t0", "_last", "_stages", "_max_stages")
+
+    def __init__(self, *, enabled: bool, label: str, max_stages: int = 24) -> None:
+        self.enabled = bool(enabled)
+        self.label = str(label or "request")
+        now = time.perf_counter()
+        self._t0 = now
+        self._last = now
+        self._stages: list[tuple[str, float]] = []
+        self._max_stages = max(0, int(max_stages))
+
+    def mark(self, stage: str) -> None:
+        if not self.enabled:
+            return
+        now = time.perf_counter()
+        ms = (now - self._last) * 1000
+        self._last = now
+        if self._max_stages and len(self._stages) >= self._max_stages:
+            return
+        self._stages.append((str(stage or "stage"), float(ms)))
+
+    def record_ms(self, stage: str, ms: float) -> None:
+        if not self.enabled:
+            return
+        if self._max_stages and len(self._stages) >= self._max_stages:
+            return
+        try:
+            value = float(ms)
+        except Exception:
+            value = 0.0
+        self._stages.append((str(stage or "stage"), value))
+
+    def total_ms(self) -> float:
+        return (time.perf_counter() - self._t0) * 1000
+
+    def emit_debug(self, *, outcome: str = "ok") -> None:
+        if not self.enabled:
+            return
+        parts = ", ".join(f"{name}={ms:.1f}ms" for name, ms in self._stages)
+        logger.debug(
+            "perf[%s](%s) total=%.1fms %s",
+            self.label,
+            str(outcome or "ok"),
+            self.total_ms(),
+            parts,
+        )
+
+
 class MintChatAgent:
     """
     MintChat 智能体核心类
@@ -1123,7 +1375,9 @@ class MintChatAgent:
 
         # 记忆管理器 - 使用用户特定路径
         # 由 Agent 统一调度后台巩固，避免 MemoryManager 内部重复启动线程
-        self.memory = memory_manager or MemoryManager(user_id=user_id, enable_auto_consolidate=False)
+        self.memory = memory_manager or MemoryManager(
+            user_id=user_id, enable_auto_consolidate=False
+        )
 
         # 高级记忆系统 - 使用用户特定路径
         self.core_memory = CoreMemory(user_id=user_id)
@@ -1137,6 +1391,9 @@ class MintChatAgent:
             diary_memory=self.diary_memory,
             lore_book=self.lore_book,
             max_workers=4,
+            source_timeout_s=float(
+                getattr(settings.agent, "memory_retriever_source_timeout_s", 0.0) or 0.0
+            ),
             breaker_threshold=int(getattr(settings.agent, "memory_breaker_threshold", 3)),
             breaker_cooldown_s=float(getattr(settings.agent, "memory_breaker_cooldown", 3.0)),
         )
@@ -1157,8 +1414,15 @@ class MintChatAgent:
         # 核心功能组件
         self.character_state = CharacterState()
         self.context_compressor = ContextCompressor()
-        self.style_learner = StyleLearner()
+        self.style_learner = StyleLearner(user_id=user_id)
         self.memory_scorer = MemoryScorer()
+        self._recent_topics = deque(
+            maxlen=max(
+                0,
+                int(getattr(settings.agent, "proactive_push_recent_topics_max_len", 8)),
+            )
+        )
+        self._last_lore_hit: Optional[Dict[str, Any]] = None
         self._tts_runtime: Optional[tuple[Any, Any]] = None  # 懒加载 TTS 依赖
         self._auto_compress_ratio = max(
             0.1,
@@ -1188,6 +1452,27 @@ class MintChatAgent:
         self._interaction_lock = Lock()
         self._tts_prefetch_lock = Lock()
         self._pending_tts_prefetch: Optional[Future] = None
+        self._async_loop_thread = AsyncLoopThread(thread_name="mintchat-agent-async-loop")
+        self._state_persist_lock = Lock()
+        self._pending_state_persist: Optional[Future] = None
+        self._long_term_write_lock = Lock()
+        self._pending_long_term_write: Optional[Future] = None
+        self._long_term_write_buffer: deque[tuple[str, str, Optional[float]]] = deque()
+        self._long_term_write_buffer_max = max(
+            0, int(getattr(settings.agent, "long_term_write_buffer_max", 256))
+        )
+        try:
+            drain_max_items = int(getattr(settings.agent, "long_term_write_drain_max_items", 32))
+        except Exception:
+            drain_max_items = 32
+        self._long_term_write_drain_max_items = max(0, drain_max_items)
+        try:
+            drain_budget_s = float(
+                getattr(settings.agent, "long_term_write_drain_budget_s", 0.25) or 0.0
+            )
+        except Exception:
+            drain_budget_s = 0.25
+        self._long_term_write_drain_budget_s = max(0.0, drain_budget_s)
         self._background_executor = ThreadPoolExecutor(
             max_workers=2,
             thread_name_prefix="mintchat-agent-bg",
@@ -1195,9 +1480,13 @@ class MintChatAgent:
         self._background_futures: set[Future] = set()
         self._background_lock = Lock()
         self._max_background_queue = 8
-        self._context_cache: OrderedDict[tuple[int, str | bytes, str], list[Dict[str, str]]] = OrderedDict()
+        self._context_cache: OrderedDict[tuple[int, str | bytes, str], list[Dict[str, str]]] = (
+            OrderedDict()
+        )
         self._context_cache_lock = Lock()
-        self._context_cache_max = max(0, int(getattr(settings.agent, "context_cache_max_entries", 16)))
+        self._context_cache_max = max(
+            0, int(getattr(settings.agent, "context_cache_max_entries", 16))
+        )
         # v3.3.3: 移除atexit注册，改为在close()方法中显式清理
 
         self._llm_timeouts = LLMTimeouts(
@@ -1263,14 +1552,13 @@ class MintChatAgent:
         self.model_name = model_name or settings.default_model_name
         self.temperature = temperature or settings.model_temperature
         self.llm = self._initialize_llm()
+        self._tool_rewrite_llm = self._build_tool_rewrite_llm(self.llm)
 
         # 创建 Agent
         self._agent_middleware = self._build_agent_middleware_stack()
         self.agent = self._create_agent()
 
-        logger.info(
-            f"MintChat 智能体初始化完成 (流式输出: {self.enable_streaming})"
-        )
+        logger.info(f"MintChat 智能体初始化完成 (流式输出: {self.enable_streaming})")
 
     def _initialize_llm(self):
         """
@@ -1399,6 +1687,50 @@ class MintChatAgent:
             logger.error(f"LLM 初始化失败: {e}")
             raise
 
+    def _build_tool_rewrite_llm(self, llm: Any) -> Any:
+        """
+        为“工具结果兜底重写”构建更快、更稳定的模型调用配置。
+
+        目标：
+        - 尽量减少二次调用的延迟（工具链常见场景：工具已返回但模型未给最终答复）
+        - 降低超时概率（默认收敛 max_tokens 与 temperature）
+        - 兼容不同 provider：不支持 bind/参数时自动降级
+        """
+        if llm is None:
+            return None
+
+        try:
+            max_tokens = int(getattr(settings.agent, "tool_rewrite_max_tokens", 384) or 384)
+        except Exception:
+            max_tokens = 384
+        max_tokens = max(64, min(1024, max_tokens))
+
+        try:
+            temperature = float(getattr(settings.agent, "tool_rewrite_temperature", 0.2) or 0.2)
+        except Exception:
+            temperature = 0.2
+        temperature = max(0.0, min(0.7, temperature))
+
+        binder = getattr(llm, "bind", None)
+        if not callable(binder):
+            return llm
+
+        # Prefer commonly supported kwargs. If the provider rejects them, fall back gracefully.
+        candidate_kwargs = (
+            {"max_tokens": max_tokens, "temperature": temperature},
+            {"max_completion_tokens": max_tokens, "temperature": temperature},
+            {"temperature": temperature},
+        )
+        for kwargs in candidate_kwargs:
+            try:
+                return binder(**kwargs)
+            except TypeError:
+                continue
+            except Exception:
+                continue
+
+        return llm
+
     def _create_agent(self) -> Any:
         """
         创建 LangChain Agent
@@ -1449,17 +1781,27 @@ class MintChatAgent:
 ✓ **自然性**：避免机械化表达，展现真实情感
 ✓ **简洁性**：清晰表达，避免冗长啰嗦
 
-## 特殊情况处理
+ ## 特殊情况处理
+ 
+ - **不确定时**：诚实告知"我不太确定..."而非编造答案
+ - **超出能力**：礼貌说明"这个可能超出我的能力范围..."
+ - **工具失败**：温柔告知并提供替代方案
+ - **敏感话题**：保持角色边界，委婉引导话题
 
-- **不确定时**：诚实告知"我不太确定..."而非编造答案
-- **超出能力**：礼貌说明"这个可能超出我的能力范围..."
-- **工具失败**：温柔告知并提供替代方案
-- **敏感话题**：保持角色边界，委婉引导话题
+## 工具使用与表达规范
+
+- 工具返回只是“素材”，不要原样粘贴；要用角色语气把信息说得自然、贴心。
+- 优先给**结论 + 3~5 个要点**；需要更多细节时，再向主人追问或分步展开。
+- 尽量避免输出原始 JSON/超长列表/日志；必要时先总结，再补充关键链接或条目。
+- 工具返回为空/失败/超时：说明原因，并给出下一步建议（换关键词、补充城市/出发地等）。
 """
             system_prompt = base_system_prompt + enhanced_instruction
+            # Cache for rescue paths (e.g., tool-result rewrite without re-running the agent graph).
+            self._system_prompt = system_prompt
 
             # 获取工具列表
             tools = self.tool_registry.get_all_tools()
+            # Tool tracing/output truncation is handled by Agent middleware (ToolTraceMiddleware).
 
             # 创建 Agent
             agent = create_agent(
@@ -1490,6 +1832,15 @@ class MintChatAgent:
 
         enabled = bool(getattr(settings.agent, "tool_selector_enabled", True))
         if not enabled:
+            return None
+
+        # 性能优化：fast_mode 下优先跳过“额外一次 LLM 选工具”调用，避免首包延迟/超时。
+        try:
+            allow_in_fast_mode = bool(getattr(settings.agent, "tool_selector_in_fast_mode", False))
+        except Exception:
+            allow_in_fast_mode = False
+        if getattr(settings.agent, "memory_fast_mode", False) and not allow_in_fast_mode:
+            logger.info("fast_mode 跳过 LLM 工具筛选中间件")
             return None
 
         # 性能优化：当工具数量较少时，LLM 额外“选工具”的开销通常大于收益（会显著增加总耗时，甚至触发超时）。
@@ -1532,7 +1883,8 @@ class MintChatAgent:
             api_base = str(getattr(settings.llm, "api", "") or "")
             default_method = "json_schema" if "api.openai.com" in api_base else "json_mode"
             structured_method = str(
-                getattr(settings.agent, "tool_selector_structured_method", default_method) or default_method
+                getattr(settings.agent, "tool_selector_structured_method", default_method)
+                or default_method
             )
             try:
                 selector_timeout_s = float(getattr(settings.agent, "tool_selector_timeout_s", 4.0))
@@ -1576,6 +1928,16 @@ class MintChatAgent:
             return []
 
         stack: List[Any] = []
+
+        # v3.3.6: Tool tracing + output truncation must be done via middleware (ToolNode requires ToolMessage/Command).
+        try:
+            tool_output_max_chars = int(
+                getattr(settings.agent, "tool_output_max_chars", 12000) or 0
+            )
+        except Exception:
+            tool_output_max_chars = 12000
+        stack.append(ToolTraceMiddleware(max_output_chars=tool_output_max_chars))
+
         selector = self._build_tool_selector_middleware()
         if selector:
             stack.append(selector)
@@ -1623,17 +1985,32 @@ class MintChatAgent:
     def _update_emotion_and_mood(self, message: str, detected_emotion) -> None:
         """更新情感和情绪状态"""
         # v2.48.3: 移除字符串切片
+        try:
+            intensity = float(
+                self.emotion_engine.estimate_message_intensity(message, detected_emotion)
+            )
+        except Exception:
+            intensity = 0.6
+        intensity = max(0.0, min(1.0, intensity))
+        if intensity <= 0.0:
+            intensity = 0.6
         self.emotion_engine.update_emotion(
-            detected_emotion, intensity=0.6, trigger="用户消息"
+            detected_emotion,
+            intensity=intensity,
+            trigger="用户消息",
+            persist=False,
         )
 
         # 更新高级情绪系统
         if self.mood_system.enabled:
             is_positive = detected_emotion.value in self._POSITIVE_MOOD_EMOTIONS
+            # 将情感强度映射到 mood 输入，保持与旧默认(0.3)同量级，但随强度动态变化
+            mood_input = max(0.0, min(1.0, 0.15 + 0.25 * intensity))
             self.mood_system.update_mood(
-                impact=0.3,
-                reason=f"用户消息触发{detected_emotion.value}情感",
-                is_positive=is_positive
+                impact=mood_input,
+                reason=f"user:{getattr(detected_emotion, 'name', detected_emotion)}",
+                is_positive=is_positive,
+                persist=False,
             )
 
     def _extract_reply_from_response(self, response) -> str:
@@ -1646,6 +2023,7 @@ class MintChatAgent:
         Returns:
             str: 提取的回复内容
         """
+
         def _content_to_text(value: Any) -> str:
             if value is None:
                 return ""
@@ -1657,7 +2035,9 @@ class MintChatAgent:
                     if isinstance(block, dict):
                         parts.append(str(block.get("text") or block.get("content") or ""))
                     else:
-                        parts.append(str(getattr(block, "text", "") or getattr(block, "content", "")))
+                        parts.append(
+                            str(getattr(block, "text", "") or getattr(block, "content", ""))
+                        )
                 return "".join(parts)
             return str(value)
 
@@ -1669,7 +2049,10 @@ class MintChatAgent:
                         role = msg.get("role") or msg.get("type")
                         if isinstance(role, str) and role:
                             role_lower = role.lower()
-                            if role_lower in {"assistant", "ai"} or role in {"AIMessageChunk", "AIMessage"}:
+                            if role_lower in {"assistant", "ai"} or role in {
+                                "AIMessageChunk",
+                                "AIMessage",
+                            }:
                                 content = msg.get("content") or msg.get("text") or ""
                                 return self._filter_tool_info(_content_to_text(content))
                         continue
@@ -1690,10 +2073,7 @@ class MintChatAgent:
         return self._filter_tool_info(result)
 
     def _save_interaction_to_memory(
-        self,
-        message: str,
-        reply: str,
-        save_to_long_term: bool
+        self, message: str, reply: str, save_to_long_term: bool
     ) -> None:
         """
         保存交互到记忆系统 (v2.30.34 重构)
@@ -1703,40 +2083,176 @@ class MintChatAgent:
             reply: AI回复
             save_to_long_term: 是否保存到长期记忆
         """
-        # 保存到短期/长期记忆
+        # v3.3.8: 将长期记忆写入移出热路径（GUI 默认 save_to_long_term=True，会导致向量写入阻塞）。
+        # - 短期记忆：下一轮对话必需，保持同步写入。
+        # - 长期记忆：后台合并写入（coalesce），避免影响首包/流式体验。
         self.memory.add_interaction(
             user_message=message,
             assistant_message=reply,
-            save_to_long_term=save_to_long_term,
+            save_to_long_term=False,
+        )
+        if save_to_long_term:
+            self._enqueue_long_term_write(message, reply, importance=None)
+
+        # 极速模式：避免任何额外 I/O / 学习任务阻塞。
+        if getattr(settings.agent, "memory_fast_mode", False):
+            return
+
+        user_name = getattr(settings.agent, "user", "主人")
+        char_name = getattr(settings.agent, "char", "小雪糕")
+        interaction_text = f"{user_name}: {message}\n{char_name}: {reply}"
+        enable_diary = bool(getattr(self.diary_memory, "vectorstore", None))
+        enable_daily_summary = bool(getattr(self.diary_memory, "daily_summary_enabled", False))
+        enable_lore_learning = bool(
+            getattr(settings.agent, "lore_books", False)
+            and getattr(settings.agent, "auto_learn_from_conversation", True)
         )
 
-        # 保存到日记
-        if self.diary_memory.vectorstore:
-            user_name = getattr(settings.agent, "user", "主人")
-            char_name = getattr(settings.agent, "char", "小雪糕")
-            interaction_text = f"{user_name}: {message}\n{char_name}: {reply}"
-            self.diary_memory.add_diary_entry(interaction_text)
+        if not (enable_diary or enable_daily_summary or enable_lore_learning):
+            return
 
-        # v2.30.36: 检查是否需要生成每日总结
-        if self.diary_memory.daily_summary_enabled:
-            from datetime import datetime
-            current_hour = datetime.now().hour
-            # 在晚上 23:00 之后自动生成每日总结
-            if current_hour >= 23:
-                self.diary_memory.generate_daily_summary()
+        def _background_post_persist() -> None:
+            if enable_diary:
+                try:
+                    self.diary_memory.add_diary_entry(interaction_text)
+                except Exception as exc:
+                    logger.debug("写入日记失败（可忽略）: %s", exc)
 
-        # v2.30.38: 从对话中学习知识（如果启用）
-        if settings.agent.lore_books and getattr(settings.agent, "auto_learn_from_conversation", True):
+            if enable_daily_summary:
+                try:
+                    from datetime import datetime
+
+                    if datetime.now().hour >= 23:
+                        self.diary_memory.generate_daily_summary()
+                except Exception as exc:
+                    logger.debug("生成每日总结失败（可忽略）: %s", exc)
+
+            if enable_lore_learning:
+                try:
+                    self.lore_book.learn_from_conversation(message, reply, auto_extract=True)
+                except Exception as exc:
+                    logger.debug("从对话中学习知识失败（可忽略）: %s", exc)
+
+        self._submit_background_task(_background_post_persist, label="post-persist")
+
+    def _enqueue_long_term_write(
+        self,
+        user_message: str,
+        assistant_message: str,
+        *,
+        importance: Optional[float],
+    ) -> None:
+        """后台合并写入长期记忆，避免热路径被向量写入阻塞。"""
+        memory = getattr(self, "memory", None)
+        if memory is None:
+            return
+
+        with self._long_term_write_lock:
+            max_buf = int(getattr(self, "_long_term_write_buffer_max", 0) or 0)
+            if max_buf > 0:
+                while len(self._long_term_write_buffer) >= max_buf:
+                    try:
+                        self._long_term_write_buffer.popleft()
+                    except Exception:
+                        break
+            self._long_term_write_buffer.append((user_message, assistant_message, importance))
+
+            pending = getattr(self, "_pending_long_term_write", None)
+            if pending is not None and hasattr(pending, "done"):
+                try:
+                    if not pending.done():
+                        return
+                except Exception:
+                    pass
+
+        def _clear(_future: Future) -> None:
+            """
+            在每个 drain slice 完成后触发：
+            1) 清理 pending 标记；2) 若仍有剩余缓冲，则再调度下一片 slice。
+
+            这样可以避免长期写入独占后台线程池，提升系统协同与交互流畅度。
+            """
+            with self._long_term_write_lock:
+                if getattr(self, "_pending_long_term_write", None) is not _future:
+                    return
+                self._pending_long_term_write = None
+                has_remaining = bool(self._long_term_write_buffer)
+
+            if not has_remaining:
+                return
+
+            next_future = self._submit_background_task(_drain, label="long-term-write")
+            if not next_future:
+                return
+
+            with self._long_term_write_lock:
+                self._pending_long_term_write = next_future
+
             try:
-                self.lore_book.learn_from_conversation(message, reply, auto_extract=True)
-            except Exception as e:
-                logger.debug("从对话中学习知识失败: %s", e)
+                next_future.add_done_callback(_clear)
+            except Exception:
+                pass
 
-        # 更新用户档案
-        self.emotion_engine.update_user_profile(interaction_positive=True)
+        def _drain() -> None:
+            try:
+                max_items = int(getattr(self, "_long_term_write_drain_max_items", 0) or 0)
+            except Exception:
+                max_items = 0
+            try:
+                budget_s = float(getattr(self, "_long_term_write_drain_budget_s", 0.0) or 0.0)
+            except Exception:
+                budget_s = 0.0
 
-        # 情感自然衰减
-        self.emotion_engine.decay_emotion()
+            start = time.monotonic()
+            processed = 0
+
+            while True:
+                if max_items > 0 and processed >= max_items:
+                    break
+                if budget_s > 0.0 and (time.monotonic() - start) >= budget_s:
+                    break
+
+                item: Optional[tuple[str, str, Optional[float]]] = None
+                with self._long_term_write_lock:
+                    try:
+                        if self._long_term_write_buffer:
+                            item = self._long_term_write_buffer.popleft()
+                    except Exception:
+                        item = None
+
+                if item is None:
+                    break
+
+                processed += 1
+                msg, reply, imp = item
+                try:
+                    add_long_term = getattr(memory, "add_interaction_long_term", None)
+                    if callable(add_long_term):
+                        add_long_term(user_message=msg, assistant_message=reply, importance=imp)
+                    else:
+                        # Fallback for older MemoryManager versions.
+                        memory.add_interaction(
+                            user_message=msg,
+                            assistant_message=reply,
+                            save_to_long_term=True,
+                            importance=imp,
+                        )
+                except Exception:
+                    # 长期记忆写入失败不应影响对话流程
+                    pass
+
+            return
+
+        future = self._submit_background_task(_drain, label="long-term-write")
+        if not future:
+            return
+        with self._long_term_write_lock:
+            self._pending_long_term_write = future
+
+        try:
+            future.add_done_callback(_clear)
+        except Exception:
+            pass
 
     async def synthesize_reply_audio(
         self,
@@ -1899,40 +2415,107 @@ class MintChatAgent:
         Returns:
             str: 智能体回复
         """
+        stage_timer = (
+            RequestStageTimer(enabled=True, label="chat")
+            if logger.isEnabledFor(logging.DEBUG)
+            else None
+        )
+        outcome = "ok"
         try:
-            logger.info("收到用户消息")
-            bundle = self._build_agent_bundle(
-                message,
-                image_analysis=image_analysis,
-                image_path=image_path,
-                compression="auto",
-                use_cache=True,
-            )
-        except ValueError:
-            logger.warning("收到空消息")
-            return "主人，您想说什么呢？喵~"
-        except Exception as prep_exc:
-            logger.error("准备消息失败: %s", prep_exc)
-            return f"抱歉主人，准备消息时出错了：{str(prep_exc)} 喵~"
+            try:
+                logger.info("收到用户消息")
+                bundle = self._build_agent_bundle(
+                    message,
+                    image_analysis=image_analysis,
+                    image_path=image_path,
+                    compression="auto",
+                    use_cache=True,
+                    stage_timer=stage_timer,
+                )
+            except ValueError:
+                outcome = "empty"
+                logger.warning("收到空消息")
+                return "主人，您想说什么呢？喵~"
+            except Exception as prep_exc:
+                outcome = "prep_error"
+                logger.error("准备消息失败: %s", prep_exc)
+                return f"抱歉主人，准备消息时出错了：{str(prep_exc)} 喵~"
 
-        try:
-            response = self._invoke_with_failover(bundle)
-            reply = self._extract_reply_from_response(response)
-            if not reply.strip() or reply.strip() == _DEFAULT_EMPTY_REPLY:
-                rescued = self._rescue_empty_reply(bundle, raw_reply=reply, source="chat")
-                if rescued:
-                    reply = rescued
-            self._post_reply_actions(bundle.save_message, reply, save_to_long_term, stream=False)
+            if stage_timer:
+                stage_timer.mark("build_bundle")
 
-            logger.info("生成回复完成")
-            return reply
+            try:
+                response = self._invoke_with_failover(bundle)
+                if stage_timer:
+                    stage_timer.mark("invoke_llm")
 
-        except AgentTimeoutError as timeout_exc:
-            logger.error("对话处理超时: %s", timeout_exc)
-            return "抱歉主人，模型那边暂时没有回应，我们稍后再聊好吗？喵~"
-        except Exception as e:
-            logger.error(f"对话处理失败: {e}")
-            return f"抱歉主人，我遇到了一些问题：{str(e)} 喵~"
+                reply = self._extract_reply_from_response(response)
+                if not reply.strip() or reply.strip() == _DEFAULT_EMPTY_REPLY:
+                    rescued = self._rescue_empty_reply(bundle, raw_reply=reply, source="chat")
+                    if rescued:
+                        reply = rescued
+                tool_recorder = getattr(bundle, "tool_recorder", None)
+                if tool_recorder is not None:
+                    user_message = (
+                        (bundle.original_message or bundle.processed_message or bundle.save_message)
+                        or ""
+                    )
+                    prefers_raw = (
+                        self._user_prefers_raw_tool_output(user_message) if user_message else False
+                    )
+                else:
+                    user_message = ""
+                    prefers_raw = False
+                if tool_recorder is not None and (
+                    self._looks_like_progress_only_tool_reply(reply)
+                    or (not prefers_raw and self._looks_like_tool_echo_reply(reply, tool_recorder))
+                ):
+                    fallback = self._format_tool_trace_fallback(
+                        tool_recorder, user_message=user_message
+                    )
+                    if fallback:
+                        reply = fallback
+                    else:
+                        rewritten = self._rewrite_final_reply_from_tool_trace(
+                            bundle,
+                            tool_recorder=tool_recorder,
+                            source="chat-final",
+                        )
+                        if rewritten:
+                            reply = rewritten
+                        else:
+                            implicit = self._maybe_rescue_implicit_tool_intent(
+                                bundle, tool_recorder=tool_recorder
+                            )
+                            if implicit:
+                                reply = implicit
+
+                if not reply.strip():
+                    reply = _DEFAULT_EMPTY_REPLY
+
+                self._post_reply_actions(
+                    bundle.save_message,
+                    reply,
+                    save_to_long_term,
+                    stream=False,
+                )
+                if stage_timer:
+                    stage_timer.mark("post_reply")
+
+                logger.info("生成回复完成")
+                return reply
+
+            except AgentTimeoutError as timeout_exc:
+                outcome = "timeout"
+                logger.error("对话处理超时: %s", timeout_exc)
+                return "抱歉主人，模型那边暂时没有回应，我们稍后再聊好吗？喵~"
+            except Exception as e:
+                outcome = "error"
+                logger.error("对话处理失败: %s", e)
+                return f"抱歉主人，我遇到了一些问题：{str(e)} 喵~"
+        finally:
+            if stage_timer:
+                stage_timer.emit_debug(outcome=outcome)
 
     def _build_memory_context(
         self,
@@ -1974,29 +2557,31 @@ class MintChatAgent:
         构建包含情感、情绪和角色状态的上下文（辅助方法）
 
         Args:
-            use_compression: 是否包含角色状态和风格指导
+            use_compression: 是否包含较重的角色状态拼接（风格指导将尽量保持轻量并持续注入）
 
         Returns:
             str: 格式化的状态上下文
         """
+        # 极速模式：保留情感/情绪这些轻量但关键的状态，跳过较重的角色状态拼接
         if getattr(settings.agent, "memory_fast_mode", False):
-            return ""
+            use_compression = False
 
         # 使用海象运算符优化
         context_parts = []
 
-        if (emotion_context := self.emotion_engine.get_emotion_context()):
+        if emotion_context := self.emotion_engine.get_emotion_context():
             context_parts.append(f"\n{emotion_context}\n")
 
         if self.mood_system.enabled and (mood_context := self.mood_system.get_mood_context()):
             context_parts.append(mood_context)
 
         if use_compression:
-            if (character_state_context := self.character_state.get_state_context()):
+            if character_state_context := self.character_state.get_state_context():
                 context_parts.append(character_state_context)
 
-            if (style_guidance := self.style_learner.get_style_guidance()):
-                context_parts.append(f"\n【对话风格指导】\n{style_guidance}\n")
+        # 风格指导较轻量：用于工具兜底重写/普通对话都保持一致的“口吻趋向”
+        if style_guidance := self.style_learner.get_style_guidance():
+            context_parts.append(f"\n【对话风格指导】\n{style_guidance}\n")
 
         return "".join(context_parts)
 
@@ -2041,6 +2626,8 @@ class MintChatAgent:
             recent_messages = self.memory.get_recent_messages()
             trimmed_messages = recent_messages[-4:] if len(recent_messages) > 4 else recent_messages
             messages: List[Dict[str, str]] = list(trimmed_messages)
+            if (state_context := self._build_context_with_state(use_compression=False)).strip():
+                messages.insert(0, {"role": "system", "content": state_context.strip()})
             messages.append({"role": "user", "content": message})
             return messages
 
@@ -2052,7 +2639,7 @@ class MintChatAgent:
                 recent_messages,
                 keep_recent=self._history_summary_keep,
             )
-            trimmed_messages = recent_messages[-self._history_summary_keep:]
+            trimmed_messages = recent_messages[-self._history_summary_keep :]
 
         retrieval_plan = self._build_retrieval_plan(
             message=message,
@@ -2080,12 +2667,9 @@ class MintChatAgent:
 
         messages: List[Dict[str, str]] = []
 
-        should_compress = (
-            compression == "on"
-            or (
-                compression == "auto"
-                and self._should_compress_context(trimmed_messages, additional_context)
-            )
+        should_compress = compression == "on" or (
+            compression == "auto"
+            and self._should_compress_context(trimmed_messages, additional_context)
         )
 
         if should_compress:
@@ -2128,7 +2712,7 @@ class MintChatAgent:
     def _run_blocking(self, coro_factory: Callable[[], Coroutine[Any, Any, Any]]) -> Any:
         """
         v3.3.4: 在同步环境中安全执行协程，避免重复创建/关闭事件循环。
-        
+
         改进：
         - 增强错误处理和资源清理
         - 改进超时处理
@@ -2137,8 +2721,15 @@ class MintChatAgent:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            # 没有运行中的事件循环，直接使用 asyncio.run
-            return asyncio.run(coro_factory())
+            # 没有运行中的事件循环：复用后台 AsyncLoopThread，避免每次 asyncio.run 创建/关闭 event loop
+            loop_thread = getattr(self, "_async_loop_thread", None)
+            if loop_thread is None:
+                loop_thread = AsyncLoopThread(thread_name="mintchat-agent-async-loop")
+                try:
+                    self._async_loop_thread = loop_thread
+                except Exception:
+                    pass
+            return loop_thread.run(coro_factory(), timeout=300.0)
 
         import concurrent.futures
 
@@ -2216,6 +2807,7 @@ class MintChatAgent:
         self,
         messages: List[Dict[str, str]],
         *,
+        tool_recorder: Optional[ToolTraceRecorder] = None,
         timeout_s: Optional[float] = None,
     ) -> Any:
         """
@@ -2230,14 +2822,18 @@ class MintChatAgent:
                 return None
 
         def task():
-            token = tool_timeout_s_var.set(_tool_timeout())
+            timeout_token = tool_timeout_s_var.set(_tool_timeout())
+            trace_token = tool_trace_recorder_var.set(tool_recorder)
             try:
                 return self.agent.invoke({"messages": messages})
             finally:
-                tool_timeout_s_var.reset(token)
+                tool_trace_recorder_var.reset(trace_token)
+                tool_timeout_s_var.reset(timeout_token)
 
         future = self._llm_executor.submit(task)
-        timeout_total = self._llm_timeouts.total if timeout_s is None else max(1.0, float(timeout_s))
+        timeout_total = (
+            self._llm_timeouts.total if timeout_s is None else max(1.0, float(timeout_s))
+        )
         try:
             return future.result(timeout=timeout_total)
         except FuturesTimeoutError as exc:
@@ -2260,6 +2856,7 @@ class MintChatAgent:
         self,
         messages: List[Dict[str, str]],
         *,
+        tool_recorder: Optional[ToolTraceRecorder] = None,
         timeout_s: Optional[float] = None,
     ) -> Any:
         """
@@ -2267,6 +2864,7 @@ class MintChatAgent:
 
         说明：该方法用于异步流式对话中的“空回复兜底重试”等低频路径。
         """
+
         def _tool_timeout() -> Optional[float]:
             try:
                 value = float(getattr(settings.agent, "tool_timeout_s", 30.0))
@@ -2275,14 +2873,18 @@ class MintChatAgent:
                 return None
 
         def task():
-            token = tool_timeout_s_var.set(_tool_timeout())
+            timeout_token = tool_timeout_s_var.set(_tool_timeout())
+            trace_token = tool_trace_recorder_var.set(tool_recorder)
             try:
                 return self.agent.invoke({"messages": messages})
             finally:
-                tool_timeout_s_var.reset(token)
+                tool_trace_recorder_var.reset(trace_token)
+                tool_timeout_s_var.reset(timeout_token)
 
         future = self._llm_executor.submit(task)
-        timeout_total = self._llm_timeouts.total if timeout_s is None else max(1.0, float(timeout_s))
+        timeout_total = (
+            self._llm_timeouts.total if timeout_s is None else max(1.0, float(timeout_s))
+        )
         try:
             return await asyncio.wait_for(
                 asyncio.wrap_future(future),
@@ -2308,7 +2910,11 @@ class MintChatAgent:
         对同步 LLM 调用增加快速压缩重试以提升成功率。
         """
         try:
-            return self._invoke_agent_with_timeout(bundle.messages, timeout_s=timeout_s)
+            return self._invoke_agent_with_timeout(
+                bundle.messages,
+                timeout_s=timeout_s,
+                tool_recorder=getattr(bundle, "tool_recorder", None),
+            )
         except AgentTimeoutError as primary_exc:
             if not self._fast_retry_enabled:
                 raise
@@ -2325,11 +2931,17 @@ class MintChatAgent:
                 raise primary_exc
 
             try:
-                return self._invoke_agent_with_timeout(fallback_messages, timeout_s=timeout_s)
+                return self._invoke_agent_with_timeout(
+                    fallback_messages,
+                    timeout_s=timeout_s,
+                    tool_recorder=getattr(bundle, "tool_recorder", None),
+                )
             except AgentTimeoutError as secondary_exc:
                 raise AgentTimeoutError("LLM 压缩上下文快速重试仍然超时") from secondary_exc
 
-    def _build_image_analysis_fallback_reply(self, bundle: "AgentConversationBundle") -> Optional[str]:
+    def _build_image_analysis_fallback_reply(
+        self, bundle: "AgentConversationBundle"
+    ) -> Optional[str]:
         """
         当主模型输出为空/仅 tool 信息时，如果本轮带有图片分析结果，直接用图片分析构造兜底回复，避免二次调用 LLM。
         """
@@ -2406,6 +3018,31 @@ class MintChatAgent:
             logger.info("空回复使用图片分析兜底 (source=%s)", source)
             return image_fallback
 
+        user_message = (
+            (bundle.original_message or bundle.processed_message or bundle.save_message) or ""
+        )
+        tool_recorder = getattr(bundle, "tool_recorder", None)
+        tool_trace_fallback = self._format_tool_trace_fallback(
+            tool_recorder, user_message=user_message
+        )
+        if tool_trace_fallback:
+            logger.info("空回复使用工具轨迹兜底 (source=%s)", source)
+            return tool_trace_fallback
+
+        rewritten = self._rewrite_final_reply_from_tool_trace(
+            bundle,
+            tool_recorder=tool_recorder,
+            source=source,
+        )
+        if rewritten:
+            logger.info("empty-reply tool rewrite rescue (source=%s)", source)
+            return rewritten
+
+        implicit = self._maybe_rescue_implicit_tool_intent(bundle, tool_recorder=tool_recorder)
+        if implicit:
+            logger.info("空回复使用意图工具兜底 (source=%s)", source)
+            return implicit
+
         if not getattr(self, "_fast_retry_enabled", False):
             return None
 
@@ -2416,13 +3053,32 @@ class MintChatAgent:
 
         logger.warning("检测到空回复，尝试兜底重试 (source=%s, emitted=%s)", source, emitted)
 
-        tool_reply = self._execute_tool_calls_from_text(raw_reply)
+        tool_reply = self._execute_tool_calls_from_text(raw_reply, tool_recorder=tool_recorder)
         if tool_reply:
+            tool_trace_fallback = self._format_tool_trace_fallback(
+                tool_recorder, user_message=user_message
+            )
+            if tool_trace_fallback:
+                logger.info("空回复使用工具轨迹兜底 (source=%s)", source)
+                return tool_trace_fallback
+
+            rewritten = self._rewrite_final_reply_from_tool_trace(
+                bundle,
+                tool_recorder=tool_recorder,
+                source=f"{source}:tool-call-rescue",
+            )
+            if rewritten:
+                logger.info("空回复工具调用解析后重写成功 (source=%s)", source)
+                return rewritten
+
             logger.info("空回复使用工具调用解析结果 (source=%s)", source)
             return tool_reply
 
         try:
-            response = self._invoke_agent_with_timeout(bundle.messages)
+            response = self._invoke_agent_with_timeout(
+                bundle.messages,
+                tool_recorder=getattr(bundle, "tool_recorder", None),
+            )
             reply = self._extract_reply_from_response(response)
             if reply and reply.strip() and reply.strip() != _DEFAULT_EMPTY_REPLY:
                 logger.info("空回复兜底重试成功 (source=%s)", source)
@@ -2437,7 +3093,10 @@ class MintChatAgent:
                 compression="on",
                 use_cache=True,
             )
-            response = self._invoke_agent_with_timeout(fallback_messages)
+            response = self._invoke_agent_with_timeout(
+                fallback_messages,
+                tool_recorder=getattr(bundle, "tool_recorder", None),
+            )
             reply = self._extract_reply_from_response(response)
             if reply and reply.strip() and reply.strip() != _DEFAULT_EMPTY_REPLY:
                 logger.info("空回复压缩兜底重试成功 (source=%s)", source)
@@ -2459,6 +3118,31 @@ class MintChatAgent:
             logger.info("空回复使用图片分析兜底 (source=%s)", source)
             return image_fallback
 
+        user_message = (
+            (bundle.original_message or bundle.processed_message or bundle.save_message) or ""
+        )
+        tool_recorder = getattr(bundle, "tool_recorder", None)
+        tool_trace_fallback = self._format_tool_trace_fallback(
+            tool_recorder, user_message=user_message
+        )
+        if tool_trace_fallback:
+            logger.info("空回复使用工具轨迹兜底 (source=%s)", source)
+            return tool_trace_fallback
+
+        rewritten = await self._arewrite_final_reply_from_tool_trace(
+            bundle,
+            tool_recorder=tool_recorder,
+            source=source,
+        )
+        if rewritten:
+            logger.info("empty-reply tool rewrite rescue (source=%s)", source)
+            return rewritten
+
+        implicit = self._maybe_rescue_implicit_tool_intent(bundle, tool_recorder=tool_recorder)
+        if implicit:
+            logger.info("空回复使用意图工具兜底 (source=%s)", source)
+            return implicit
+
         if not getattr(self, "_fast_retry_enabled", False):
             return None
 
@@ -2469,13 +3153,32 @@ class MintChatAgent:
 
         logger.warning("检测到空回复，尝试兜底重试 (source=%s, emitted=%s)", source, emitted)
 
-        tool_reply = self._execute_tool_calls_from_text(raw_reply)
+        tool_reply = self._execute_tool_calls_from_text(raw_reply, tool_recorder=tool_recorder)
         if tool_reply:
+            tool_trace_fallback = self._format_tool_trace_fallback(
+                tool_recorder, user_message=user_message
+            )
+            if tool_trace_fallback:
+                logger.info("空回复使用工具轨迹兜底 (source=%s)", source)
+                return tool_trace_fallback
+
+            rewritten = await self._arewrite_final_reply_from_tool_trace(
+                bundle,
+                tool_recorder=tool_recorder,
+                source=f"{source}:tool-call-rescue",
+            )
+            if rewritten:
+                logger.info("空回复工具调用解析后重写成功 (source=%s)", source)
+                return rewritten
+
             logger.info("空回复使用工具调用解析结果 (source=%s)", source)
             return tool_reply
 
         try:
-            response = await self._ainvoke_agent_with_timeout(bundle.messages)
+            response = await self._ainvoke_agent_with_timeout(
+                bundle.messages,
+                tool_recorder=getattr(bundle, "tool_recorder", None),
+            )
             reply = self._extract_reply_from_response(response)
             if reply and reply.strip() and reply.strip() != _DEFAULT_EMPTY_REPLY:
                 logger.info("空回复兜底重试成功 (source=%s)", source)
@@ -2489,7 +3192,10 @@ class MintChatAgent:
                 compression="on",
                 use_cache=True,
             )
-            response = await self._ainvoke_agent_with_timeout(fallback_messages)
+            response = await self._ainvoke_agent_with_timeout(
+                fallback_messages,
+                tool_recorder=getattr(bundle, "tool_recorder", None),
+            )
             reply = self._extract_reply_from_response(response)
             if reply and reply.strip() and reply.strip() != _DEFAULT_EMPTY_REPLY:
                 logger.info("空回复压缩兜底重试成功 (source=%s)", source)
@@ -2512,6 +3218,14 @@ class MintChatAgent:
             return None
 
         with self._background_lock:
+            # 清理已完成的 future，避免队列计数偏大导致误丢任务。
+            try:
+                done_futures = [f for f in self._background_futures if f.done()]
+                for f in done_futures:
+                    self._background_futures.discard(f)
+            except Exception:
+                pass
+
             # 拒绝过多排队的后台任务，防止线程池饱和
             if len(self._background_futures) >= self._max_background_queue:
                 logger.debug("后台任务已达上限，丢弃任务: %s", label)
@@ -2530,6 +3244,7 @@ class MintChatAgent:
         def _cleanup(_f: Future) -> None:
             with self._background_lock:
                 self._background_futures.discard(_f)
+
         future.add_done_callback(_cleanup)
         return future
 
@@ -2544,12 +3259,12 @@ class MintChatAgent:
         在收到用户消息后统一更新风格、角色状态与情绪。
         """
         try:
-            self.style_learner.learn_from_message(message)
+            self.style_learner.learn_from_message(message, persist=False)
         except Exception as exc:
             logger.warning("更新对话风格失败: %s", exc)
 
         try:
-            self.character_state.on_interaction(channel)
+            self.character_state.on_interaction(channel, persist=False)
         except Exception as exc:
             logger.warning("更新角色状态失败: %s", exc)
 
@@ -2581,8 +3296,7 @@ class MintChatAgent:
             return False
 
         tokens = sum(
-            self.context_compressor.estimate_tokens(msg.get("content", ""))
-            for msg in messages
+            self.context_compressor.estimate_tokens(msg.get("content", "")) for msg in messages
         )
         tokens += self.context_compressor.estimate_tokens(additional_context)
 
@@ -2686,6 +3400,212 @@ class MintChatAgent:
         self._pre_interaction_update(original_message)
         return original_message, enriched_message
 
+    def _update_recent_topics(self, topic: str) -> None:
+        topic = (topic or "").strip()
+        if not topic:
+            return
+        try:
+            recent = self._recent_topics
+        except Exception:
+            return
+        try:
+            if recent and recent[-1] == topic:
+                return
+            recent.append(topic)
+        except Exception:
+            return
+
+    @staticmethod
+    def _extract_proactive_keywords(text: str, *, limit: int = 12) -> list[str]:
+        if not text or limit <= 0:
+            return []
+
+        stopwords = {
+            "什么",
+            "怎么",
+            "为什么",
+            "哪里",
+            "谁",
+            "如何",
+            "请问",
+            "现在",
+            "这个",
+            "那个",
+            "一下",
+            "可以",
+            "能不能",
+            "要不要",
+        }
+
+        keywords: list[str] = []
+        seen: set[str] = set()
+        for token in StyleLearner._extract_words(text):
+            token = str(token).strip()
+            if not token or len(token) < 2:
+                continue
+            if token in stopwords:
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            keywords.append(token)
+            if len(keywords) >= limit:
+                break
+        return keywords
+
+    def _build_proactive_push_context(self, user_message: str) -> Dict[str, Any]:
+        topics = StyleLearner._extract_topics(user_message)
+        topic = topics[0] if topics else ""
+        try:
+            recent_topics = list(self._recent_topics)
+        except Exception:
+            recent_topics = []
+
+        last_used_knowledge = getattr(self, "_last_lore_hit", None)
+        if not isinstance(last_used_knowledge, dict):
+            last_used_knowledge = None
+
+        return {
+            "topic": topic,
+            "recent_topics": recent_topics,
+            "keywords": self._extract_proactive_keywords(user_message, limit=12),
+            "user_message": user_message,
+            "last_used_knowledge": last_used_knowledge,
+            "proactive_push_enabled": bool(getattr(settings.agent, "proactive_push_enabled", True)),
+        }
+
+    @staticmethod
+    def _format_proactive_knowledge_prompt(
+        pushed: List[Dict[str, Any]],
+        *,
+        user_name: str,
+        max_chars_per_item: int,
+    ) -> str:
+        if not pushed:
+            return ""
+
+        max_chars = max(0, int(max_chars_per_item))
+        name = (user_name or "").strip() or "主人"
+
+        lines = [
+            "【主动知识提示】",
+            f"你正在和{name}进行角色扮演对话。以下是知识库为你挑选的可用知识点：",
+            "要求：用角色口吻把有用信息自然融入回答；不要照抄字段/列表；不要提到“推送/知识库”；不适用可忽略。",
+        ]
+
+        for idx, item in enumerate(pushed, start=1):
+            title = str(item.get("title", "") or "").strip()
+            category = str(item.get("category", "") or "").strip()
+            source = str(item.get("source", "") or "").strip()
+            content = str(item.get("content", "") or "").strip()
+            reasons = item.get("push_reasons") or []
+
+            meta_parts = [p for p in (category, source) if p]
+            meta = f"（{' / '.join(meta_parts)}）" if meta_parts else ""
+            header = f"{idx}. {title}{meta}" if title else f"{idx}.{meta}"
+            lines.append(header)
+
+            if content:
+                snippet = content
+                if max_chars > 0 and len(snippet) > max_chars:
+                    snippet = snippet[: max_chars - 1].rstrip() + "…"
+                lines.append(f"- 要点：{snippet}")
+
+            if isinstance(reasons, list):
+                reasons_clean = [str(r).strip() for r in reasons if str(r).strip()]
+                if reasons_clean:
+                    lines.append(f"- 适用理由：{'、'.join(reasons_clean)}")
+
+        return "\n".join(lines).strip()
+
+    async def _maybe_inject_proactive_knowledge(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        context: Dict[str, Any],
+    ) -> None:
+        if not messages:
+            return
+
+        try:
+            proactive_enabled = bool(getattr(settings.agent, "proactive_push_enabled", True))
+            k = int(getattr(settings.agent, "proactive_push_k", 2))
+            timeout_s = float(getattr(settings.agent, "proactive_push_timeout_s", 0.0) or 0.0)
+            allow_in_fast_mode = bool(getattr(settings.agent, "proactive_push_in_fast_mode", False))
+        except Exception:
+            return
+
+        if not proactive_enabled or k <= 0:
+            return
+
+        if getattr(settings.agent, "memory_fast_mode", False) and not allow_in_fast_mode:
+            return
+
+        try:
+            user_id_key = str(self.user_id if self.user_id is not None else "default")
+            safe_context = dict(context or {})
+            safe_context.setdefault(
+                "proactive_push_enabled",
+                proactive_enabled,
+            )
+
+            lore_book = getattr(self, "lore_book", None)
+            if lore_book is None or getattr(lore_book, "pusher", None) is None:
+                return
+
+            loop = asyncio.get_running_loop()
+            executor = getattr(self, "_background_executor", None)
+            future = loop.run_in_executor(
+                executor,
+                lore_book.push_knowledge,
+                user_id_key,
+                safe_context,
+                k,
+            )
+
+            def _swallow_cancelled(_f: asyncio.Future) -> None:  # noqa: ANN001
+                try:
+                    _f.exception()
+                except asyncio.CancelledError:
+                    return
+                except Exception:
+                    return
+
+            try:
+                if timeout_s > 0.0:
+                    pushed = await asyncio.wait_for(future, timeout=timeout_s)
+                else:
+                    pushed = await future
+            except asyncio.TimeoutError:
+                try:
+                    future.cancel()
+                except Exception:
+                    pass
+                try:
+                    future.add_done_callback(_swallow_cancelled)
+                except Exception:
+                    pass
+                logger.debug("主动知识推送超时(%.0fms)，已跳过", max(0.0, timeout_s) * 1000)
+                return
+
+            prompt = self._format_proactive_knowledge_prompt(
+                pushed,
+                user_name=str(getattr(settings.agent, "user", "主人")),
+                max_chars_per_item=int(
+                    getattr(settings.agent, "proactive_push_max_chars_per_item", 480)
+                ),
+            )
+            if not prompt:
+                return
+
+            insert_at = next(
+                (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
+                len(messages),
+            )
+            messages.insert(insert_at, {"role": "system", "content": prompt})
+        except Exception as exc:
+            logger.debug("主动知识推送注入失败（可忽略）: %s", exc)
+
     async def _build_agent_bundle_async(
         self,
         message: str,
@@ -2694,6 +3614,7 @@ class MintChatAgent:
         image_path: Optional[str] = None,
         compression: Literal["auto", "on", "off"] = "auto",
         use_cache: bool = True,
+        stage_timer: Optional["RequestStageTimer"] = None,
     ) -> AgentConversationBundle:
         """
         异步构建对话请求包，供 chat / stream / failover 共用。
@@ -2703,17 +3624,66 @@ class MintChatAgent:
             raise ValueError("收到空消息")
         if len(message) > 8000:
             raise ValueError("消息过长，请精简后再试")
+        timer = stage_timer if isinstance(stage_timer, RequestStageTimer) else None
+        t0 = time.perf_counter() if (timer and timer.enabled) else 0.0
+
         original_message, enriched_message = self._prepare_interaction_context(
             message,
             image_analysis=image_analysis,
             image_path=image_path,
         )
+        if t0:
+            timer.record_ms("bundle.pre", (time.perf_counter() - t0) * 1000)
+            t0 = time.perf_counter()
 
-        prepared_messages = await self._prepare_messages_async(
-            enriched_message,
-            compression=compression,
-            use_cache=use_cache,
-        )
+        try:
+            prepare_timeout_s = float(
+                getattr(settings.agent, "bundle_prepare_timeout_s", 0.0) or 0.0
+            )
+        except Exception:
+            prepare_timeout_s = 0.0
+        prepare_timeout_s = max(0.0, prepare_timeout_s)
+
+        try:
+            if prepare_timeout_s > 0.0:
+                prepared_messages = await asyncio.wait_for(
+                    self._prepare_messages_async(
+                        enriched_message,
+                        compression=compression,
+                        use_cache=use_cache,
+                    ),
+                    timeout=prepare_timeout_s,
+                )
+            else:
+                prepared_messages = await self._prepare_messages_async(
+                    enriched_message,
+                    compression=compression,
+                    use_cache=use_cache,
+                )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "构建对话上下文超时(%.0fms)，已降级到快路径(最近消息)",
+                prepare_timeout_s * 1000,
+            )
+            recent_messages = self.memory.get_recent_messages()
+            trimmed_messages = recent_messages[-4:] if len(recent_messages) > 4 else recent_messages
+            prepared_messages = list(trimmed_messages)
+            if (state_context := self._build_context_with_state(use_compression=False)).strip():
+                prepared_messages.insert(0, {"role": "system", "content": state_context.strip()})
+            prepared_messages.append({"role": "user", "content": enriched_message})
+        if t0:
+            timer.record_ms("bundle.prepare", (time.perf_counter() - t0) * 1000)
+            t0 = time.perf_counter()
+
+        proactive_context = self._build_proactive_push_context(original_message)
+        await self._maybe_inject_proactive_knowledge(prepared_messages, context=proactive_context)
+        self._update_recent_topics(str(proactive_context.get("topic", "") or "").strip())
+        try:
+            self._last_lore_hit = self.lore_book.get_last_search_hit()
+        except Exception:
+            self._last_lore_hit = None
+        if t0:
+            timer.record_ms("bundle.proactive", (time.perf_counter() - t0) * 1000)
 
         return AgentConversationBundle(
             messages=prepared_messages,
@@ -2722,6 +3692,7 @@ class MintChatAgent:
             processed_message=enriched_message,
             image_analysis=image_analysis,
             image_path=image_path,
+            tool_recorder=ToolTraceRecorder(),
         )
 
     def _build_agent_bundle(
@@ -2732,6 +3703,7 @@ class MintChatAgent:
         image_path: Optional[str] = None,
         compression: Literal["auto", "on", "off"] = "auto",
         use_cache: bool = True,
+        stage_timer: Optional["RequestStageTimer"] = None,
     ) -> AgentConversationBundle:
         """
         同步构建对话请求包，通过内部事件循环驱动异步逻辑。
@@ -2748,6 +3720,7 @@ class MintChatAgent:
                 image_path=image_path,
                 compression=compression,
                 use_cache=use_cache,
+                stage_timer=stage_timer,
             )
         )
 
@@ -2755,6 +3728,7 @@ class MintChatAgent:
         self,
         messages: list,
         *,
+        tool_recorder: Optional[ToolTraceRecorder] = None,
         cancel_event: Optional[Event] = None,
     ) -> Iterator[str]:
         """
@@ -2802,19 +3776,28 @@ class MintChatAgent:
                 stream_holder["iterator"] = None
 
         def producer():
-            token = tool_timeout_s_var.set(
-                float(getattr(settings.agent, "tool_timeout_s", 30.0)) if getattr(settings.agent, "tool_timeout_s", 30.0) else None
+            timeout_token = tool_timeout_s_var.set(
+                float(getattr(settings.agent, "tool_timeout_s", 30.0))
+                if getattr(settings.agent, "tool_timeout_s", 30.0)
+                else None
             )
+            trace_token = tool_trace_recorder_var.set(tool_recorder)
             try:
                 try:
                     stream_holder["iterator"] = self.agent.stream(
                         {"messages": messages},
                         stream_mode="messages",
                     )
-                    for chunk, metadata in stream_holder["iterator"]:
+                    for item in stream_holder["iterator"]:
                         if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
                             break
-                        skip_internal = _metadata_looks_like_internal_routing(metadata)
+                        chunk, metadata = _unwrap_stream_item(item)
+                        stream_mode = (
+                            metadata.get("stream_mode") if isinstance(metadata, dict) else None
+                        )
+                        skip_internal = bool(
+                            stream_mode and str(stream_mode).lower() != "messages"
+                        ) or _metadata_looks_like_internal_routing(metadata)
                         while True:
                             if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
                                 break
@@ -2825,7 +3808,8 @@ class MintChatAgent:
                             except Full:
                                 continue
                 finally:
-                    tool_timeout_s_var.reset(token)
+                    tool_trace_recorder_var.reset(trace_token)
+                    tool_timeout_s_var.reset(timeout_token)
             except Exception as exc:  # pragma: no cover - 调试信息
                 while True:
                     if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
@@ -2854,8 +3838,6 @@ class MintChatAgent:
         first_latency_logged = False
         timeout_streak = 0
         accumulator = StreamDeltaAccumulator()
-        tool_accumulator = StreamDeltaAccumulator()
-        tool_parts: list[str] = []
         tool_first_received_at: Optional[float] = None
         tool_direct_grace_s = max(
             0.0,
@@ -2906,18 +3888,41 @@ class MintChatAgent:
                     kind, payload = chunk_queue.get(timeout=wait_timeout)
                 except Empty:
                     timeout_streak += 1
-                    # 若已经拿到 tool 结果但 assistant 迟迟不输出，则直接把 tool 结果作为回复返回，避免总超时。
-                    if (
+
+                    tools_in_flight = 0
+                    tool_done_at: Optional[float] = None
+                    if tool_recorder is not None:
+                        try:
+                            in_flight, first_done_at, last_act = tool_recorder.state()
+                        except Exception:
+                            in_flight, first_done_at, last_act = 0, None, 0.0
+                        tools_in_flight = in_flight
+                        if in_flight > 0:
+                            # 工具执行期间可能不会产生任何 stream chunk；这里保持看门狗活跃，避免误判“无输出超时”。
+                            watchdog.mark_chunk()
+                        # 仅当“工具不再执行中”时，才允许触发“工具结果直出兜底”。
+                        if in_flight <= 0 and first_done_at is not None:
+                            tool_done_at = last_act
+
+                    tool_stream_ready = (
                         tool_first_received_at is not None
-                        and total_chars <= 0
                         and (time.perf_counter() - tool_first_received_at) >= tool_direct_grace_s
+                    )
+                    if tool_recorder is not None and tools_in_flight > 0:
+                        # 仍有工具在执行：不要因为“某个 tool 已返回”就提前中止后续工具链。
+                        tool_stream_ready = False
+
+                    # 若已经拿到 tool 结果但 assistant 迟迟不输出，则直接把 tool 结果作为回复返回，避免总超时。
+                    if total_chars <= 0 and (
+                        tool_stream_ready
+                        or (
+                            tool_done_at is not None
+                            and (time.perf_counter() - tool_done_at) >= tool_direct_grace_s
+                        )
                     ):
                         stop_event.set()
                         _close_stream()
                         break
-                    # 超过一次未取到数据时，尝试关闭底层流，触发线程退出
-                    if timeout_streak >= 2:
-                        _close_stream()
                     # 后台线程已退出且队列空，直接结束，避免无意义等待
                     if worker and worker.done() and chunk_queue.empty():
                         break
@@ -2949,9 +3954,6 @@ class MintChatAgent:
                         if normalized_tool:
                             if tool_first_received_at is None:
                                 tool_first_received_at = time.perf_counter()
-                            tool_delta = tool_accumulator.consume(normalized_tool)
-                            if tool_delta:
-                                tool_parts.append(tool_delta)
 
                     if skip_internal:
                         continue
@@ -2996,12 +3998,10 @@ class MintChatAgent:
 
             # 如果 assistant 没有任何输出，但 tool 有结果，则把 tool 内容作为兜底输出，
             # 避免“调用工具后必定空回复”触发保底回复机制。
-            if total_chars <= 0 and tool_parts:
-                tool_reply = "".join(tool_parts).strip()
-                if tool_reply:
-                    chunk_count += 1
-                    total_chars += len(tool_reply)
-                    yield tool_reply
+            if total_chars <= 0:
+                # Intentionally do not emit raw tool output here; `chat_stream` will
+                # trigger a rewrite rescue based on the recorded tool traces.
+                pass
             # v3.3.4: 增强资源清理
             stop_event.set()
             _close_stream()
@@ -3019,6 +4019,7 @@ class MintChatAgent:
         self,
         messages: list,
         *,
+        tool_recorder: Optional[ToolTraceRecorder] = None,
         cancel_event: Optional[Event] = None,
     ) -> AsyncIterator[str]:
         """
@@ -3032,9 +4033,12 @@ class MintChatAgent:
         - 合并细碎片段，降低UI刷新频率
         """
         stream = None
-        token = tool_timeout_s_var.set(
-            float(getattr(settings.agent, "tool_timeout_s", 30.0)) if getattr(settings.agent, "tool_timeout_s", 30.0) else None
+        timeout_token = tool_timeout_s_var.set(
+            float(getattr(settings.agent, "tool_timeout_s", 30.0))
+            if getattr(settings.agent, "tool_timeout_s", 30.0)
+            else None
         )
+        trace_token = tool_trace_recorder_var.set(tool_recorder)
 
         async def _safe_aclose() -> None:
             if stream and hasattr(stream, "aclose"):
@@ -3042,6 +4046,7 @@ class MintChatAgent:
                     await asyncio.wait_for(stream.aclose(), timeout=1.0)
                 except (asyncio.TimeoutError, Exception):
                     pass
+
         try:
             stream = self.agent.astream(
                 {"messages": messages},
@@ -3051,14 +4056,14 @@ class MintChatAgent:
             watchdog = LLMStreamWatchdog(self._llm_timeouts)
             first_latency_logged = False
             accumulator = StreamDeltaAccumulator()
-            tool_accumulator = StreamDeltaAccumulator()
-            tool_parts: list[str] = []
             tool_first_received_at: Optional[float] = None
             tool_direct_grace_s = max(
                 0.0,
                 float(getattr(settings.agent, "tool_direct_grace_s", 1.5)),
             )
-            prefix_stripper = StreamStructuredPrefixStripper(max_fragments=5, max_buffer_chars=100_000)
+            prefix_stripper = StreamStructuredPrefixStripper(
+                max_fragments=5, max_buffer_chars=100_000
+            )
             trace_scrubber = StreamToolTraceScrubber(max_buffer_chars=32_768)
             coalescer = StreamEmitBuffer(min_chars=self._stream_min_chars)
             stream_start = time.perf_counter()
@@ -3096,7 +4101,7 @@ class MintChatAgent:
                         break
 
                     try:
-                        chunk, metadata = await asyncio.wait_for(
+                        item = await asyncio.wait_for(
                             iterator.__anext__(),
                             timeout=wait_timeout,
                         )
@@ -3107,10 +4112,37 @@ class MintChatAgent:
                         if cancel_event and cancel_event.is_set():
                             await _safe_aclose()
                             break
-                        if (
+
+                        tool_done_at: Optional[float] = None
+                        tools_in_flight = 0
+                        if tool_recorder is not None:
+                            try:
+                                in_flight, first_done_at, last_act = tool_recorder.state()
+                            except Exception:
+                                in_flight, first_done_at, last_act = 0, None, 0.0
+                            tools_in_flight = in_flight
+                            if in_flight > 0:
+                                # 工具执行期间可能不会产生任何 stream chunk；这里保持看门狗活跃，避免误判“无输出超时”。
+                                watchdog.mark_chunk()
+                            if in_flight <= 0 and first_done_at is not None:
+                                tool_done_at = last_act
+
+                        tool_stream_ready = (
                             tool_first_received_at is not None
                             and total_chars <= 0
-                            and (time.perf_counter() - tool_first_received_at) >= tool_direct_grace_s
+                            and (time.perf_counter() - tool_first_received_at)
+                            >= tool_direct_grace_s
+                        )
+                        if tool_recorder is not None and tools_in_flight > 0:
+                            tool_stream_ready = False
+
+                        if tool_stream_ready:
+                            await _safe_aclose()
+                            break
+                        if (
+                            tool_done_at is not None
+                            and total_chars <= 0
+                            and (time.perf_counter() - tool_done_at) >= tool_direct_grace_s
                         ):
                             await _safe_aclose()
                             break
@@ -3118,6 +4150,11 @@ class MintChatAgent:
                             continue
                         await _safe_aclose()
                         raise AgentTimeoutError("LLM 异步流式输出在规定时间内无响应") from exc
+
+                    chunk, metadata = _unwrap_stream_item(item)
+                    stream_mode = (
+                        metadata.get("stream_mode") if isinstance(metadata, dict) else None
+                    )
 
                     first_latency = watchdog.mark_chunk()
                     if first_latency and not first_latency_logged:
@@ -3129,11 +4166,10 @@ class MintChatAgent:
                         if normalized_tool:
                             if tool_first_received_at is None:
                                 tool_first_received_at = time.perf_counter()
-                            tool_delta = tool_accumulator.consume(normalized_tool)
-                            if tool_delta:
-                                tool_parts.append(tool_delta)
 
-                    if _metadata_looks_like_internal_routing(metadata):
+                    if bool(stream_mode and str(stream_mode).lower() != "messages") or (
+                        _metadata_looks_like_internal_routing(metadata)
+                    ):
                         continue
 
                     content = self._extract_stream_text(chunk)
@@ -3153,7 +4189,8 @@ class MintChatAgent:
             await _safe_aclose()
             raise
         finally:
-            tool_timeout_s_var.reset(token)
+            tool_trace_recorder_var.reset(trace_token)
+            tool_timeout_s_var.reset(timeout_token)
             if "prefix_stripper" in locals():
                 pending = prefix_stripper.flush()
                 if pending and "trace_scrubber" in locals():
@@ -3164,7 +4201,7 @@ class MintChatAgent:
                         chunk_count += 1
                         total_chars += len(buffered)
                         yield buffered
-            if "trace_scrubber" in locals() and 'coalescer' in locals():
+            if "trace_scrubber" in locals() and "coalescer" in locals():
                 scrub_tail = trace_scrubber.flush()
                 if scrub_tail:
                     buffered = coalescer.push(scrub_tail)
@@ -3172,22 +4209,20 @@ class MintChatAgent:
                         chunk_count += 1
                         total_chars += len(buffered)
                         yield buffered
-            if 'coalescer' in locals():
+            if "coalescer" in locals():
                 tail = coalescer.flush()
                 if tail:
                     chunk_count += 1
                     total_chars += len(tail)
                     yield tail
 
-            if total_chars <= 0 and "tool_parts" in locals() and tool_parts:
-                tool_reply = "".join(tool_parts).strip()
-                if tool_reply:
-                    chunk_count += 1
-                    total_chars += len(tool_reply)
-                    yield tool_reply
+            if total_chars <= 0:
+                # Intentionally do not emit raw tool output here; `chat_stream` will
+                # trigger a rewrite rescue based on the recorded tool traces.
+                pass
             # v3.3.4: 确保stream被关闭（在所有情况下）
             await _safe_aclose()
-            if 'chunk_count' in locals():
+            if "chunk_count" in locals():
                 elapsed = time.perf_counter() - stream_start
                 logger.info(
                     "异步流式输出完成: chunks=%d, chars=%d, elapsed=%.2fs",
@@ -3222,7 +4257,9 @@ class MintChatAgent:
                             if isinstance(block, dict):
                                 parts.append(str(block.get("text") or block.get("content") or ""))
                             else:
-                                parts.append(str(getattr(block, "text", "") or getattr(block, "content", "")))
+                                parts.append(
+                                    str(getattr(block, "text", "") or getattr(block, "content", ""))
+                                )
                         return "".join(parts)
                     return str(content)
 
@@ -3278,7 +4315,9 @@ class MintChatAgent:
                     if isinstance(block, dict):
                         parts.append(str(block.get("text") or block.get("content") or ""))
                     else:
-                        parts.append(str(getattr(block, "text", "") or getattr(block, "content", "")))
+                        parts.append(
+                            str(getattr(block, "text", "") or getattr(block, "content", ""))
+                        )
                 return "".join(parts)
             return str(value)
 
@@ -3299,6 +4338,1060 @@ class MintChatAgent:
 
         return ""
 
+    def _format_tool_trace_fallback(
+        self,
+        tool_recorder: Optional[ToolTraceRecorder],
+        *,
+        user_message: Optional[str] = None,
+    ) -> str:
+        """
+        将 recorder 中的工具轨迹整理为可展示文本。
+
+        用途：当模型在工具调用后未能输出可展示文本（空回复/流式超时）时，
+        直接把工具结果作为“最后兜底”，避免用户看到空白。
+        """
+        if tool_recorder is None:
+            return ""
+        try:
+            traces = tool_recorder.snapshot()
+        except Exception:
+            return ""
+        if not traces:
+            return ""
+
+        user_name = str(getattr(settings.agent, "user", "主人") or "主人").strip() or "主人"
+        if user_message and self._user_prefers_raw_tool_output(user_message):
+            parts: list[str] = []
+            seen: set[str] = set()
+            for trace in traces[-3:]:
+                output = (getattr(trace, "output", "") or "").strip()
+                error = (getattr(trace, "error", "") or "").strip()
+                text = (output or error).strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                parts.append(text)
+            return "\n\n".join(parts).strip()
+
+        def _maybe_parse_json(text: str) -> Any:
+            raw = (text or "").strip()
+            if not raw:
+                return None
+            if raw[0] not in "{[":
+                return None
+            if raw[-1] not in "}]":
+                return None
+            if len(raw) > 200_000:
+                return None
+            fragment = _extract_leading_json_fragment(raw)
+            if not fragment:
+                return None
+            try:
+                return json.loads(fragment)
+            except Exception:
+                return None
+
+        def _as_clean_text(value: Any, *, max_chars: int = 120) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, bool):
+                return "是" if value else "否"
+            if isinstance(value, (int, float)):
+                return str(value)
+            if isinstance(value, str):
+                text = value.strip()
+                if len(text) > max_chars:
+                    return text[: max_chars - 1].rstrip() + "…"
+                return text
+            try:
+                dumped = json.dumps(value, ensure_ascii=False)
+            except Exception:
+                dumped = str(value)
+            dumped = dumped.strip()
+            if len(dumped) > max_chars:
+                return dumped[: max_chars - 1].rstrip() + "…"
+            return dumped
+
+        def _fmt_json_result(tool_name: str, payload: Any) -> str:
+            if isinstance(payload, dict):
+                # Time-like payloads (e.g., get_time_in_timezone)
+                date = _as_clean_text(payload.get("date") or payload.get("local_date"))
+                time_s = _as_clean_text(payload.get("time") or payload.get("local_time"))
+                timezone = _as_clean_text(payload.get("timezone") or payload.get("tz"))
+                weekday = _as_clean_text(payload.get("day_of_week") or payload.get("weekday"))
+                datetime_s = _as_clean_text(payload.get("datetime") or payload.get("current_time"))
+                if date and time_s:
+                    value = f"{date} {time_s}".strip()
+                else:
+                    value = datetime_s.replace("T", " ").strip() if datetime_s else time_s
+                if value and (
+                    "time" in tool_name
+                    or "date" in tool_name
+                    or timezone
+                    or date
+                    or time_s
+                    or "timezone" in tool_name
+                ):
+                    where = f"{timezone} " if timezone else ""
+                    suffix = f"（{weekday}）" if weekday else ""
+                    return f"{user_name}，{where}现在是 {value}{suffix} 喵~".strip()
+
+                # Weather-like payloads (covers many AMap variants)
+                if any(
+                    key in payload
+                    for key in (
+                        "weather",
+                        "temperature",
+                        "temperature_c",
+                        "humidity",
+                        "humidity_percent",
+                        "wind",
+                        "winddirection",
+                        "windDirection",
+                        "windpower",
+                        "windPower",
+                    )
+                ):
+                    kv: dict[str, str] = {}
+                    city = _as_clean_text(payload.get("city"))
+                    if city:
+                        kv["city"] = city
+                    weather = _as_clean_text(payload.get("weather"))
+                    if weather:
+                        kv["weather"] = weather
+                    temp = payload.get("temperature_c")
+                    if temp is None:
+                        temp = payload.get("temperature")
+                    temp_s = _as_clean_text(temp)
+                    if temp_s:
+                        temp_s = re.sub(r"[^0-9.+-]", "", temp_s) or temp_s
+                        kv["temperature_c"] = temp_s
+                    wind = _as_clean_text(payload.get("wind"))
+                    if not wind:
+                        wind_dir = _as_clean_text(
+                            payload.get("winddirection") or payload.get("windDirection")
+                        )
+                        wind_power = _as_clean_text(payload.get("windpower") or payload.get("windPower"))
+                        wind = (wind_dir + wind_power).strip()
+                    if wind:
+                        kv["wind"] = wind
+                    humidity = payload.get("humidity_percent")
+                    if humidity is None:
+                        humidity = payload.get("humidity")
+                    humidity_s = _as_clean_text(humidity)
+                    if humidity_s:
+                        humidity_s = re.sub(r"[^0-9.+-]", "", humidity_s) or humidity_s
+                        kv["humidity_percent"] = humidity_s
+                    tip = _as_clean_text(payload.get("tip") or payload.get("advice") or payload.get("notice"))
+                    if tip:
+                        kv["tip"] = tip
+                    return _fmt_weather(kv)
+
+                # Search-like payloads: {"results": [...], "query": "..."}
+                if isinstance(payload.get("results"), list):
+                    results_raw = payload.get("results") or []
+                    results_lines: list[str] = []
+                    for item in results_raw[:10]:
+                        if isinstance(item, dict):
+                            title = _as_clean_text(item.get("title") or item.get("name"))
+                            link = _as_clean_text(item.get("url") or item.get("link") or item.get("href"))
+                            snippet = _as_clean_text(item.get("snippet") or item.get("description"))
+                            parts = [p for p in (title, link, snippet) if p]
+                            if parts:
+                                results_lines.append(" | ".join(parts))
+                        else:
+                            line = _as_clean_text(item, max_chars=160)
+                            if line:
+                                results_lines.append(line)
+                    kv = {"query": _as_clean_text(payload.get("query") or payload.get("keyword"))}
+                    return _fmt_web_search(kv, results_lines)
+
+                # POI/map-like payloads: {"pois": [...], "city": "...", "keywords": "..."}
+                if isinstance(payload.get("pois"), list):
+                    pois = payload.get("pois") or []
+                    result_lines: list[str] = []
+                    for poi in pois[:10]:
+                        if not isinstance(poi, dict):
+                            continue
+                        name = _as_clean_text(poi.get("name"))
+                        if not name:
+                            continue
+                        address = _as_clean_text(poi.get("address"))
+                        distance = _as_clean_text(poi.get("distance") or poi.get("distance_m"))
+                        tel = _as_clean_text(poi.get("tel") or poi.get("phone"))
+                        extras: list[str] = []
+                        if address:
+                            extras.append(f"address={address}")
+                        if distance:
+                            extras.append(f"distance_m={distance}")
+                        if tel:
+                            extras.append(f"tel={tel}")
+                        suffix = f" | " + " | ".join(extras) if extras else ""
+                        result_lines.append(f"{len(result_lines)+1}. {name}{suffix}")
+                    kv = {
+                        "keywords": _as_clean_text(
+                            payload.get("keywords")
+                            or payload.get("keyword")
+                            or payload.get("q")
+                        ),
+                        "city": _as_clean_text(payload.get("city")),
+                    }
+                    return _fmt_map_search(kv, result_lines)
+
+                # Generic dict: show a small set of scalar fields.
+                bullets: list[str] = []
+                for key, value in payload.items():
+                    if len(bullets) >= 5:
+                        break
+                    if value is None or isinstance(value, (dict, list)):
+                        continue
+                    v = _as_clean_text(value)
+                    if not v:
+                        continue
+                    bullets.append(f"- {str(key).strip()}: {v}")
+                if bullets:
+                    return (f"{user_name}，我查到这些信息：\n" + "\n".join(bullets)).strip()
+                keys = [str(k).strip() for k in list(payload.keys())[:6] if str(k).strip()]
+                if keys:
+                    more = "…" if len(payload) > len(keys) else ""
+                    return f"{user_name}，我拿到了一些数据字段：{', '.join(keys)}{more}。你想让我重点解释哪一项喵~"
+                return f"{user_name}，我拿到了工具结果，不过信息有点复杂，需要我按哪个字段重点解释呢？喵~"
+
+            if isinstance(payload, list):
+                if not payload:
+                    return f"{user_name}，我这边暂时没有查到结果喵~"
+                preview: list[str] = []
+                for item in payload[:3]:
+                    if isinstance(item, dict):
+                        name = _as_clean_text(item.get("name") or item.get("title"))
+                        preview.append(name or _as_clean_text(item, max_chars=120))
+                    else:
+                        preview.append(_as_clean_text(item, max_chars=120))
+                preview = [p for p in preview if p]
+                if preview:
+                    lines = [f"{user_name}，我查到这些结果："]
+                    lines.extend(f"- {p}" for p in preview)
+                    if len(payload) > 3:
+                        lines.append(f"（还有 {len(payload) - 3} 条，需要我继续展开吗？）")
+                    return "\n".join(lines).strip()
+                return f"{user_name}，我拿到了一些结果，但内容不太规整，需要我换个方式再整理一下吗？喵~"
+
+            return ""
+
+        def _split_tool_result(text: str) -> tuple[str, dict[str, str], list[str]]:
+            raw = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+            if not raw:
+                return "", {}, []
+            lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
+            if not lines:
+                return "", {}, []
+            first = lines[0]
+            tool_from_header = ""
+            start_idx = 0
+            if first.lower().startswith("tool_result"):
+                _prefix, _sep, rest = first.partition(":")
+                tool_from_header = rest.strip()
+                start_idx = 1
+
+            kv: dict[str, str] = {}
+            results: list[str] = []
+            in_results = False
+            for ln in lines[start_idx:]:
+                lower_ln = ln.lower()
+                if lower_ln == "results:":
+                    in_results = True
+                    continue
+                if in_results:
+                    results.append(ln)
+                    continue
+                if ":" in ln:
+                    k, v = ln.split(":", 1)
+                    key = k.strip()
+                    if key:
+                        kv[key] = v.strip()
+                else:
+                    # Best-effort: treat as a free-form continuation.
+                    results.append(ln)
+            return tool_from_header, kv, results
+
+        def _fmt_time(kv: dict[str, str], raw: str) -> str:
+            value = (kv.get("local_time") or "").strip()
+            if not value:
+                match = re.search(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}", raw)
+                value = match.group(0) if match else ""
+            return f"{user_name}，现在是 {value} 喵~" if value else f"{user_name}，我这边没有拿到明确的时间喵~"
+
+        def _fmt_date(kv: dict[str, str]) -> str:
+            date = (kv.get("local_date") or kv.get("date") or "").strip()
+            weekday = (kv.get("weekday") or "").strip()
+            if date and weekday:
+                return f"{user_name}，今天是 {date}（{weekday}）喵~"
+            if date:
+                return f"{user_name}，今天是 {date} 喵~"
+            return f"{user_name}，我这边没有拿到明确的日期喵~"
+
+        def _fmt_weather(kv: dict[str, str]) -> str:
+            city = (kv.get("city") or "").strip()
+            error = (kv.get("error") or "").strip()
+            hint = (kv.get("hint") or "").strip()
+            detail = (kv.get("detail") or "").strip()
+            if error:
+                if error == "missing_amap_key":
+                    return (
+                        f"{user_name}，我想帮你查天气，不过我这边还没配置高德 API Key。"
+                        f"你可以在 config.yaml 里填 AMAP.api_key（或设置环境变量 AMAP_API_KEY），"
+                        "然后再问我一次喵~"
+                    )
+                message = f"{user_name}，天气查询失败了（{error}）"
+                if city:
+                    message = f"{user_name}，{city} 的天气查询失败了（{error}）"
+                if detail:
+                    message += f"：{detail}"
+                if hint and hint not in detail:
+                    message += f"\n{hint}"
+                return message.strip()
+
+            weather = (kv.get("weather") or "").strip()
+            temperature = (kv.get("temperature_c") or kv.get("temperature") or "").strip()
+            wind = (kv.get("wind") or "").strip()
+            humidity = (kv.get("humidity_percent") or kv.get("humidity") or "").strip()
+            tip = (kv.get("tip") or "").strip()
+
+            chunks: list[str] = []
+            if city:
+                chunks.append(city)
+            if weather:
+                chunks.append(f"现在{weather}")
+            if temperature:
+                chunks.append(f"{temperature}℃")
+            if wind:
+                chunks.append(f"风：{wind}")
+            if humidity:
+                chunks.append(f"湿度：{humidity}%")
+            head = "，".join(chunks).strip("，")
+            if not head:
+                head = "我这边查到了天气信息"
+            message = f"{user_name}，{head}。"
+            if tip:
+                if not tip.endswith(("。", "！", "?", "？", "~")):
+                    tip = tip.rstrip() + "。"
+                message += tip
+            message += "喵~"
+            return message
+
+        def _fmt_map_search(kv: dict[str, str], results: list[str]) -> str:
+            kw = (kv.get("keywords") or "").strip()
+            city = (kv.get("city") or "").strip()
+            error = (kv.get("error") or "").strip()
+            hint = (kv.get("hint") or "").strip()
+            detail = (kv.get("detail") or "").strip()
+            if error:
+                if error == "missing_amap_key":
+                    return (
+                        f"{user_name}，我想帮你查地图，不过我这边还没配置高德 API Key。"
+                        f"你可以在 config.yaml 里填 AMAP.api_key（或设置环境变量 AMAP_API_KEY），"
+                        "然后再问我一次喵~"
+                    )
+                message = f"{user_name}，地图查询失败了（{error}）"
+                if detail:
+                    message += f"：{detail}"
+                if hint and hint not in detail:
+                    message += f"\n{hint}"
+                return message.strip()
+
+            where = city or "附近"
+            if kv.get("results", "").strip() == "[]":
+                query = f"“{kw}”" if kw else "这个关键词"
+                return f"{user_name}，我在{where}没有找到 {query} 相关的地点喵~"
+
+            def _fmt_poi(line: str) -> str:
+                raw = (line or "").strip()
+                raw = re.sub(r"^\d+\.\s*", "", raw)
+                parts = [p.strip() for p in raw.split(" | ") if p.strip()]
+                if not parts:
+                    return raw
+                name = parts[0]
+                fields: dict[str, str] = {}
+                for part in parts[1:]:
+                    if "=" not in part:
+                        continue
+                    k, v = part.split("=", 1)
+                    key = k.strip()
+                    value = v.strip()
+                    if key and value:
+                        fields[key] = value
+                extras: list[str] = []
+                dist = fields.get("distance_m") or fields.get("distance") or ""
+                addr = fields.get("address") or ""
+                tel = fields.get("tel") or ""
+                if dist:
+                    extras.append(f"约{dist}m")
+                if addr:
+                    extras.append(addr)
+                if tel:
+                    extras.append(f"电话:{tel}")
+                if extras:
+                    return f"{name}（{'，'.join(extras)}）"
+                return name
+
+            items = [_fmt_poi(line) for line in results if (line or "").strip()]
+            items = [i for i in items if i]
+            if not items:
+                return f"{user_name}，我在{where}暂时没找到合适的地点喵~"
+            top = items[:3]
+            query = f"“{kw}”" if kw else "相关"
+            lines = [f"{user_name}，我在{where}帮你找了{query}的地点："]
+            lines.extend(f"- {item}" for item in top)
+            lines.append("想让我按距离/评分再筛一筛吗？喵~")
+            return "\n".join(lines).strip()
+
+        def _fmt_web_search(kv: dict[str, str], results: list[str]) -> str:
+            query = (kv.get("query") or "").strip()
+            answer = (kv.get("answer") or "").strip()
+            error = (kv.get("error") or "").strip()
+            hint = (kv.get("hint") or "").strip()
+            providers = (kv.get("providers_tried") or "").strip()
+            if error:
+                message = f"{user_name}，我这边搜索失败了（{error}）喵~"
+                if providers:
+                    message += f"\n已尝试：{providers}"
+                if hint:
+                    message += f"\n小建议：{hint}"
+                return message.strip()
+
+            def _fmt_hit(line: str) -> str:
+                raw = (line or "").strip()
+                raw = re.sub(r"^\d+\.\s*", "", raw)
+                parts = [p.strip() for p in raw.split(" | ") if p.strip()]
+                if not parts:
+                    return raw
+                title = parts[0]
+                link = parts[1] if len(parts) >= 2 else ""
+                snippet = parts[2] if len(parts) >= 3 else ""
+                if snippet and len(snippet) > 60:
+                    snippet = snippet[:59].rstrip() + "…"
+                if link:
+                    return f"{title}（{link}）" + (f"：{snippet}" if snippet else "")
+                return f"{title}" + (f"：{snippet}" if snippet else "")
+
+            items = [_fmt_hit(line) for line in results if (line or "").strip()]
+            items = [i for i in items if i]
+            if not items and not answer:
+                q = f"“{query}”" if query else "这个关键词"
+                return f"{user_name}，我暂时没搜到 {q} 的结果喵~ 你要不要换个关键词试试？"
+
+            lines: list[str] = []
+            if answer:
+                lines.append(answer)
+            if items:
+                q = f"“{query}”" if query else ""
+                lines.append(f"{user_name}，我搜到{q}这些可能有用的结果：")
+                for item in items[:3]:
+                    lines.append(f"- {item}")
+                lines.append("想让我点开其中一条继续深挖吗？喵~")
+            return "\n".join(lines).strip()
+
+        parts: list[str] = []
+        seen: set[str] = set()
+        for trace in traces[-5:]:
+            output = (getattr(trace, "output", "") or "").strip()
+            error = (getattr(trace, "error", "") or "").strip()
+            name = (getattr(trace, "name", "") or "").strip() or "tool"
+            text = output or ""
+
+            if output:
+                first_line = output.splitlines()[0].strip() if output.splitlines() else output.strip()
+                if first_line.lower().startswith("tool_result"):
+                    _tool, kv, results = _split_tool_result(output)
+                    tool_name = (_tool or name).strip()
+                    if tool_name == "get_current_time":
+                        text = _fmt_time(kv, output)
+                    elif tool_name == "get_current_date":
+                        text = _fmt_date(kv)
+                    elif tool_name == "get_weather":
+                        text = _fmt_weather(kv)
+                    elif tool_name == "map_search":
+                        text = _fmt_map_search(kv, results)
+                    elif tool_name == "web_search":
+                        text = _fmt_web_search(kv, results)
+                    else:
+                        # Generic TOOL_RESULT: keep it minimal and user-facing.
+                        if error:
+                            text = f"{user_name}，我这边查询时遇到点问题：{error} 喵~"
+                        elif results:
+                            lines = [f"{user_name}，我查到这些信息："]
+                            for item in results[:3]:
+                                lines.append(f"- {item}")
+                            text = "\n".join(lines).strip()
+                        else:
+                            # Drop the TOOL_RESULT header line, keep key-values if any.
+                            bullet = []
+                            for k, v in list(kv.items())[:5]:
+                                if k and v:
+                                    bullet.append(f"- {k}: {v}")
+                            text = "\n".join(bullet).strip() if bullet else ""
+                else:
+                    parsed = _maybe_parse_json(output)
+                    if parsed is not None:
+                        formatted = _fmt_json_result(name, parsed)
+                        if formatted:
+                            text = formatted
+
+            if not text and error:
+                text = f"{user_name}，我这边查询时遇到点问题：{error} 喵~"
+
+            text = (text or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            parts.append(text)
+
+        if not parts:
+            return ""
+        return "\n\n".join(parts[-3:]).strip()
+
+    @staticmethod
+    def _format_tool_trace_for_rewrite(
+        tool_recorder: Optional[ToolTraceRecorder],
+        *,
+        max_traces: int = 4,
+    ) -> str:
+        """Format tool traces for a secondary LLM rewrite (role-played final answer)."""
+        if tool_recorder is None:
+            return ""
+        try:
+            traces = tool_recorder.snapshot()
+        except Exception:
+            return ""
+        if not traces:
+            return ""
+
+        lines: list[str] = []
+        for trace in traces[-max(1, int(max_traces)) :]:
+            name = (getattr(trace, "name", "") or "").strip() or "tool"
+            args = getattr(trace, "args", None)
+            try:
+                args_text = (
+                    json.dumps(args or {}, ensure_ascii=False) if isinstance(args, dict) else "{}"
+                )
+            except Exception:
+                args_text = "{}"
+            output = (getattr(trace, "output", "") or "").strip()
+            error = (getattr(trace, "error", "") or "").strip()
+            duration_s = None
+            try:
+                duration_s = float(getattr(trace, "duration_s", None))
+            except Exception:
+                duration_s = None
+
+            if error and not output:
+                result_text = f"[ERROR] {error}"
+            else:
+                result_text = output or error or ""
+            result_text = result_text.strip()
+            if not result_text:
+                continue
+
+            dur_text = (
+                f" ({duration_s:.2f}s)" if isinstance(duration_s, float) and duration_s >= 0 else ""
+            )
+            lines.append(f"- {name} args={args_text}{dur_text}\n  result: {result_text}")
+
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _infer_implicit_tool_intents(user_message: str) -> list[str]:
+        """
+        推断“用户显式在问工具能力，但模型未触发工具调用”的简单意图。
+
+        仅用于兜底：当模型输出了“我这就去查/让我看看”等进度话术或空回复，且本轮没有任何工具轨迹时，
+        通过本地执行轻量工具（时间/日期）避免用户体验断裂。
+        """
+        message = (user_message or "").strip()
+        if not message:
+            return []
+
+        # 防误触：避免把“设置提醒/日程”等当作“查询当前时间”。
+        if any(
+            kw in message
+            for kw in (
+                "提醒",
+                "闹钟",
+                "定时",
+                "倒计时",
+                "日程",
+                "预约",
+                "开会",
+                "设置提醒",
+                "提醒我",
+            )
+        ):
+            return []
+
+        intents: list[str] = []
+
+        # 时间查询
+        if "几点" in message or re.search(r"(现在|当前|此刻).{0,8}(时间)", message):
+            intents.append("get_current_time")
+
+        # 日期/星期查询
+        if (
+            ("今天" in message and any(k in message for k in ("几号", "日期", "星期", "周几")))
+            or "星期几" in message
+            or "周几" in message
+            or ("日期" in message and any(k in message for k in ("今天", "当前", "现在")))
+        ):
+            intents.append("get_current_date")
+
+        # 去重但保序
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for tool_name in intents:
+            if tool_name in seen:
+                continue
+            seen.add(tool_name)
+            ordered.append(tool_name)
+        return ordered
+
+    def _maybe_rescue_implicit_tool_intent(
+        self,
+        bundle: "AgentConversationBundle",
+        *,
+        tool_recorder: Optional[ToolTraceRecorder],
+    ) -> Optional[str]:
+        """
+        当模型“像是在要用工具”但本轮没有工具轨迹时，本地执行轻量工具并生成最终回复。
+
+        设计目标：非破坏性、仅兜底；不改变正常工具调用/LLM 输出的主路径。
+        """
+        if tool_recorder is None:
+            return None
+
+        try:
+            enabled = bool(getattr(settings.agent, "implicit_tool_rescue_enabled", True))
+        except Exception:
+            enabled = True
+        if not enabled:
+            return None
+
+        try:
+            if tool_recorder.snapshot():
+                return None
+        except Exception:
+            # 若 snapshot 异常，保守起见不做兜底执行
+            return None
+
+        user_message = (
+            (getattr(bundle, "original_message", "") or "").strip()
+            or (getattr(bundle, "save_message", "") or "").strip()
+            or (getattr(bundle, "processed_message", "") or "").strip()
+        )
+        if not user_message:
+            return None
+
+        intents = self._infer_implicit_tool_intents(user_message)
+        if not intents:
+            return None
+
+        try:
+            tool_timeout_s = float(getattr(settings.agent, "tool_timeout_s", 30.0))
+        except Exception:
+            tool_timeout_s = 30.0
+        if tool_timeout_s <= 0:
+            tool_timeout_s = 30.0
+
+        for tool_name in intents:
+            started_at = time.perf_counter()
+            try:
+                tool_recorder.mark_start()
+            except Exception:
+                pass
+
+            try:
+                output = self.tool_registry.execute_tool(tool_name, timeout=tool_timeout_s)
+                tool_recorder.record_end(
+                    tool_name,
+                    {},
+                    started_at=started_at,
+                    output=str(output or ""),
+                )
+            except Exception as exc:
+                try:
+                    tool_recorder.record_end(
+                        tool_name,
+                        {},
+                        started_at=started_at,
+                        error=str(exc) or repr(exc),
+                    )
+                except Exception:
+                    pass
+
+        reply = self._format_tool_trace_fallback(tool_recorder, user_message=user_message)
+        return reply.strip() or None
+
+    @staticmethod
+    def _looks_like_progress_only_tool_reply(text: str) -> bool:
+        """
+        Heuristic: the model started a tool workflow but did not provide a final answer yet.
+        We only use this when tool traces exist for the same turn.
+        """
+        s = (text or "").strip()
+        if not s:
+            return True
+        if len(s) > 80:
+            return False
+        if s in {"~", "…", "...", "。。。", "...."}:
+            return True
+        progress_phrases = (
+            "我去查",
+            "我来查",
+            "我帮你查",
+            "我这就",
+            "这就",
+            "稍等",
+            "等我",
+            "正在查",
+            "正在查询",
+            "让我看看",
+            "我看看",
+            "查一下",
+            "看一下",
+            "帮你看看",
+            "帮主人看看",
+            "帮你查",
+            "帮主人查",
+        )
+        if any(p in s for p in progress_phrases) and not re.search(r"\\d", s):
+            return True
+        return False
+
+    @staticmethod
+    def _user_prefers_raw_tool_output(text: str) -> bool:
+        """
+        Heuristic: the user explicitly requests raw/structured tool output (e.g., JSON).
+
+        We use this to avoid "humanizing" / rewriting responses that must preserve a strict format.
+        """
+        s = (text or "").strip()
+        if not s:
+            return False
+
+        lowered = s.lower()
+        compact = re.sub(r"\\s+", "", lowered)
+
+        # Strong negative overrides: user explicitly does NOT want JSON/structured/raw output.
+        negative_tokens = (
+            "不要json",
+            "不用json",
+            "别用json",
+            "不需要json",
+            "无需json",
+            "不要raw",
+            "不用raw",
+            "别用raw",
+            "不要原样",
+            "不用原样",
+            "别原样",
+            "不要原始",
+            "不用原始",
+            "不要结构化",
+            "不用结构化",
+            "别结构化",
+            "不需要结构化",
+        )
+        if any(tok in compact for tok in negative_tokens):
+            return False
+
+        # Avoid false positives: asking about JSON itself (definition/meaning).
+        if "json" in compact and re.search(
+            r"(json.*(是什么|什么意思|解释|介绍)|((是什么|什么意思|解释|介绍).*json))",
+            lowered,
+        ):
+            return False
+
+        # Positive: explicit JSON formatting directives.
+        if "json" in compact:
+            json_directives = (
+                "格式",
+                "返回",
+                "输出",
+                "给我",
+                "只要",
+                "仅",
+                "原样",
+                "raw",
+                "asjson",
+                "injson",
+                "structured",
+                "结构化",
+            )
+            if any(tok in compact for tok in json_directives):
+                return True
+
+        raw_markers = ("原样", "原始", "raw", "不加工", "未经处理", "原文")
+        directive_markers = ("输出", "返回", "给我", "提供", "按", "按照", "以", "用", "格式", "return", "output")
+        if any(tok in compact for tok in raw_markers) and any(tok in compact for tok in directive_markers):
+            return True
+
+        if "结构化" in compact and any(tok in compact for tok in directive_markers):
+            return True
+
+        return False
+
+    @staticmethod
+    def _looks_like_tool_echo_reply(text: str, tool_recorder: Optional[ToolTraceRecorder]) -> bool:
+        """
+        Heuristic: the model likely echoed tool output instead of producing a user-facing answer.
+
+        We only use this when tool traces exist for the same turn.
+        """
+        if tool_recorder is None:
+            return False
+        raw = (text or "").strip()
+        if not raw:
+            return False
+
+        lowered = raw.lower()
+        if lowered.startswith("tool_result") or "[tool_result" in lowered:
+            return True
+
+        # Avoid over-triggering on short factual answers (e.g., time/date).
+        if len(raw) < 120:
+            # But if it looks like a raw JSON blob, it's almost certainly a tool echo.
+            raw_stripped = raw.lstrip()
+            if raw_stripped and raw_stripped[0] in "{[" and raw_stripped[-1] in "}]":
+                fragment = _extract_leading_json_fragment(raw_stripped)
+                if fragment and fragment.strip() == raw_stripped:
+                    return True
+            # Short but structured key/value blocks are usually tool output echoes.
+            # Example: "city: xxx\\nweather: ..." (no TOOL_RESULT header).
+            lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+            if len(lines) >= 3:
+                kv_lines = 0
+                for ln in lines:
+                    if re.match(r"^[A-Za-z_][A-Za-z0-9_]{1,32}\s*:\s*\S", ln):
+                        kv_lines += 1
+                if kv_lines >= 2:
+                    return True
+
+            # If it doesn't look structured, treat it as a normal short answer.
+            structured_hint = ("\n" in raw) or (":" in raw) or (raw_stripped[:1] in "{[")
+            if not structured_hint:
+                return False
+
+        try:
+            traces = tool_recorder.snapshot()
+        except Exception:
+            return False
+        if not traces:
+            return False
+
+        def _norm(value: str) -> str:
+            s = (value or "").strip()
+            if not s:
+                return ""
+            s = s.replace("\r\n", "\n").replace("\r", "\n")
+            s = re.sub(r"[ \t]+", " ", s)
+            s = re.sub(r"\n{3,}", "\n\n", s)
+            return s.strip()
+
+        reply_norm = _norm(raw)
+        reply_probe = reply_norm[:2000]
+
+        for trace in traces[-5:]:
+            candidate = (getattr(trace, "output", "") or getattr(trace, "error", "") or "").strip()
+            cand_norm = _norm(candidate)
+            if not cand_norm:
+                continue
+
+            if reply_norm == cand_norm:
+                return True
+            if len(cand_norm) >= 200 and cand_norm in reply_norm:
+                return True
+            if len(reply_norm) >= 200 and reply_norm in cand_norm:
+                return True
+
+            cand_probe = cand_norm[:2000]
+            try:
+                ratio = SequenceMatcher(None, reply_probe, cand_probe).ratio()
+            except Exception:
+                ratio = 0.0
+            if ratio >= 0.92:
+                return True
+
+        return False
+
+    def _rewrite_final_reply_from_tool_trace(
+        self,
+        bundle: "AgentConversationBundle",
+        *,
+        tool_recorder: Optional[ToolTraceRecorder],
+        source: str,
+    ) -> Optional[str]:
+        """If the agent produced no final answer, ask the LLM to craft a role-played reply from tool results."""
+        tool_trace = self._format_tool_trace_for_rewrite(tool_recorder)
+        if not tool_trace:
+            return None
+        llm = getattr(self, "_tool_rewrite_llm", None) or getattr(self, "llm", None)
+        if llm is None or not hasattr(self, "_llm_executor"):
+            return None
+
+        try:
+            timeout_s = float(getattr(settings.agent, "tool_rewrite_timeout_s", 8.0))
+            timeout_s = max(2.0, timeout_s)
+        except Exception:
+            timeout_s = 8.0
+
+        system_prompt = str(getattr(self, "_system_prompt", "") or "")
+        if not system_prompt:
+            try:
+                system_prompt = (
+                    CharacterConfigLoader.generate_system_prompt()
+                    or self.character.get_system_prompt()
+                )
+            except Exception:
+                system_prompt = self.character.get_system_prompt()
+
+        system_prompt += (
+            "\n\n## 工具结果二次整理（输出给用户）\n"
+            "- 你已经拿到工具结果；现在请直接给出最终答复。\n"
+            "- 不要输出工具调用过程/JSON/日志；不要把工具结果原样粘贴。\n"
+            "- 用角色语气说人话：先给结论，再给 3~5 个要点；必要时再追问缺失信息。\n"
+        )
+        try:
+            state_context = (self._build_context_with_state(use_compression=False) or "").strip()
+        except Exception:
+            state_context = ""
+        if state_context:
+            system_prompt += f"\n\n{state_context}\n"
+
+        user_question = (
+            getattr(bundle, "original_message", "")
+            or getattr(bundle, "processed_message", "")
+            or ""
+        ).strip()
+        if not user_question:
+            user_question = "（用户问题缺失）"
+
+        prompt_text = (
+            f"用户问题：{user_question}\n\n"
+            f"工具结果（已截断，供参考）：\n{tool_trace}\n\n"
+            "请输出面向用户的最终回答："
+        )
+
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
+        except Exception:
+            return None
+
+        def _task() -> Any:
+            return llm.invoke(
+                [SystemMessage(content=system_prompt), HumanMessage(content=prompt_text)]
+            )
+
+        future = self._llm_executor.submit(_task)
+        try:
+            response = future.result(timeout=timeout_s)
+        except FuturesTimeoutError:
+            logger.warning("工具兜底重写超时(source=%s, timeout=%.1fs)", source, timeout_s)
+            return None
+        except Exception as exc:
+            logger.debug("工具兜底重写失败(source=%s): %s", source, exc)
+            return None
+        finally:
+            if not future.done():
+                future.cancel()
+
+        content = getattr(response, "content", response)
+        text = self._filter_tool_info(content)
+        text = (text or "").strip()
+        if not text or text == _DEFAULT_EMPTY_REPLY:
+            return None
+        return text
+
+    async def _arewrite_final_reply_from_tool_trace(
+        self,
+        bundle: "AgentConversationBundle",
+        *,
+        tool_recorder: Optional[ToolTraceRecorder],
+        source: str,
+    ) -> Optional[str]:
+        tool_trace = self._format_tool_trace_for_rewrite(tool_recorder)
+        if not tool_trace:
+            return None
+        llm = getattr(self, "_tool_rewrite_llm", None) or getattr(self, "llm", None)
+        if llm is None or not callable(getattr(llm, "ainvoke", None)):
+            return None
+
+        try:
+            timeout_s = float(getattr(settings.agent, "tool_rewrite_timeout_s", 8.0))
+            timeout_s = max(2.0, timeout_s)
+        except Exception:
+            timeout_s = 8.0
+
+        system_prompt = str(getattr(self, "_system_prompt", "") or "")
+        if not system_prompt:
+            try:
+                system_prompt = (
+                    CharacterConfigLoader.generate_system_prompt()
+                    or self.character.get_system_prompt()
+                )
+            except Exception:
+                system_prompt = self.character.get_system_prompt()
+
+        system_prompt += (
+            "\n\n## 工具结果二次整理（输出给用户）\n"
+            "- 你已经拿到工具结果；现在请直接给出最终答复。\n"
+            "- 不要输出工具调用过程/JSON/日志；不要把工具结果原样粘贴。\n"
+            "- 用角色语气说人话：先给结论，再给 3~5 个要点；必要时再追问缺失信息。\n"
+        )
+        try:
+            state_context = (self._build_context_with_state(use_compression=False) or "").strip()
+        except Exception:
+            state_context = ""
+        if state_context:
+            system_prompt += f"\n\n{state_context}\n"
+
+        user_question = (
+            getattr(bundle, "original_message", "")
+            or getattr(bundle, "processed_message", "")
+            or ""
+        ).strip()
+        if not user_question:
+            user_question = "（用户问题缺失）"
+
+        prompt_text = (
+            f"用户问题：{user_question}\n\n"
+            f"工具结果（已截断，供参考）：\n{tool_trace}\n\n"
+            "请输出面向用户的最终回答："
+        )
+
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
+        except Exception:
+            return None
+
+        async def _invoke() -> Any:
+            return await llm.ainvoke(
+                [SystemMessage(content=system_prompt), HumanMessage(content=prompt_text)]
+            )
+
+        try:
+            response = await asyncio.wait_for(_invoke(), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            logger.warning("工具兜底重写超时(source=%s, timeout=%.1fs)", source, timeout_s)
+            return None
+        except Exception as exc:
+            logger.debug("工具兜底重写失败(source=%s): %s", source, exc)
+            return None
+
+        content = getattr(response, "content", response)
+        text = self._filter_tool_info(content)
+        text = (text or "").strip()
+        if not text or text == _DEFAULT_EMPTY_REPLY:
+            return None
+        return text
+
     def _save_stream_interaction(
         self,
         save_message: str,
@@ -3309,25 +5402,59 @@ class MintChatAgent:
         self.memory.add_interaction(
             user_message=save_message,
             assistant_message=full_reply,
-            save_to_long_term=save_to_long_term,
+            save_to_long_term=False,
             importance=None,
         )
+        if save_to_long_term:
+            self._enqueue_long_term_write(save_message, full_reply, importance=None)
 
-        if self.diary_memory.vectorstore:
-            try:
-                user_name = getattr(settings.agent, "user", "主人")
-                char_name = getattr(settings.agent, "char", "小雪糕")
-                interaction_text = f"{user_name}: {save_message}\n{char_name}: {full_reply}"
-                self.diary_memory.add_diary_entry(interaction_text)
-                logger.debug("已写入日记条目")
-            except Exception as e:
-                logger.warning("写入日记失败: %s", e)
+        # 极速模式：避免任何额外 I/O / 学习任务阻塞。
+        if getattr(settings.agent, "memory_fast_mode", False):
+            return
+
+        user_name = getattr(settings.agent, "user", "主人")
+        char_name = getattr(settings.agent, "char", "小雪糕")
+        interaction_text = f"{user_name}: {save_message}\n{char_name}: {full_reply}"
+        enable_diary = bool(getattr(self.diary_memory, "vectorstore", None))
+        enable_daily_summary = bool(getattr(self.diary_memory, "daily_summary_enabled", False))
+        enable_lore_learning = bool(
+            getattr(settings.agent, "lore_books", False)
+            and getattr(settings.agent, "auto_learn_from_conversation", True)
+        )
+
+        if not (enable_diary or enable_daily_summary or enable_lore_learning):
+            return
+
+        def _background_post_persist() -> None:
+            if enable_diary:
+                try:
+                    self.diary_memory.add_diary_entry(interaction_text)
+                except Exception as exc:
+                    logger.debug("写入日记失败（可忽略）: %s", exc)
+
+            if enable_daily_summary:
+                try:
+                    from datetime import datetime
+
+                    if datetime.now().hour >= 23:
+                        self.diary_memory.generate_daily_summary()
+                except Exception as exc:
+                    logger.debug("生成每日总结失败（可忽略）: %s", exc)
+
+            if enable_lore_learning:
+                try:
+                    self.lore_book.learn_from_conversation(save_message, full_reply, auto_extract=True)
+                except Exception as exc:
+                    logger.debug("从对话中学习知识失败（可忽略）: %s", exc)
+
+        self._submit_background_task(_background_post_persist, label="post-persist")
 
     def _run_background_memory_tasks(self, save_message: str, full_reply: str) -> None:
         """运行后台记忆任务（v2.30.34 优化）"""
         if getattr(settings.agent, "memory_fast_mode", False):
             return
         try:
+
             def background_tasks():
                 """后台记忆维护任务"""
                 try:
@@ -3344,14 +5471,12 @@ class MintChatAgent:
                         if consolidated_count > 0:
                             logger.info("巩固了 %d 条重要记忆", consolidated_count)
 
-                    should_extract = (
-                        current_count % 3 == 0
-                        or len(save_message) > 50
-                    )
+                    should_extract = current_count % 3 == 0 or len(save_message) > 50
                     if should_extract:
                         self._extract_core_memories(save_message, full_reply)
                 except Exception as e:
                     logger.warning(f"后台记忆任务失败: {e}")
+
             self._submit_background_task(background_tasks, label="memory-optimizer")
         except Exception as e:
             logger.warning(f"启动后台任务失败: {e}")
@@ -3359,7 +5484,7 @@ class MintChatAgent:
     def _prefetch_tts_segments(self, reply: str) -> None:
         """
         根据配置在后台预取语音，提前触发缓存以降低前端请求延迟。
-        
+
         v2.60.4 优化：
         - 优化预取策略，仅预取前3个句子以减少资源消耗
         - 改进错误处理，减少日志噪音
@@ -3391,11 +5516,11 @@ class MintChatAgent:
             self._last_tts_prefetch_text = normalized
 
         # 优化预取策略，仅预取前3个句子以减少资源消耗
-        sentences = re.split(r'[。！？\n]', normalized)
+        sentences = re.split(r"[。！？\n]", normalized)
         sentences = [s.strip() for s in sentences if s.strip()][:3]  # 仅预取前3句
         if not sentences:
             return
-        prefetch_text = '。'.join(sentences) + '。'
+        prefetch_text = "。".join(sentences) + "。"
 
         async def _prefetch():
             try:
@@ -3464,8 +5589,53 @@ class MintChatAgent:
 
         self._run_background_memory_tasks(save_message, reply)
         self._prefetch_tts_segments(reply)
-        self.emotion_engine.update_user_profile(interaction_positive=True)
-        self.emotion_engine.decay_emotion()
+        try:
+            detected = self.emotion_engine.analyze_message(save_message)
+            negative = bool(self.emotion_engine.is_negative_interaction(save_message, detected))
+        except Exception:
+            negative = False
+        self.emotion_engine.update_user_profile(interaction_positive=not negative, persist=False)
+        self.emotion_engine.decay_emotion(persist=False)
+
+        def _persist_affect_states() -> None:
+            try:
+                self.emotion_engine.persist(force=False)
+            except Exception:
+                pass
+            try:
+                self.mood_system.persist(force=False)
+            except Exception:
+                pass
+            try:
+                self.style_learner.persist(force=False)
+            except Exception:
+                pass
+            try:
+                self.character_state.persist(force=False)
+            except Exception:
+                pass
+
+        should_schedule = True
+        try:
+            with self._state_persist_lock:
+                pending = self._pending_state_persist
+                if pending is not None and not pending.done():
+                    should_schedule = False
+        except Exception:
+            should_schedule = True
+
+        if should_schedule:
+            future = self._submit_background_task(_persist_affect_states, label="state-persist")
+            if future:
+                with self._state_persist_lock:
+                    self._pending_state_persist = future
+
+                def _clear(_future: Future) -> None:
+                    with self._state_persist_lock:
+                        if self._pending_state_persist is _future:
+                            self._pending_state_persist = None
+
+                future.add_done_callback(_clear)
 
     def chat_stream(
         self,
@@ -3487,6 +5657,12 @@ class MintChatAgent:
         Yields:
             str: 回复的文本片段
         """
+        stage_timer = (
+            RequestStageTimer(enabled=True, label="chat_stream")
+            if logger.isEnabledFor(logging.DEBUG)
+            else None
+        )
+        outcome = "ok"
         try:
             logger.info("收到用户消息(流式)")
 
@@ -3497,15 +5673,21 @@ class MintChatAgent:
                     image_path=image_path,
                     compression="auto",
                     use_cache=True,
+                    stage_timer=stage_timer,
                 )
             except ValueError:
+                outcome = "empty"
                 logger.warning("收到空消息")
                 yield "主人，您想说什么呢？喵~"
                 return
             except Exception as prep_exc:
+                outcome = "prep_error"
                 logger.error("准备消息失败: %s", prep_exc)
                 yield f"抱歉主人，准备消息时出错了：{str(prep_exc)} 喵~"
                 return
+
+            if stage_timer:
+                stage_timer.mark("build_bundle")
 
             # 若 streaming 曾因失败被临时禁用，冷却时间到后自动恢复（避免必须重启应用）。
             try:
@@ -3527,9 +5709,13 @@ class MintChatAgent:
                         bundle,
                         timeout_s=getattr(self, "_stream_failover_timeout_s", None),
                     )
+                    if stage_timer:
+                        stage_timer.mark("invoke_llm")
                     reply = self._extract_reply_from_response(response)
                     if not reply.strip() or reply.strip() == _DEFAULT_EMPTY_REPLY:
-                        rescued = self._rescue_empty_reply(bundle, raw_reply=reply, source="no_stream")
+                        rescued = self._rescue_empty_reply(
+                            bundle, raw_reply=reply, source="no_stream"
+                        )
                         if rescued:
                             reply = rescued
                     if not reply.strip():
@@ -3539,25 +5725,46 @@ class MintChatAgent:
                         logger.info("非流式对话已取消（停止输出与保存）")
                         return
 
-                    self._post_reply_actions(bundle.save_message, reply, save_to_long_term, stream=False)
+                    self._post_reply_actions(
+                        bundle.save_message, reply, save_to_long_term, stream=False
+                    )
+                    if stage_timer:
+                        stage_timer.mark("post_reply")
                     yield reply
                     logger.info("非流式回复完成（streaming disabled）")
                 except AgentTimeoutError as timeout_exc:
+                    outcome = "timeout"
                     logger.error("非流式对话超时: %s", timeout_exc)
                     yield "抱歉主人，模型那边暂时没有回应，我们稍后再聊好么？喵~"
                 except Exception as exc:
+                    outcome = "error"
                     logger.error("非流式对话失败: %s", exc)
                     yield f"抱歉主人，我遇到了一些问题：{str(exc)} 喵~"
                 return
 
             reply_parts: list[str] = []
             try:
-                for chunk in self._stream_llm_response(bundle.messages, cancel_event=cancel_event):
+                stream_iter = self._stream_llm_response(
+                    bundle.messages,
+                    cancel_event=cancel_event,
+                    tool_recorder=getattr(bundle, "tool_recorder", None),
+                )
+                canceled = False
+                for chunk in stream_iter:
                     if cancel_event and cancel_event.is_set():
-                        logger.info("流式对话已取消（停止输出与保存）")
-                        return
+                        canceled = True
+                        break
                     reply_parts.append(chunk)
                     yield chunk
+                if canceled:
+                    # Drain the iterator to ensure internal cleanup (closing streams, stopping threads).
+                    try:
+                        for _ in stream_iter:
+                            pass
+                    except Exception:
+                        pass
+                    logger.info("流式对话已取消（停止输出与保存）")
+                    return
                 if reply_parts:
                     self._stream_failure_count = 0
             except AgentTimeoutError as timeout_exc:
@@ -3572,7 +5779,9 @@ class MintChatAgent:
                 else:
                     logger.error("LLM 流式输出超时: %s", error_msg)
                     self._stream_failure_count = int(getattr(self, "_stream_failure_count", 0)) + 1
-                    if self._stream_failure_count >= int(getattr(self, "_stream_disable_after_failures", 2)):
+                    if self._stream_failure_count >= int(
+                        getattr(self, "_stream_disable_after_failures", 2)
+                    ):
                         if getattr(self, "enable_streaming", False):
                             logger.warning(
                                 "检测到多次流式失败（%s 次），将暂时禁用 streaming 以提升可用性",
@@ -3612,7 +5821,11 @@ class MintChatAgent:
                         yield fallback
             except Exception as stream_exc:
                 # v3.3.4: 改进错误信息处理
-                error_msg = str(stream_exc) or repr(stream_exc) or f"{type(stream_exc).__name__}: LLM调用失败"
+                error_msg = (
+                    str(stream_exc)
+                    or repr(stream_exc)
+                    or f"{type(stream_exc).__name__}: LLM调用失败"
+                )
                 logger.error(f"LLM调用失败: {error_msg}")
                 raise
 
@@ -3622,7 +5835,7 @@ class MintChatAgent:
 
             raw_reply = "".join(reply_parts)
             full_reply = self._filter_tool_info(raw_reply)
-            if not full_reply:
+            if not full_reply or not _MEANINGFUL_CHAR_RE.search(full_reply):
                 rescued = self._rescue_empty_reply(bundle, raw_reply=raw_reply, source="stream")
                 if rescued:
                     full_reply = rescued
@@ -3634,18 +5847,62 @@ class MintChatAgent:
                     full_reply = _DEFAULT_EMPTY_REPLY
                     yield _DEFAULT_EMPTY_REPLY
 
-            self._post_reply_actions(bundle.save_message, full_reply, save_to_long_term, stream=True)
+            tool_recorder = getattr(bundle, "tool_recorder", None)
+            if tool_recorder is not None:
+                user_message = (
+                    (bundle.original_message or bundle.processed_message or bundle.save_message)
+                    or ""
+                )
+                prefers_raw = (
+                    self._user_prefers_raw_tool_output(user_message) if user_message else False
+                )
+            else:
+                user_message = ""
+                prefers_raw = False
+            if tool_recorder is not None and (
+                self._looks_like_progress_only_tool_reply(full_reply)
+                or (not prefers_raw and self._looks_like_tool_echo_reply(full_reply, tool_recorder))
+            ):
+                rewritten = self._format_tool_trace_fallback(
+                    tool_recorder, user_message=user_message
+                )
+                if not rewritten:
+                    rewritten = self._rewrite_final_reply_from_tool_trace(
+                        bundle,
+                        tool_recorder=tool_recorder,
+                        source="stream-final",
+                    )
+                if not rewritten:
+                    rewritten = self._maybe_rescue_implicit_tool_intent(
+                        bundle, tool_recorder=tool_recorder
+                    )
+                if rewritten:
+                    addition = f"\n\n{rewritten}" if full_reply.strip() else rewritten
+                    reply_parts.append(addition)
+                    full_reply = (f"{full_reply.rstrip()}{addition}").strip()
+                    yield addition
+
+            self._post_reply_actions(
+                bundle.save_message, full_reply, save_to_long_term, stream=True
+            )
+            if stage_timer:
+                stage_timer.mark("post_reply")
             logger.info("流式回复完成")
 
         except Exception as e:
+            outcome = "error"
             # v3.3.4: 改进错误信息处理
             from src.utils.exceptions import handle_exception
+
             error_msg = str(e) or repr(e) or f"{type(e).__name__}: 流式对话处理失败"
             handle_exception(e, logger, "流式对话处理失败")
             if cancel_event and cancel_event.is_set():
                 logger.info("流式对话已取消（忽略异常）: %s", error_msg)
                 return
             yield f"抱歉主人，我遇到了一些问题：{error_msg} 喵~"
+        finally:
+            if stage_timer:
+                stage_timer.emit_debug(outcome=outcome)
 
     async def chat_stream_async(
         self,
@@ -3665,6 +5922,12 @@ class MintChatAgent:
         Yields:
             str: 回复的文本片段
         """
+        stage_timer = (
+            RequestStageTimer(enabled=True, label="chat_stream_async")
+            if logger.isEnabledFor(logging.DEBUG)
+            else None
+        )
+        outcome = "ok"
         try:
             logger.info("收到用户消息(异步流式)")
 
@@ -3675,24 +5938,45 @@ class MintChatAgent:
                     image_path=image_path,
                     compression="auto",
                     use_cache=True,
+                    stage_timer=stage_timer,
                 )
             except ValueError:
+                outcome = "empty"
                 logger.warning("收到空消息")
                 yield "主人，您想说什么呢？喵~"
                 return
             except Exception as prep_exc:
+                outcome = "prep_error"
                 logger.error("准备消息失败: %s", prep_exc)
                 yield f"抱歉主人，准备消息时出错了：{str(prep_exc)} 喵~"
                 return
 
+            if stage_timer:
+                stage_timer.mark("build_bundle")
+
             reply_parts: list[str] = []
             try:
-                async for chunk in self._astream_llm_response(bundle.messages, cancel_event=cancel_event):
+                stream_iter = self._astream_llm_response(
+                    bundle.messages,
+                    cancel_event=cancel_event,
+                    tool_recorder=getattr(bundle, "tool_recorder", None),
+                )
+                canceled = False
+                async for chunk in stream_iter:
                     if cancel_event and cancel_event.is_set():
-                        logger.info("异步流式对话已取消（停止输出与保存）")
-                        return
+                        canceled = True
+                        break
                     reply_parts.append(chunk)
                     yield chunk
+                if canceled:
+                    # Drain the iterator to ensure internal cleanup (closing streams, avoiding dangling tasks).
+                    try:
+                        async for _ in stream_iter:
+                            pass
+                    except Exception:
+                        pass
+                    logger.info("异步流式对话已取消（停止输出与保存）")
+                    return
             except AgentTimeoutError as stream_timeout:
                 # v3.3.4: 改进错误信息处理
                 error_msg = str(stream_timeout) or repr(stream_timeout) or "异步流式输出超时"
@@ -3707,7 +5991,12 @@ class MintChatAgent:
             except Exception as stream_error:
                 # v3.3.4: 改进错误信息处理
                 from src.utils.exceptions import handle_exception
-                error_msg = str(stream_error) or repr(stream_error) or f"{type(stream_error).__name__}: 异步流式输出错误"
+
+                error_msg = (
+                    str(stream_error)
+                    or repr(stream_error)
+                    or f"{type(stream_error).__name__}: 异步流式输出错误"
+                )
                 handle_exception(stream_error, logger, "异步流式输出错误")
 
             if cancel_event and cancel_event.is_set():
@@ -3716,8 +6005,10 @@ class MintChatAgent:
 
             raw_reply = "".join(reply_parts)
             full_reply = self._filter_tool_info(raw_reply)
-            if not full_reply:
-                rescued = await self._arescue_empty_reply(bundle, raw_reply=raw_reply, source="astream")
+            if not full_reply or not _MEANINGFUL_CHAR_RE.search(full_reply):
+                rescued = await self._arescue_empty_reply(
+                    bundle, raw_reply=raw_reply, source="astream"
+                )
                 if rescued:
                     full_reply = rescued
                     yield rescued
@@ -3727,26 +6018,72 @@ class MintChatAgent:
                     full_reply = _DEFAULT_EMPTY_REPLY
                     yield _DEFAULT_EMPTY_REPLY
 
-            self._post_reply_actions(bundle.save_message, full_reply, save_to_long_term, stream=True)
+            tool_recorder = getattr(bundle, "tool_recorder", None)
+            if tool_recorder is not None:
+                user_message = (
+                    (bundle.original_message or bundle.processed_message or bundle.save_message)
+                    or ""
+                )
+                prefers_raw = (
+                    self._user_prefers_raw_tool_output(user_message) if user_message else False
+                )
+            else:
+                user_message = ""
+                prefers_raw = False
+            if tool_recorder is not None and (
+                self._looks_like_progress_only_tool_reply(full_reply)
+                or (not prefers_raw and self._looks_like_tool_echo_reply(full_reply, tool_recorder))
+            ):
+                rewritten = self._format_tool_trace_fallback(
+                    tool_recorder, user_message=user_message
+                )
+                if not rewritten:
+                    rewritten = await self._arewrite_final_reply_from_tool_trace(
+                        bundle,
+                        tool_recorder=tool_recorder,
+                        source="astream-final",
+                    )
+                if not rewritten:
+                    rewritten = self._maybe_rescue_implicit_tool_intent(
+                        bundle, tool_recorder=tool_recorder
+                    )
+                if rewritten:
+                    addition = f"\n\n{rewritten}" if full_reply.strip() else rewritten
+                    reply_parts.append(addition)
+                    full_reply = (f"{full_reply.rstrip()}{addition}").strip()
+                    yield addition
+
+            self._post_reply_actions(
+                bundle.save_message, full_reply, save_to_long_term, stream=True
+            )
+            if stage_timer:
+                stage_timer.mark("post_reply")
 
             logger.info("异步流式回复完成")
 
         except AgentTimeoutError as timeout_exc:
+            outcome = "timeout"
             # v3.3.4: 改进错误信息处理
             error_msg = str(timeout_exc) or repr(timeout_exc) or "异步流式对话超时"
             if cancel_event and cancel_event.is_set():
+                outcome = "canceled"
                 logger.info("异步流式对话已取消（忽略超时）: %s", error_msg)
                 return
             logger.error(f"异步流式对话超时: {error_msg}")
             yield "抱歉主人，模型暂时没有新输出，我们稍后再继续聊好嘛？喵~"
         except Exception as e:
+            outcome = "error"
             # v3.3.4: 改进错误信息处理，避免空错误信息
             error_msg = str(e) or repr(e) or f"{type(e).__name__}: 异步流式对话处理失败"
             logger.error(f"异步流式对话处理失败: {error_msg}")
             if cancel_event and cancel_event.is_set():
+                outcome = "canceled"
                 logger.info("异步流式对话已取消（忽略异常）: %s", error_msg)
                 return
             yield f"抱歉主人，我遇到了一些问题：{error_msg} 喵~"
+        finally:
+            if stage_timer:
+                stage_timer.emit_debug(outcome=outcome)
 
     def get_greeting(self) -> str:
         """
@@ -3814,7 +6151,9 @@ class MintChatAgent:
         core_items = []
         if getattr(self, "core_memory", None) and getattr(self.core_memory, "vectorstore", None):
             try:
-                core_data = self.core_memory.vectorstore.get(include=["documents", "metadatas", "ids"])
+                core_data = self.core_memory.vectorstore.get(
+                    include=["documents", "metadatas", "ids"]
+                )
             except TypeError:
                 core_data = self.core_memory.vectorstore.get()
             ids = core_data.get("ids") or []
@@ -3823,7 +6162,9 @@ class MintChatAgent:
             for doc_id, content, meta in zip(ids, docs, metas):
                 if not content:
                     continue
-                core_items.append({"id": str(doc_id), "content": content, "metadata": dict(meta or {})})
+                core_items.append(
+                    {"id": str(doc_id), "content": content, "metadata": dict(meta or {})}
+                )
         advanced["core_memory"] = {"count": len(core_items), "items": core_items}
 
         # DiaryMemory（以 diary.json 为准；向量库可由内容重建）
@@ -3902,27 +6243,45 @@ class MintChatAgent:
             # CoreMemory
             core_block = advanced.get("core_memory")
             core_items = core_block.get("items") if isinstance(core_block, dict) else None
-            if isinstance(core_items, list) and getattr(self, "core_memory", None) and hasattr(self.core_memory, "import_records"):
+            if (
+                isinstance(core_items, list)
+                and getattr(self, "core_memory", None)
+                and hasattr(self.core_memory, "import_records")
+            ):
                 try:
-                    stats["core_memory"] = int(self.core_memory.import_records(core_items, overwrite=overwrite))
+                    stats["core_memory"] = int(
+                        self.core_memory.import_records(core_items, overwrite=overwrite)
+                    )
                 except Exception as e:
                     logger.warning("导入核心记忆失败: %s", e)
 
             # Diary
             diary_block = advanced.get("diary")
             diary_items = diary_block.get("items") if isinstance(diary_block, dict) else None
-            if isinstance(diary_items, list) and getattr(self, "diary_memory", None) and hasattr(self.diary_memory, "import_entries"):
+            if (
+                isinstance(diary_items, list)
+                and getattr(self, "diary_memory", None)
+                and hasattr(self.diary_memory, "import_entries")
+            ):
                 try:
-                    stats["diary"] = int(self.diary_memory.import_entries(diary_items, overwrite=overwrite))
+                    stats["diary"] = int(
+                        self.diary_memory.import_entries(diary_items, overwrite=overwrite)
+                    )
                 except Exception as e:
                     logger.warning("导入日记失败: %s", e)
 
             # LoreBook
             lore_block = advanced.get("lore_book")
             lore_items = lore_block.get("items") if isinstance(lore_block, dict) else None
-            if isinstance(lore_items, list) and getattr(self, "lore_book", None) and hasattr(self.lore_book, "import_records"):
+            if (
+                isinstance(lore_items, list)
+                and getattr(self, "lore_book", None)
+                and hasattr(self.lore_book, "import_records")
+            ):
                 try:
-                    stats["lore_book"] = int(self.lore_book.import_records(lore_items, overwrite=overwrite))
+                    stats["lore_book"] = int(
+                        self.lore_book.import_records(lore_items, overwrite=overwrite)
+                    )
                 except Exception as e:
                     logger.warning("导入知识库失败: %s", e)
 
@@ -4131,57 +6490,87 @@ class MintChatAgent:
         try:
             # 使用集合优化关键词匹配性能（类级常量）
             if not hasattr(self.__class__, "_PERSONAL_INFO_KEYWORDS"):
-                self.__class__._PERSONAL_INFO_KEYWORDS = frozenset([
-                "我叫", "我的名字", "我是", "我今年", "我的生日", "我住在",
-                "我来自", "我的职业", "我的工作", "我的爱好", "我喜欢", "我讨厌",
-                "我的家人", "我的朋友", "我的宠物"
-                ])
-                self.__class__._PREFERENCES_KEYWORDS = frozenset([
-                "喜欢", "不喜欢", "讨厌", "最爱", "偏好", "习惯",
-                "经常", "总是", "从不", "一般", "通常"
-                ])
-                self.__class__._IMPORTANT_EVENTS_KEYWORDS = frozenset([
-                "记住", "重要", "一定要", "千万", "务必", "别忘了",
-                "提醒我", "帮我记", "不要忘记"
-                ])
-                self.__class__._IMPORTANT_WORDS = frozenset(["重要", "记住", "一定", "务必", "千万"])
+                self.__class__._PERSONAL_INFO_KEYWORDS = frozenset(
+                    [
+                        "我叫",
+                        "我的名字",
+                        "我是",
+                        "我今年",
+                        "我的生日",
+                        "我住在",
+                        "我来自",
+                        "我的职业",
+                        "我的工作",
+                        "我的爱好",
+                        "我喜欢",
+                        "我讨厌",
+                        "我的家人",
+                        "我的朋友",
+                        "我的宠物",
+                    ]
+                )
+                self.__class__._PREFERENCES_KEYWORDS = frozenset(
+                    [
+                        "喜欢",
+                        "不喜欢",
+                        "讨厌",
+                        "最爱",
+                        "偏好",
+                        "习惯",
+                        "经常",
+                        "总是",
+                        "从不",
+                        "一般",
+                        "通常",
+                    ]
+                )
+                self.__class__._IMPORTANT_EVENTS_KEYWORDS = frozenset(
+                    [
+                        "记住",
+                        "重要",
+                        "一定要",
+                        "千万",
+                        "务必",
+                        "别忘了",
+                        "提醒我",
+                        "帮我记",
+                        "不要忘记",
+                    ]
+                )
+                self.__class__._IMPORTANT_WORDS = frozenset(
+                    ["重要", "记住", "一定", "务必", "千万"]
+                )
 
             # 使用any()和生成器表达式优化匹配
             if any(kw in user_message for kw in self.__class__._PERSONAL_INFO_KEYWORDS):
-                    self.core_memory.add_core_memory(
-                        content=user_message,
-                        category="personal_info",
-                        importance=0.9
-                    )
-                    logger.info("提取个人信息到核心记忆")
-                    return
+                self.core_memory.add_core_memory(
+                    content=user_message, category="personal_info", importance=0.9
+                )
+                logger.info("提取个人信息到核心记忆")
+                return
 
             if any(kw in user_message for kw in self.__class__._PREFERENCES_KEYWORDS):
-                    self.core_memory.add_core_memory(
-                        content=user_message,
-                        category="preferences",
-                        importance=0.8
-                    )
-                    logger.info("提取偏好信息到核心记忆")
-                    return
+                self.core_memory.add_core_memory(
+                    content=user_message, category="preferences", importance=0.8
+                )
+                logger.info("提取偏好信息到核心记忆")
+                return
 
             if any(kw in user_message for kw in self.__class__._IMPORTANT_EVENTS_KEYWORDS):
-                    self.core_memory.add_core_memory(
-                        content=user_message,
-                        category="important_events",
-                        importance=0.95
-                    )
-                    logger.info("提取重要事件到核心记忆")
-                    return
+                self.core_memory.add_core_memory(
+                    content=user_message, category="important_events", importance=0.95
+                )
+                logger.info("提取重要事件到核心记忆")
+                return
 
             # 长消息（可能包含重要信息）
-            if len(user_message) > 100 and any(word in user_message for word in self.__class__._IMPORTANT_WORDS):
-                    self.core_memory.add_core_memory(
-                        content=user_message,
-                        category="general",
-                        importance=0.7
-                    )
-                    logger.info("提取长消息到核心记忆")
+            if len(user_message) > 100 and any(
+                word in user_message for word in self.__class__._IMPORTANT_WORDS
+            ):
+                self.core_memory.add_core_memory(
+                    content=user_message, category="general", importance=0.7
+                )
+                logger.info("提取长消息到核心记忆")
 
         except Exception as e:
             logger.warning(f"提取核心记忆失败: {e}")
@@ -4189,7 +6578,7 @@ class MintChatAgent:
     def close(self) -> None:
         """
         清理Agent资源（显式关闭）
-        
+
         清理所有线程池、后台任务和资源
         """
         logger.info("开始清理 Agent 资源...")
@@ -4202,16 +6591,42 @@ class MintChatAgent:
                     close_fn()
         except Exception as e:
             logger.debug("关闭 Agent middleware 时出错（可忽略）: %s", e)
-         
+
         # 1. 取消待处理的TTS预取任务
-        if hasattr(self, '_pending_tts_prefetch') and self._pending_tts_prefetch:
+        if hasattr(self, "_pending_tts_prefetch") and self._pending_tts_prefetch:
             with self._tts_prefetch_lock:
                 if self._pending_tts_prefetch and not self._pending_tts_prefetch.done():
                     self._pending_tts_prefetch.cancel()
                 self._pending_tts_prefetch = None
-        
+
+        # 1.1 取消待处理的状态持久化任务（不重要，可忽略）
+        if hasattr(self, "_pending_state_persist") and self._pending_state_persist:
+            with self._state_persist_lock:
+                if self._pending_state_persist and not self._pending_state_persist.done():
+                    self._pending_state_persist.cancel()
+                self._pending_state_persist = None
+
+        # 1.15 取消待处理的长期记忆写入任务（避免退出阶段被向量写入拖慢）
+        if hasattr(self, "_pending_long_term_write") and self._pending_long_term_write:
+            with self._long_term_write_lock:
+                if self._pending_long_term_write and not self._pending_long_term_write.done():
+                    self._pending_long_term_write.cancel()
+                self._pending_long_term_write = None
+                try:
+                    self._long_term_write_buffer.clear()
+                except Exception:
+                    pass
+
+        # 1.2 关闭复用的 AsyncLoopThread（用于同步路径跑异步逻辑）
+        try:
+            loop_thread = getattr(self, "_async_loop_thread", None)
+            if loop_thread is not None:
+                loop_thread.close(timeout=3.0)
+        except Exception as e:
+            logger.debug("关闭 AsyncLoopThread 失败(可忽略): %s", e)
+
         # 2. 关闭后台执行器
-        if hasattr(self, '_background_executor') and self._background_executor:
+        if hasattr(self, "_background_executor") and self._background_executor:
             try:
                 import concurrent.futures as _futures
 
@@ -4238,9 +6653,9 @@ class MintChatAgent:
                 logger.warning(f"关闭后台执行器时出错: {e}")
             finally:
                 self._background_executor = None
-        
+
         # 3. 关闭LLM执行器
-        if hasattr(self, '_llm_executor') and self._llm_executor:
+        if hasattr(self, "_llm_executor") and self._llm_executor:
             try:
                 try:
                     self._llm_executor.shutdown(wait=False, cancel_futures=True)
@@ -4250,7 +6665,7 @@ class MintChatAgent:
                 logger.warning(f"关闭LLM执行器时出错: {e}")
             finally:
                 self._llm_executor = None
-        if hasattr(self, '_stream_executor') and self._stream_executor:
+        if hasattr(self, "_stream_executor") and self._stream_executor:
             try:
                 try:
                     self._stream_executor.shutdown(wait=False, cancel_futures=True)
@@ -4273,6 +6688,7 @@ class MintChatAgent:
         # 7. 关闭工具执行线程池
         try:
             from src.agent.tools import tool_registry
+
             if hasattr(tool_registry, "close"):
                 tool_registry.close()
         except Exception as e:
@@ -4287,20 +6703,55 @@ class MintChatAgent:
                 logger.debug("关闭知识库资源时出错（可忽略）: %s", e)
 
         # 4. 关闭记忆检索器
-        if hasattr(self, 'memory_retriever') and self.memory_retriever:
+        if hasattr(self, "memory_retriever") and self.memory_retriever:
             try:
-                if hasattr(self.memory_retriever, 'close'):
+                if hasattr(self.memory_retriever, "close"):
                     self.memory_retriever.close()
             except Exception as e:
                 logger.warning(f"关闭记忆检索器时出错: {e}")
-        
+
         # 5. 刷新批量缓冲区和清理缓存
-        if hasattr(self, 'memory') and self.memory:
+        if hasattr(self, "memory") and self.memory:
             try:
                 self.memory.cleanup_cache()
             except Exception as e:
                 logger.warning(f"清理记忆缓存时出错: {e}")
-        
+
+        # 6.0 刷新情绪/情感系统的持久化数据（可忽略失败）
+        try:
+            if hasattr(self, "emotion_engine") and self.emotion_engine:
+                flush_fn = getattr(self.emotion_engine, "flush", None)
+                if callable(flush_fn):
+                    flush_fn()
+        except Exception as e:
+            logger.debug("刷新情绪状态失败(可忽略): %s", e)
+
+        try:
+            if hasattr(self, "mood_system") and self.mood_system:
+                flush_fn = getattr(self.mood_system, "flush", None)
+                if callable(flush_fn):
+                    flush_fn()
+        except Exception as e:
+            logger.debug("刷新情感状态失败(可忽略): %s", e)
+
+        # 6. 刷新对话风格学习器持久化数据（可忽略失败）
+        try:
+            if hasattr(self, "style_learner") and self.style_learner:
+                flush_fn = getattr(self.style_learner, "flush", None)
+                if callable(flush_fn):
+                    flush_fn()
+        except Exception as e:
+            logger.debug("刷新对话风格配置失败（可忽略）: %s", e)
+
+        # 6.1 刷新角色状态持久化数据（可忽略失败）
+        try:
+            if hasattr(self, "character_state") and self.character_state:
+                flush_fn = getattr(self.character_state, "flush", None)
+                if callable(flush_fn):
+                    flush_fn()
+        except Exception as e:
+            logger.debug("刷新角色状态失败（可忽略）: %s", e)
+
         logger.info("Agent 资源清理完成")
 
     def get_memory_stats(self) -> Dict[str, Any]:
@@ -4342,6 +6793,7 @@ class MintChatAgent:
             if self.diary_memory.diary_file and self.diary_memory.diary_file.exists():
                 try:
                     import json
+
                     diaries = json.loads(self.diary_memory.diary_file.read_text(encoding="utf-8"))
                     stats["diary_entries"] = len(diaries)
 
@@ -4384,7 +6836,12 @@ class MintChatAgent:
                 "lore_entries": 0,
             }
 
-    def _execute_tool_calls_from_text(self, text: Any) -> Optional[str]:
+    def _execute_tool_calls_from_text(
+        self,
+        text: Any,
+        *,
+        tool_recorder: Optional[ToolTraceRecorder] = None,
+    ) -> Optional[str]:
         """
         Parse tool-call-like JSON from text and execute tools directly.
         This is used as a fast rescue path when the model outputs only tool calls.
@@ -4424,7 +6881,9 @@ class MintChatAgent:
             if key.startswith("amap_"):
                 if key.endswith("weather") and "get_weather" in available:
                     return "get_weather"
-                if ("poi" in key or "place" in key or "search" in key) and "map_search" in available:
+                if (
+                    "poi" in key or "place" in key or "search" in key
+                ) and "map_search" in available:
                     return "map_search"
             if "weather" in key and "get_weather" in available:
                 return "get_weather"
@@ -4438,15 +6897,43 @@ class MintChatAgent:
                 return "get_current_date"
             return name
 
+        recorder = tool_recorder
         results: list[str] = []
         for name, args in calls:
             if not name:
                 continue
             resolved = _resolve_tool_name(name)
+            started_at = time.perf_counter()
+            if recorder is not None:
+                try:
+                    recorder.mark_start()
+                except Exception:
+                    recorder = None
             try:
                 result = self.tool_registry.execute_tool(resolved, **(args or {}))
             except Exception as exc:  # pragma: no cover - defensive
                 result = f"工具 {resolved} 执行失败: {exc}"
+                if recorder is not None:
+                    try:
+                        recorder.record_end(
+                            resolved,
+                            args or {},
+                            started_at=started_at,
+                            error=str(exc) or repr(exc),
+                        )
+                    except Exception:
+                        pass
+            else:
+                if recorder is not None:
+                    try:
+                        recorder.record_end(
+                            resolved,
+                            args or {},
+                            started_at=started_at,
+                            output=str(result),
+                        )
+                    except Exception:
+                        pass
             if result is not None:
                 results.append(str(result))
 
@@ -4509,9 +6996,7 @@ class MintChatAgent:
                         or call_obj.get("function_name")
                     )
                     args = _normalize_args(
-                        call_obj.get("arguments")
-                        or call_obj.get("args")
-                        or call_obj.get("params")
+                        call_obj.get("arguments") or call_obj.get("args") or call_obj.get("params")
                     )
             elif isinstance(call_obj, str):
                 name = call_obj.strip()
@@ -4548,6 +7033,16 @@ class MintChatAgent:
         if not raw:
             return ""
 
+        if raw.startswith("[") and raw.endswith("]"):
+            frag = _extract_leading_json_fragment(raw)
+            if frag and frag == raw:
+                try:
+                    parsed = json.loads(frag)
+                except Exception:
+                    parsed = None
+                if parsed is not None and _looks_like_route_tag_list(parsed):
+                    return raw
+
         # 部分 OpenAI 兼容网关 / LangChain 1.0.x 组合会把 structured output 片段
         # （例如工具选择/分流标签的 JSON）直接拼接到自然语言回复之前，形如：
         #   ["general_chat"]}["emotion_analysis", ...]}当然是真的...
@@ -4576,12 +7071,18 @@ class MintChatAgent:
 
             if parsed is not None and _looks_like_tool_call_payload(parsed):
                 drop_fragment = True
-            elif isinstance(parsed, list) and parsed and all(isinstance(item, str) for item in parsed):
+            elif (
+                isinstance(parsed, list)
+                and parsed
+                and all(isinstance(item, str) for item in parsed)
+            ):
                 # list[str] 作为“内部标签/模块名”通常为 snake_case；若后面紧跟多段 JSON/孤立 '}'，
                 # 基本可以判定为工具/结构化输出残留。
                 normalized = [item.strip() for item in parsed]
-                if normalized and all(_IDENT_TOKEN_RE.fullmatch(item) for item in normalized) and any(
-                    "_" in item for item in normalized
+                if (
+                    normalized
+                    and all(_IDENT_TOKEN_RE.fullmatch(item) for item in normalized)
+                    and any("_" in item for item in normalized)
                 ):
                     if has_trailing_brace or rest_after_braces[:1] in "[{":
                         drop_fragment = True
@@ -4604,9 +7105,13 @@ class MintChatAgent:
                 lowered_raw = raw.lower()
                 maybe_tool_payload = (
                     "tool_calls" in lowered_raw
-                    or "\"tools\"" in lowered_raw
-                    or "\"tool\"" in lowered_raw
-                    or ("\"function\"" in lowered_raw and "\"arguments\"" in lowered_raw and "\"name\"" in lowered_raw)
+                    or '"tools"' in lowered_raw
+                    or '"tool"' in lowered_raw
+                    or (
+                        '"function"' in lowered_raw
+                        and '"arguments"' in lowered_raw
+                        and '"name"' in lowered_raw
+                    )
                 )
                 if maybe_tool_payload:
                     try:
@@ -4626,8 +7131,12 @@ class MintChatAgent:
         maybe_tool_trace = (
             "toolselectionresponse" in lower_cleaned
             or "tool_calls" in lower_cleaned
-            or "\"tools\"" in lower_cleaned
-            or ("\"function\"" in lower_cleaned and "\"arguments\"" in lower_cleaned and "\"name\"" in lower_cleaned)
+            or '"tools"' in lower_cleaned
+            or (
+                '"function"' in lower_cleaned
+                and '"arguments"' in lower_cleaned
+                and '"name"' in lower_cleaned
+            )
         )
         if maybe_tool_trace and ("{" in cleaned or "[" in cleaned):
             cleaned = _strip_tool_json_blocks(cleaned, max_blocks=3)
@@ -4635,15 +7144,19 @@ class MintChatAgent:
             maybe_tool_trace = (
                 "toolselectionresponse" in lower_cleaned
                 or "tool_calls" in lower_cleaned
-                or "\"tools\"" in lower_cleaned
-                or ("\"function\"" in lower_cleaned and "\"arguments\"" in lower_cleaned and "\"name\"" in lower_cleaned)
+                or '"tools"' in lower_cleaned
+                or (
+                    '"function"' in lower_cleaned
+                    and '"arguments"' in lower_cleaned
+                    and '"name"' in lower_cleaned
+                )
             )
 
         # 处理“路由标签 list[str]”残留（通常不包含 "tool" 字样）
         if "[" in cleaned and "_" in cleaned:
             cleaned = _strip_route_tag_lists(cleaned, max_blocks=5)
             lower_cleaned = cleaned.lower()
-            if "\"tools\"" in lower_cleaned or "tool_calls" in lower_cleaned:
+            if '"tools"' in lower_cleaned or "tool_calls" in lower_cleaned:
                 maybe_tool_trace = True
 
         # 逐行过滤残留的工具提示/调试行
@@ -4676,20 +7189,22 @@ class MintChatAgent:
             compact = lower.replace(" ", "")
             # JSON 工具块的行（可能不以 {/[ 开头，例如："tools":[...）
             if (
-                "\"tools\"" in compact
-                or "\"tool_calls\"" in compact
-                or "\"type\":\"function\"" in compact
-                or ("\"function\"" in compact and "\"arguments\"" in compact and "\"name\"" in compact)
+                '"tools"' in compact
+                or '"tool_calls"' in compact
+                or '"type":"function"' in compact
+                or ('"function"' in compact and '"arguments"' in compact and '"name"' in compact)
             ):
                 continue
             if stripped.startswith("{") or stripped.startswith("["):
                 compact = lower.replace(" ", "")
                 if (
                     "tool_calls" in compact
-                    or "\"tools\"" in compact
-                    or "\"tool\"" in compact
-                    or "\"type\":\"function\"" in compact
-                    or ("\"function\"" in compact and "\"arguments\"" in compact and "\"name\"" in compact)
+                    or '"tools"' in compact
+                    or '"tool"' in compact
+                    or '"type":"function"' in compact
+                    or (
+                        '"function"' in compact and '"arguments"' in compact and '"name"' in compact
+                    )
                 ):
                     continue
             filtered_lines.append(line)

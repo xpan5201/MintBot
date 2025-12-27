@@ -1478,14 +1478,63 @@ class LightChatWindow(LightFramelessWindow):
         thread.start()
 
     def _cleanup_agent_init_thread(self) -> None:
+        """安全回收 AgentInitThread，避免 QThread 在仍运行时被销毁。"""
         thread = getattr(self, "_agent_init_thread", None)
-        self._agent_init_thread = None
         if thread is None:
             return
+
+        # 先断开信号，避免回调重复触发导致状态错乱
         try:
-            thread.deleteLater()
+            thread.agent_ready.disconnect(self._on_agent_ready)
+        except TypeError:
+            pass
         except Exception:
             pass
+
+        try:
+            thread.error.disconnect(self._on_agent_init_failed)
+        except TypeError:
+            pass
+        except Exception:
+            pass
+
+        def _finalize() -> None:
+            # 只有当当前引用仍指向该线程时才清空，避免 race 覆盖新线程引用
+            try:
+                if getattr(self, "_agent_init_thread", None) is thread:
+                    self._agent_init_thread = None
+            except Exception:
+                pass
+            try:
+                thread.deleteLater()
+            except Exception:
+                pass
+
+        # 若线程仍在运行：不要立刻 deleteLater / 丢引用，否则会触发
+        # “QThread: Destroyed while thread is still running”
+        try:
+            is_running = bool(thread.isRunning())
+        except Exception:
+            is_running = False
+
+        if is_running:
+            # 确保只连接一次 finished → finalize，避免重复回收
+            if not bool(getattr(thread, "_mintchat_cleanup_connected", False)):
+                try:
+                    thread.finished.connect(_finalize)
+                    setattr(thread, "_mintchat_cleanup_connected", True)
+                except Exception:
+                    pass
+
+            # 线程可能在连接 finished 的瞬间就结束了；再次检查，若已结束则立即 finalize
+            try:
+                if not bool(thread.isRunning()):
+                    _finalize()
+            except Exception:
+                _finalize()
+            return
+
+        _finalize()
 
     def _on_agent_ready(self, agent: object) -> None:
         self.agent = agent
@@ -3090,7 +3139,7 @@ class LightChatWindow(LightFramelessWindow):
             sample_rate=sample_rate,
             partial_interval_ms=partial_interval_ms,
             partial_window_s=partial_window_s,
-            parent=self,
+            parent=None,
         )
         asr_thread.partial_text.connect(self._on_asr_partial_text)
         asr_thread.final_text.connect(self._on_asr_final_text)
@@ -3147,19 +3196,34 @@ class LightChatWindow(LightFramelessWindow):
 
         if thread is not None:
             try:
-                thread.stop()
+                closing = bool(getattr(self, "_closing", False))
             except Exception:
-                pass
+                closing = False
             try:
-                if thread.isRunning():
-                    thread.wait(1500)
+                try:
+                    thread.stop(skip_final=closing)
+                except TypeError:
+                    thread.stop()
             except Exception:
                 pass
+            if closing:
+                try:
+                    if thread.isRunning() and not thread.wait(4000):
+                        logger.warning("ASR 线程未能在 4s 内结束，强制终止")
+                        thread.terminate()
+                        thread.wait(1000)
+                except Exception:
+                    pass
             try:
-                thread.deleteLater()
+                # Do not delete a running QThread; only clean up after it exits.
+                if not thread.isRunning():
+                    try:
+                        thread.deleteLater()
+                    except Exception:
+                        pass
+                    self._asr_thread = None
             except Exception:
                 pass
-            self._asr_thread = None
 
         try:
             if hasattr(self, "composer_mic_btn") and self.composer_mic_btn is not None:
@@ -3189,12 +3253,8 @@ class LightChatWindow(LightFramelessWindow):
         self._stop_asr_listening()
 
     def _on_asr_finished(self) -> None:
-        # 线程自然结束时，确保 UI 状态恢复
-        try:
-            if bool(getattr(self, "_asr_listening", False)):
-                self._stop_asr_listening()
-        except Exception:
-            pass
+        # 线程结束时统一收尾（也覆盖“用户手动停止后线程延迟退出”的场景）
+        self._stop_asr_listening()
 
     def _apply_asr_text_to_composer(self, text: str, *, final: bool) -> None:
         """把 ASR 文本写入输入框，尽量保持光标在末尾。"""
@@ -5665,10 +5725,9 @@ class LightChatWindow(LightFramelessWindow):
             logger.info("聊天窗口正在关闭，清理资源...")
             self._closing = True
 
-            # 0. 停止语音输入（若开启）
+            # 0. 停止语音输入（若存在）
             try:
-                if bool(getattr(self, "_asr_listening", False)):
-                    self._stop_asr_listening()
+                self._stop_asr_listening()
             except Exception:
                 pass
 
@@ -5924,6 +5983,24 @@ class LightChatWindow(LightFramelessWindow):
                 from src.multimodal.tts_runtime import shutdown_tts_runtime
 
                 shutdown_tts_runtime(timeout_s=1.0)
+            except Exception:
+                pass
+
+            # 11. 关闭用户会话/认证数据库连接（避免 Windows 下 sqlite 句柄残留）
+            try:
+                from src.auth.user_session import user_session
+
+                close_fn = getattr(user_session, "close", None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception:
+                pass
+
+            # 12. 关闭全局预编译语句管理器（若有）
+            try:
+                from src.utils.prepared_statements import close_all_prepared_statement_managers
+
+                close_all_prepared_statement_managers()
             except Exception:
                 pass
 

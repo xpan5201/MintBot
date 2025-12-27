@@ -14,7 +14,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Optional
 import warnings
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout, nullcontext
 
 from src.config.settings import settings
 from src.utils.logger import get_logger
@@ -66,14 +66,28 @@ def _suppress_noisy_audio_dependency_output():
 
 def _normalize_model_id(model: str) -> str:
     value = (model or "").strip()
+    # Common copy/paste mistakes from logs / shells.
+    # - `ls.FunAudioLLM/SenseVoiceSmall'` (prefix + stray quote)
+    # - `'FunAudioLLM/SenseVoiceSmall'` / `"FunAudioLLM/SenseVoiceSmall"`
+    if value.startswith("ls.") and "/" in value:
+        value = value[3:].lstrip()
+    # Strip surrounding quotes (repeat a few times for nested quoting).
+    for _ in range(2):
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1].strip()
+    value = value.strip(" \t\r\n'\"`")
     if not value:
         return _DEFAULT_MODEL_ID
     if value in _MODEL_ALIASES:
         return _MODEL_ALIASES[value]
+    lowered = value.lower()
+    # Allow case-insensitive alias matching for known ids/nicknames.
+    for k, v in _MODEL_ALIASES.items():
+        if k.lower() == lowered:
+            return v
     # If user provides a bare model name (no namespace), keep it,
     # but special-case known models to avoid repo_id errors.
     if "/" not in value:
-        lowered = value.lower()
         if lowered == "fun-asr-nano-2512":
             return _NANO_MODEL_ID
         if lowered in {"sensevoice-small", "sensevoicesmall"}:
@@ -93,7 +107,7 @@ def _resolve_device(device: str) -> str:
         except Exception:
             return "cpu"
 
-    if lowered == "cuda":
+    if lowered.startswith("cuda"):
         try:
             import torch  # type: ignore
 
@@ -135,15 +149,39 @@ def _warmup_asr_model(model: Any, *, sample_rate: int) -> None:
 
     wav = np.zeros(int(max(8000, sample_rate) * 0.35), dtype=np.float32)
     with _asr_model_lock:
+        torch = None
         try:
-            # Keep kwargs minimal for maximum compatibility.
-            model.generate(input=wav, sampling_rate=sample_rate)
+            import torch as _torch  # type: ignore
+
+            torch = _torch
+        except Exception:
+            torch = None
+        try:
+            inference_ctx = torch.inference_mode() if torch is not None else nullcontext()
+        except Exception:
+            inference_ctx = nullcontext()
+        try:
+            with inference_ctx:
+                # Prefer inference() when available to avoid internal VAD overhead during warmup.
+                fn = getattr(model, "inference", None) or getattr(model, "generate", None)
+                if fn is None:
+                    return
+                # Keep kwargs minimal for maximum compatibility.
+                fn(input=wav, sampling_rate=sample_rate)
         except TypeError:
             try:
-                model.generate(input=wav, fs=sample_rate)
+                with inference_ctx:
+                    fn = getattr(model, "inference", None) or getattr(model, "generate", None)
+                    if fn is None:
+                        return
+                    fn(input=wav, fs=sample_rate)
             except Exception:
                 try:
-                    model.generate(input=wav)
+                    with inference_ctx:
+                        fn = getattr(model, "inference", None) or getattr(model, "generate", None)
+                        if fn is None:
+                            return
+                        fn(input=wav)
                 except Exception:
                     return
         except Exception:
@@ -377,7 +415,7 @@ def init_asr(*, force: bool = False) -> bool:
         if raw_model_name.strip() and raw_model_name.strip() != model_name:
             logger.info("ASR 模型别名已解析: %s -> %s", raw_model_name.strip(), model_name)
         logger.info("初始化 FunASR 模型: %s (device=%s)", model_name, device)
-        if device == "cuda":
+        if device.lower().startswith("cuda"):
             try:
                 from src.utils.torch_optim import apply_torch_optimizations
 
@@ -408,6 +446,7 @@ def init_asr(*, force: bool = False) -> bool:
         if model_name.lower().startswith("iic/") and hub_norm in {"hf", "huggingface"}:
             logger.warning("ASR hub=%s 与模型 %s 不匹配；将自动切换为 ms", hub, model_name)
             hub = "ms"
+            hub_norm = "ms"
         if hub:
             kwargs["hub"] = hub
 
@@ -426,14 +465,19 @@ def init_asr(*, force: bool = False) -> bool:
             if max_ms > 0:
                 kwargs["vad_kwargs"] = {"max_single_segment_time": max_ms}
 
-        # Remote code: only pass trust_remote_code for HuggingFace hub.
-        # For ModelScope SenseVoiceSmall, enabling it can trigger noisy warnings like:
-        # "Loading remote code failed: model, No module named 'model'".
+        # Remote code:
+        # - HF: allow opt-in via settings.asr.trust_remote_code (some repos require it).
+        # - non-HF (e.g. ModelScope): explicitly disable to avoid noisy warnings like
+        #   "Loading remote code failed: model, No module named 'model'".
         try:
-            if hub_norm in {"hf", "huggingface"} and bool(getattr(settings.asr, "trust_remote_code", False)):
-                kwargs["trust_remote_code"] = True
+            if hub_norm in {"hf", "huggingface"}:
+                if bool(getattr(settings.asr, "trust_remote_code", False)):
+                    kwargs["trust_remote_code"] = True
+            else:
+                kwargs["trust_remote_code"] = False
         except Exception:
-            pass
+            if hub_norm not in {"hf", "huggingface"}:
+                kwargs["trust_remote_code"] = False
 
         max_attempts = 3
         attempt = 0

@@ -1347,3 +1347,24 @@ class UserDataManager:
         except Exception as e:
             logger.error(f"获取表情包数量失败: {e}", exc_info=True)
             return 0
+
+    def close(self) -> None:
+        """释放连接池/缓存等资源（幂等）。
+
+        说明：GUI 退出时建议显式调用，避免 Windows 下 sqlite 句柄残留导致文件锁定。
+        """
+        pool = getattr(self, "_pool", None)
+        self._pool = None
+        self.use_pool = False
+        if pool is not None:
+            try:
+                pool.close()
+            except Exception:
+                pass
+
+        try:
+            with self._cache_lock:
+                self._cache.clear()
+                self._cache_ttl.clear()
+        except Exception:
+            pass

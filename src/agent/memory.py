@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import deque, OrderedDict
+import math
 import hashlib
 import json
 from datetime import datetime, timedelta
@@ -91,6 +92,13 @@ try:
 except ImportError:
     logger.warning("记忆优化器未安装，将使用基础记忆功能")
     MEMORY_OPTIMIZER_AVAILABLE = False
+
+try:
+    from src.agent.memory_optimizer import CharacterConsistencyScorer
+    CHARACTER_SCORER_AVAILABLE = True
+except ImportError:
+    CharacterConsistencyScorer = None  # type: ignore[assignment]
+    CHARACTER_SCORER_AVAILABLE = False
 
 
 class ShortTermMemory:
@@ -245,7 +253,9 @@ class LongTermMemory:
                 metadata["timestamp_unix"] = parsed
                 return
 
-        metadata["timestamp_unix"] = float(fallback_unix if fallback_unix is not None else time.time())
+        metadata["timestamp_unix"] = float(
+            fallback_unix if fallback_unix is not None else time.time()
+        )
 
     def __init__(
         self,
@@ -266,7 +276,13 @@ class LongTermMemory:
             self.persist_directory = persist_directory
         elif user_id is not None:
             # 用户特定路径
-            self.persist_directory = Path(settings.data_dir) / "users" / str(user_id) / "vectordb" / "long_term_memory"
+            self.persist_directory = (
+                Path(settings.data_dir)
+                / "users"
+                / str(user_id)
+                / "vectordb"
+                / "long_term_memory"
+            )
         else:
             # 全局路径（向后兼容）
             self.persist_directory = Path(settings.vector_db_path) / "long_term_memory"
@@ -298,6 +314,12 @@ class LongTermMemory:
         self._write_version = 0
         # 底层向量库（Chroma/SQLite）在并发读写下可能出现锁冲突或不稳定：用锁串行化访问更稳
         self._vectorstore_lock = Lock()
+        # 角色一致性评分器：只在检索时使用（低开销但避免重复初始化）
+        self._character_scorer = None
+        # 角色一致性分数缓存：用于给历史数据（缺少字段时）做“按需回填”并避免反复计算
+        self._character_score_cache: OrderedDict[str, tuple[float, int]] = OrderedDict()
+        self._character_score_cache_lock = Lock()
+        self._character_score_cache_max = 2048
 
         # 初始化向量数据库 - 使用统一的初始化函数（v2.30.27: 支持本地 embedding 和缓存）
         self.vectorstore = create_chroma_vectorstore(
@@ -883,6 +905,34 @@ class LongTermMemory:
             # v3.3: 增加检索数量，后续重排序
             search_k = min(k * 3, 20)  # 检索3倍数量，最多20条
 
+            character_weight = float(
+                getattr(
+                    getattr(settings, "agent", object()),
+                    "memory_character_consistency_weight",
+                    0.1,
+                )
+            )
+            if not math.isfinite(character_weight):
+                character_weight = 0.0
+            character_weight = max(0.0, min(character_weight, 1.0))
+
+            scorer = None
+            scorer_version: Optional[int] = None
+            if (
+                CHARACTER_SCORER_AVAILABLE
+                and character_weight > 0.0
+                and CharacterConsistencyScorer is not None
+            ):
+                scorer = getattr(self, "_character_scorer", None)
+                if scorer is None:
+                    try:
+                        scorer = CharacterConsistencyScorer()
+                        self._character_scorer = scorer
+                    except Exception as e:
+                        logger.debug("角色一致性评分器初始化失败: %s", e)
+                        scorer = None
+                scorer_version = getattr(CharacterConsistencyScorer, "SCORER_VERSION", None)
+
             with self._vectorstore_lock:
                 results = self.vectorstore.similarity_search_with_score(
                     query=query,
@@ -894,7 +944,10 @@ class LongTermMemory:
             memories = []
             for doc, score in results:
                 metadata = dict(getattr(doc, "metadata", None) or {})
-                metadata.setdefault("content_hash", self._compute_content_hash(doc.page_content))
+                metadata.setdefault(
+                    "content_hash",
+                    self._compute_content_hash(doc.page_content),
+                )
                 # v3.3: 计算相似度（ChromaDB的score越小越相似）
                 similarity = 1.0 / (1.0 + score)  # 转换为0-1之间的相似度
 
@@ -929,17 +982,77 @@ class LongTermMemory:
                 if mem_ts_unix is not None:
                     age_days = max(0.0, (now_unix - mem_ts_unix) / 86400.0)
                     # 30天内的记忆不衰减，之后逐渐衰减
-                    recency_score = max(0.5, 1.0 - (age_days - 30) / 365.0) if age_days > 30 else 1.0
+                    if age_days > 30:
+                        recency_score = max(0.5, 1.0 - (age_days - 30) / 365.0)
+                    else:
+                        recency_score = 1.0
 
                 # v3.3: 重要性加权
                 importance = metadata.get("importance", 0.5)
 
-                # v3.3: 综合评分 = 相似度(60%) + 时间性(20%) + 重要性(20%)
-                final_score = (
-                    similarity * 0.6 +
-                    recency_score * 0.2 +
-                    importance * 0.2
-                )
+                character_consistency = 0.5
+                use_character_weight = False
+                existing = metadata.get("character_consistency")
+                if isinstance(existing, (int, float)) and 0.0 <= float(existing) <= 1.0:
+                    character_consistency = float(existing)
+                    use_character_weight = character_weight > 0.0
+
+                if scorer is not None and character_weight > 0.0:
+                    existing_version = metadata.get("character_consistency_version")
+                    needs_rescore = (
+                        not isinstance(existing, (int, float))
+                        or not (0.0 <= float(existing) <= 1.0)
+                        or (scorer_version is not None and existing_version != scorer_version)
+                    )
+                    content_hash = metadata.get("content_hash")
+                    cache_version = int(scorer_version or 0)
+                    if needs_rescore and isinstance(content_hash, str) and content_hash:
+                        with self._character_score_cache_lock:
+                            cached = self._character_score_cache.get(content_hash)
+                            if cached is not None and cached[1] == cache_version:
+                                cached_score = float(cached[0])
+                                character_consistency = float(min(max(cached_score, 0.0), 1.0))
+                                metadata["character_consistency"] = character_consistency
+                                if cache_version:
+                                    metadata["character_consistency_version"] = cache_version
+                                self._character_score_cache.move_to_end(content_hash)
+                                needs_rescore = False
+
+                    if needs_rescore:
+                        try:
+                            character_consistency = float(
+                                scorer.score_character_consistency(doc.page_content)
+                            )
+                            metadata["character_consistency"] = character_consistency
+                            if scorer_version is not None:
+                                metadata["character_consistency_version"] = int(scorer_version)
+                            if isinstance(content_hash, str) and content_hash:
+                                with self._character_score_cache_lock:
+                                    self._character_score_cache[content_hash] = (
+                                        float(min(max(character_consistency, 0.0), 1.0)),
+                                        cache_version,
+                                    )
+                                    self._character_score_cache.move_to_end(content_hash)
+                                    while (
+                                        len(self._character_score_cache)
+                                        > self._character_score_cache_max
+                                    ):
+                                        self._character_score_cache.popitem(last=False)
+                        except Exception as e:
+                            logger.debug("角色一致性评分失败: %s", e)
+                            character_consistency = 0.5
+                    else:
+                        character_consistency = float(existing)
+                    character_consistency = float(min(max(character_consistency, 0.0), 1.0))
+                    use_character_weight = True
+
+                # v3.3: 综合评分 = 相似度(60%) + 时间性(20%) + 重要性(20%) + 角色一致性(可配权重)
+                numerator = similarity * 0.6 + recency_score * 0.2 + float(importance) * 0.2
+                denom = 1.0
+                if use_character_weight:
+                    numerator += character_consistency * character_weight
+                    denom += character_weight
+                final_score = numerator / denom
 
                 memories.append({
                     "content": doc.page_content,
@@ -948,6 +1061,7 @@ class LongTermMemory:
                     "similarity": similarity,  # 相似度
                     "recency_score": recency_score,  # 时间性
                     "importance": importance,  # 重要性
+                    "character_consistency": character_consistency,  # 角色一致性
                     "final_score": final_score,  # 综合评分
                 })
 
@@ -1086,7 +1200,13 @@ class MemoryManager:
         )
 
         if self.enable_optimizer and MEMORY_OPTIMIZER_AVAILABLE:
-            dedup_max_hashes = int(getattr(getattr(settings, "agent", object()), "memory_dedup_max_hashes", 50_000))
+            dedup_max_hashes = int(
+                getattr(
+                    getattr(settings, "agent", object()),
+                    "memory_dedup_max_hashes",
+                    50_000,
+                )
+            )
             self.optimizer = MemoryOptimizer(
                 enable_cache=True,
                 enable_deduplication=True,
@@ -1139,70 +1259,12 @@ class MemoryManager:
         self.short_term.add_messages((("user", user_message), ("assistant", assistant_message)))
 
         # 添加到长期记忆
-        if save_to_long_term and self.long_term:
-            user_name = getattr(settings.agent, "user", "主人")
-            char_name = getattr(settings.agent, "char", "小雪糕")
-            interaction = f"{user_name}: {user_message}\n{char_name}: {assistant_message}"
-
-            # v3.3: 智能重要性评估（如果未提供）
-            if importance is None:
-                importance = self._estimate_importance(user_message, assistant_message)
-
-            # v3.3: 自动决定是否保存（低重要性的对话不保存）
-            if importance < 0.3:
-                logger.debug(
-                    "跳过低重要性记忆 (重要性: %.2f): %.30s...",
-                    importance,
-                    interaction,
-                )
-                return
-
-            # v3.2.1: 优化性能 - 快速路径
-            if self.optimizer:
-                metadata = {
-                    "type": "conversation",
-                    "importance": importance,
-                    "access_count": 0,
-                    "user_message_length": len(user_message),
-                    "assistant_message_length": len(assistant_message),
-                }
-
-                # 快速去重检查（只检查哈希，不做复杂处理）
-                deduplicator = self.optimizer.deduplicator
-                content_hash: Optional[str] = None
-                if deduplicator:
-                    content_hash = deduplicator.get_content_hash(interaction)
-                    if deduplicator.contains_hash(content_hash):
-                        logger.debug("跳过重复记忆: %.30s...", interaction)
-                        return
-                    metadata["content_hash"] = content_hash
-
-                # 直接添加到长期记忆（延迟角色一致性评分）
-                stored = self.long_term.add_memory(
-                    content=interaction,
-                    metadata=metadata,
-                    batch=True,
-                )
-                if stored and deduplicator and content_hash:
-                    deduplicator.add_hash(content_hash)
-
-                # 更新统计
-                self.optimizer.stats["total_memories_processed"] += 1
-                logger.debug(
-                    "保存记忆 (重要性: %.2f): %.30s...",
-                    importance,
-                    interaction,
-                )
-            else:
-                # 原有逻辑
-                self.long_term.add_memory(
-                    content=interaction,
-                    metadata={
-                        "type": "conversation",
-                        "importance": importance,
-                    },
-                    batch=True,
-                )
+        if save_to_long_term:
+            self.add_interaction_long_term(
+                user_message=user_message,
+                assistant_message=assistant_message,
+                importance=importance,
+            )
 
         # v3.3: 自动巩固（每N次交互，可选）
         if self._auto_consolidate_enabled and self.optimizer and self.long_term:
@@ -1237,6 +1299,109 @@ class MemoryManager:
                         logger.warning("启动自动巩固线程失败: %s", e)
                         with self._auto_consolidate_lock:
                             self._auto_consolidate_running = False
+
+    def add_interaction_long_term(
+        self,
+        *,
+        user_message: str,
+        assistant_message: str,
+        importance: Optional[float] = None,
+    ) -> bool:
+        """
+        仅将一次交互写入长期记忆（不影响短期记忆）。
+
+        设计目的：
+        - GUI/流式热路径可先写入短期记忆，长期记忆写入放到后台线程，避免向量写入阻塞首包/流式体验。
+        - 便于 Agent 侧做任务合并（coalesce）与背压控制。
+
+        Returns:
+            bool: 是否成功写入（或加入批量缓冲区）
+        """
+        if not self.long_term:
+            return False
+
+        user_name = getattr(settings.agent, "user", "主人")
+        char_name = getattr(settings.agent, "char", "小雪糕")
+        interaction = f"{user_name}: {user_message}\n{char_name}: {assistant_message}"
+
+        # v3.3: 智能重要性评估（如果未提供）
+        if importance is None:
+            importance = self._estimate_importance(user_message, assistant_message)
+
+        # v3.3: 自动决定是否保存（低重要性的对话不保存）
+        if importance < 0.3:
+            logger.debug(
+                "跳过低重要性记忆 (重要性: %.2f): %.30s...",
+                importance,
+                interaction,
+            )
+            return False
+
+        # v3.2.1: 优化性能 - 快速路径
+        if self.optimizer:
+            metadata = {
+                "type": "conversation",
+                "importance": importance,
+                "access_count": 0,
+                "user_message_length": len(user_message),
+                "assistant_message_length": len(assistant_message),
+            }
+
+            # 快速去重检查（只检查哈希，不做复杂处理）
+            deduplicator = self.optimizer.deduplicator
+            content_hash: Optional[str] = None
+            if deduplicator:
+                content_hash = deduplicator.get_content_hash(interaction)
+                if deduplicator.contains_hash(content_hash):
+                    logger.debug("跳过重复记忆: %.30s...", interaction)
+                    return False
+                metadata["content_hash"] = content_hash
+
+            # 角色一致性评分（低开销：规则/关键词，不调用 LLM）
+            character_scorer = getattr(self.optimizer, "character_scorer", None)
+            if character_scorer is not None:
+                try:
+                    metadata["character_consistency"] = float(
+                        character_scorer.score_character_consistency(interaction)
+                    )
+                    metadata["character_consistency_version"] = int(
+                        getattr(character_scorer, "SCORER_VERSION", 0) or 0
+                    )
+                except Exception as e:
+                    logger.debug("角色一致性评分失败: %s", e)
+
+            stored = self.long_term.add_memory(
+                content=interaction,
+                metadata=metadata,
+                batch=True,
+            )
+            if stored and deduplicator and content_hash:
+                try:
+                    deduplicator.add_hash(content_hash)
+                except Exception:
+                    pass
+
+            # 更新统计
+            try:
+                self.optimizer.stats["total_memories_processed"] += 1
+            except Exception:
+                pass
+            logger.debug(
+                "保存记忆 (重要性: %.2f): %.30s...",
+                importance,
+                interaction,
+            )
+            return bool(stored)
+
+        stored = self.long_term.add_memory(
+            content=interaction,
+            metadata={
+                "type": "conversation",
+                "importance": importance,
+            },
+            batch=True,
+        )
+        return bool(stored)
 
     def _estimate_importance(self, user_message: str, assistant_message: str) -> float:
         """
@@ -1433,7 +1598,6 @@ class MemoryManager:
             years = delta.days // 365
             return f"{years}年前"
 
-
     def consolidate_memories(self) -> int:
         """
         巩固记忆：将重要的短期记忆转移到长期记忆 (v3.3: 智能巩固)
@@ -1457,10 +1621,12 @@ class MemoryManager:
         pending_hashes: List[str] = []
         i = 0
         while i < len(short_term_messages) - 1:
-            if (short_term_messages[i]["role"] == "user" and
-                short_term_messages[i+1]["role"] == "assistant"):
+            if (
+                short_term_messages[i]["role"] == "user"
+                and short_term_messages[i + 1]["role"] == "assistant"
+            ):
                 user_msg = short_term_messages[i]["content"]
-                assistant_msg = short_term_messages[i+1]["content"]
+                assistant_msg = short_term_messages[i + 1]["content"]
 
                 # v3.3: 评估重要性
                 importance = self._estimate_importance(user_msg, assistant_msg)
@@ -1476,6 +1642,17 @@ class MemoryManager:
                         "access_count": 0,
                         "consolidated": True,
                     }
+                    character_scorer = getattr(self.optimizer, "character_scorer", None)
+                    if character_scorer is not None:
+                        try:
+                            metadata["character_consistency"] = float(
+                                character_scorer.score_character_consistency(content)
+                            )
+                            metadata["character_consistency_version"] = int(
+                                getattr(character_scorer, "SCORER_VERSION", 0) or 0
+                            )
+                        except Exception as e:
+                            logger.debug("角色一致性评分失败: %s", e)
                     if deduplicator:
                         content_hash = deduplicator.get_content_hash(content)
                         if deduplicator.contains_hash(content_hash):
@@ -1559,8 +1736,16 @@ class MemoryManager:
                 # v3.3.2: 批量缓冲区状态
                 stats["batch_buffer_size"] = len(self.long_term._batch_buffer)
                 stats["batch_threshold"] = self.long_term._batch_size
-                stats["batch_flush_interval_s"] = getattr(self.long_term, "_batch_flush_interval_s", 0.0)
-                stats["long_term_write_version"] = getattr(self.long_term, "write_version", 0)
+                stats["batch_flush_interval_s"] = getattr(
+                    self.long_term,
+                    "_batch_flush_interval_s",
+                    0.0,
+                )
+                stats["long_term_write_version"] = getattr(
+                    self.long_term,
+                    "write_version",
+                    0,
+                )
             except (AttributeError, RuntimeError) as e:
                 logger.debug("获取长期记忆统计失败: %s", e)
                 stats["long_term_count"] = "未知"
@@ -1581,7 +1766,6 @@ class MemoryManager:
 
         return stats
 
-
     def get_optimizer_stats(self) -> Optional[Dict[str, Any]]:
         """
         获取优化器统计信息 (v3.2)
@@ -1593,7 +1777,6 @@ class MemoryManager:
             return None
 
         return self.optimizer.get_stats()
-
 
     def clear_all(self) -> None:
         """清空所有记忆"""

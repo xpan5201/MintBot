@@ -5,15 +5,33 @@
 这是 v2.5 的核心功能之一，用于增强沉浸感。
 """
 
+import os
 import json
+import secrets
+import time
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Dict, Optional
 
 from src.config.settings import settings
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _atomic_write_json(path: str, data: Dict) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f"{target.name}.tmp.{secrets.token_hex(6)}")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, target)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 class CharacterState:
@@ -55,6 +73,13 @@ class CharacterState:
 
         # 配置
         self.enable_auto_decay = enable_auto_decay
+        self._persist_interval_s = max(
+            0.0,
+            float(getattr(settings.agent, "character_state_persist_interval_s", 2.0) or 0.0),
+        )
+        self._last_persist_monotonic: float = 0.0
+        self._dirty: bool = False
+        self._lock = Lock()
 
         # 持久化文件
         self.persist_file = persist_file or str(
@@ -89,9 +114,19 @@ class CharacterState:
         except Exception as e:
             logger.warning(f"加载角色状态失败: {e}，使用默认值")
 
-    def _save_state(self) -> None:
-        """保存状态到文件"""
-        try:
+    def _save_state(self, *, force: bool = False) -> None:
+        """保存状态到文件（带节流，避免每次交互都落盘）。"""
+        with self._lock:
+            if not force and not self._dirty:
+                return
+
+            interval_s = self._persist_interval_s
+            now_mono = time.monotonic()
+            if not force and interval_s > 0.0:
+                if (now_mono - self._last_persist_monotonic) < interval_s:
+                    return
+
+            self._last_persist_monotonic = now_mono
             data = {
                 "hunger": self.hunger,
                 "fatigue": self.fatigue,
@@ -101,12 +136,13 @@ class CharacterState:
                 "last_update": self.last_update.isoformat(),
                 "last_interaction": self.last_interaction.isoformat(),
             }
-            with open(self.persist_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"保存角色状态失败: {e}")
+            try:
+                _atomic_write_json(self.persist_file, data)
+                self._dirty = False
+            except Exception as e:
+                logger.error(f"保存角色状态失败: {e}")
 
-    def update_auto_decay(self) -> None:
+    def update_auto_decay(self, persist: bool = True) -> None:
         """
         自动衰减/增长状态值
 
@@ -140,16 +176,22 @@ class CharacterState:
             self.loneliness = min(100.0, self.loneliness + time_since_interaction * 2)
 
         self.last_update = now
-        self._save_state()
+        self._dirty = True
+        if persist:
+            self._save_state()
 
-    def on_interaction(self, interaction_type: str = "chat") -> None:
+    def persist(self, *, force: bool = False) -> None:
+        """将当前角色状态持久化到磁盘。"""
+        self._save_state(force=force)
+
+    def on_interaction(self, interaction_type: str = "chat", persist: bool = True) -> None:
         """
         处理互动事件
 
         Args:
             interaction_type: 互动类型 (chat, feed, play, rest)
         """
-        self.update_auto_decay()  # 先更新自动衰减
+        self.update_auto_decay(persist=False)  # 先更新自动衰减
 
         now = datetime.now()
         self.last_interaction = now
@@ -178,17 +220,16 @@ class CharacterState:
             self.fatigue = max(0.0, self.fatigue - 40)
             self.energy = min(100.0, self.energy + 30)
 
-        self._save_state()
+        self._dirty = True
+        if persist:
+            self._save_state()
 
-    def get_state_description(self) -> str:
-        """
-        获取状态描述（用于添加到提示词）
+    def flush(self) -> None:
+        """强制落盘（用于程序退出或显式保存）。"""
+        self._dirty = True
+        self._save_state(force=True)
 
-        Returns:
-            str: 状态描述
-        """
-        self.update_auto_decay()  # 先更新状态
-
+    def _describe_state(self) -> str:
         descriptions = []
 
         # 饥饿度
@@ -232,6 +273,16 @@ class CharacterState:
 
         return "、".join(descriptions)
 
+    def get_state_description(self) -> str:
+        """
+        获取状态描述（用于添加到提示词）
+
+        Returns:
+            str: 状态描述
+        """
+        self.update_auto_decay(persist=False)  # 先更新状态
+        return self._describe_state()
+
     def get_state_context(self) -> str:
         """
         获取状态上下文（用于添加到提示词）
@@ -265,7 +316,7 @@ class CharacterState:
         Returns:
             Dict: 状态统计
         """
-        self.update_auto_decay()
+        self.update_auto_decay(persist=False)
 
         return {
             "hunger": self.hunger,
@@ -273,7 +324,7 @@ class CharacterState:
             "energy": self.energy,
             "satisfaction": self.satisfaction,
             "loneliness": self.loneliness,
-            "description": self.get_state_description(),
+            "description": self._describe_state(),
             "last_update": self.last_update.isoformat(),
             "last_interaction": self.last_interaction.isoformat(),
         }

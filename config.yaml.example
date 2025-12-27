@@ -9,87 +9,19 @@
 # - 下面仅给出常用字段，更多字段请参考 `src/config/settings.py`。
 
 LLM:
-  api: "https://api.openai.com/v1"
-  key: "YOUR_LLM_API_KEY"
-  model: "gpt-4o-mini"
-  max_tokens: 2000
-  temperature: 0.7
-  extra_config: {}
+  
 
 VISION_LLM:
-  enabled: false
-  api: "https://api.openai.com/v1"
-  key: "YOUR_VISION_API_KEY"
-  model: "gpt-4o-mini"
-  max_tokens: 1500
-  temperature: 0.2
-  extra_config: {}
+
 
 Agent:
-  char: "小雪糕"
-  user: "主人"
-  enable_streaming: true
-  enable_tools: true
-  long_memory: true
-  long_term_batch_size: 10
-  long_term_batch_flush_interval_s: 30.0
-  memory_dedup_max_hashes: 50000
-  context_length: 40
-  max_history_length: 20
-  char_personalities: ""
-  char_settings: ""
-  prompt: "使用口语的文字风格进行对话，不要太啰嗦。"
-  knowledge_graph_enabled: true
-  knowledge_graph_auto_update: true
-  knowledge_graph_auto_update_edges: true
-  knowledge_graph_auto_update_async: true
-  knowledge_graph_autosave: true
-  knowledge_graph_save_pretty_json: true
-  knowledge_graph_save_sort: true
-  knowledge_graph_rule_max_ids_per_keyword: 200
-  knowledge_graph_rule_max_keyword_links_per_node: 12
-  knowledge_graph_rule_category_anchor_count: 2
-  knowledge_graph_rule_max_relations: 100000
-  knowledge_graph_rule_shared_keywords_desc_limit: 12
-  knowledge_graph_find_max_results: 200
-  knowledge_graph_find_max_nodes_visited: 5000
-  knowledge_graph_find_include_incoming: true
+  
 
 TTS:
-  enabled: false
-  api_url: "http://127.0.0.1:9880/tts"
-  ref_audio_path: ""
-  ref_audio_text: ""
-  text_lang: "zh"
-  prompt_lang: "zh"
+  
 
 ASR:
-  enabled: false
-  device: "auto"
-  model: "iic/SenseVoiceSmall"
-  hub: "ms"
-  trust_remote_code: false  # 仅 HuggingFace hub 生效；ModelScope 建议关闭
-  language: "auto"
-  use_itn: true
-  ban_emo_unk: true
-  vad_model: "fsmn-vad"
-  vad_max_single_segment_time_ms: 30000
-  merge_vad: true
-  merge_length_s: 15
-  batch_size_s: 60
-  sample_rate: 16000
-  partial_interval_ms: 600
-  partial_window_s: 4.0
-  silence_skip_partial: true
-  silence_rms_threshold: 0.006
-  silence_threshold_mode: "auto"  # fixed/auto
-  silence_threshold_multiplier: 3.0
-  noise_calibration_ms: 400
-  min_speech_ms: 180
-  endpoint_silence_ms: 900  # 0 to disable auto endpoint
-  pre_roll_ms: 250
-  max_utterance_s: 25.0
-  warmup: true
+  
 
 TAVILY:
   api_key: "YOUR_TAVILY_API_KEY"

@@ -97,6 +97,7 @@ class ConcurrentMemoryRetriever:
         diary_memory,
         lore_book,
         max_workers: int = 4,
+        source_timeout_s: float = 0.0,
         breaker_threshold: int = 3,
         breaker_cooldown_s: float = 3.0,
     ):
@@ -120,6 +121,7 @@ class ConcurrentMemoryRetriever:
             max_workers=max(1, int(max_workers)),
             thread_name_prefix="mintchat-mem",
         )
+        self._source_timeout_s = max(0.0, float(source_timeout_s or 0.0))
         self._breaker_threshold = max(1, int(breaker_threshold or 1))
         self._breaker_cooldown_s = max(0.5, float(breaker_cooldown_s or 0.5))
         self._breakers = {
@@ -402,7 +404,36 @@ class ConcurrentMemoryRetriever:
         label = self.SOURCE_LABELS.get(name, name)
         started = time.perf_counter()
         try:
-            result = await awaitable
+            timeout_s = self._source_timeout_s
+            if timeout_s > 0.0:
+                result = await asyncio.wait_for(awaitable, timeout=timeout_s)
+            else:
+                result = await awaitable
+        except asyncio.TimeoutError as exc:
+            stats.record_failure()
+            self._mark_source_failure(name)
+
+            # 尝试取消尚未开始的线程池任务，避免占用队列；已开始的任务无法安全中止
+            try:
+                cancel = getattr(awaitable, "cancel", None)
+                if callable(cancel):
+                    cancel()
+            except Exception:
+                pass
+
+            # 避免 executor future 在超时后抛出异常时出现 “Future exception was never retrieved” 警告
+            try:
+                add_done_callback = getattr(awaitable, "add_done_callback", None)
+                exception_fn = getattr(awaitable, "exception", None)
+                if callable(add_done_callback) and callable(exception_fn):
+                    add_done_callback(lambda f: f.exception())  # noqa: B023
+            except Exception:
+                pass
+
+            timeout_ms = max(0.0, float(self._source_timeout_s)) * 1000
+            error_msg = str(exc) or repr(exc) or f"{type(exc).__name__}: {label}检索超时"
+            logger.warning("%s检索超时(%.0fms): %s", label, timeout_ms, error_msg)
+            return []
         except Exception as exc:
             stats.record_failure()
             self._mark_source_failure(name)

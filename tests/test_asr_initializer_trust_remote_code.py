@@ -9,8 +9,8 @@ import pytest
 @pytest.mark.parametrize(
     ("hub", "trust_remote_code", "expect_passed"),
     [
-        ("ms", True, False),
-        ("ms", False, False),
+        ("ms", True, True),
+        ("ms", False, True),
         ("hf", True, True),
         ("huggingface", True, True),
         ("hf", False, False),
@@ -36,7 +36,8 @@ def test_asr_initializer_trust_remote_code_only_passed_for_hf(
     # Patch settings used by init_asr() to avoid real model downloads / warmup.
     dummy_asr = SimpleNamespace(
         enabled=True,
-        model="iic/SenseVoiceSmall",
+        # Use a neutral repo id here so hub mismatch auto-fix does not influence this test.
+        model="unit-test/model",
         device="cpu",
         hub=hub,
         trust_remote_code=trust_remote_code,
@@ -52,4 +53,5 @@ def test_asr_initializer_trust_remote_code_only_passed_for_hf(
 
     passed = captured[-1]
     assert ("trust_remote_code" in passed) is expect_passed
-
+    if expect_passed and hub == "ms":
+        assert passed["trust_remote_code"] is False

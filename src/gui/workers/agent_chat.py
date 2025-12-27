@@ -70,46 +70,68 @@ class ChatThread(QThread):
             last_emit_ts = time.monotonic()
             emit_interval_s = max(0.0, self.emit_interval_ms / 1000.0)
             emit_threshold = self.emit_threshold
+            drain_on_exit = False
+            timeout_error: Optional[str] = None
 
-            for chunk in self.agent.chat_stream(
+            stream_iter = self.agent.chat_stream(
                 self.message,
                 save_to_long_term=True,
                 image_path=self.image_path,
                 image_analysis=self.image_analysis,
                 cancel_event=self._cancel_event,
-            ):
-                if (not self._is_running) or self._cancel_event.is_set() or self.isInterruptionRequested():
-                    break
+            )
+            try:
+                for chunk in stream_iter:
+                    if self.isInterruptionRequested() and not self._cancel_event.is_set():
+                        self._cancel_event.set()
+                    if (not self._is_running) or self._cancel_event.is_set() or self.isInterruptionRequested():
+                        drain_on_exit = True
+                        break
 
-                if (time.monotonic() - self._start_ts) > self.timeout:
-                    logger.warning("ChatThread 超时 (%s 秒)", self.timeout)
-                    self._cancel_event.set()
-                    self._had_error = True
-                    self.error.emit(f"请求超时（{self.timeout}秒），请稍后重试")
-                    return
+                    if (time.monotonic() - self._start_ts) > self.timeout:
+                        logger.warning("ChatThread 超时 (%s 秒)", self.timeout)
+                        timeout_error = f"请求超时（{self.timeout}秒），请稍后重试"
+                        self._cancel_event.set()
+                        self._had_error = True
+                        self.error.emit(timeout_error)
+                        drain_on_exit = True
+                        break
 
-                if not chunk:
-                    continue
+                    if not chunk:
+                        continue
 
-                total_chunks += 1
-                chunk_buffer.append(chunk)
-                buffer_len += len(chunk)
+                    total_chunks += 1
+                    chunk_buffer.append(chunk)
+                    buffer_len += len(chunk)
 
-                now = time.monotonic()
-                if buffer_len >= emit_threshold or (now - last_emit_ts) >= emit_interval_s:
-                    payload = "".join(chunk_buffer)
-                    chunk_buffer.clear()
-                    buffer_len = 0
-                    last_emit_ts = now
-                    if payload:
-                        emitted_chunks += 1
-                        self.chunk_received.emit(payload)
+                    now = time.monotonic()
+                    if buffer_len >= emit_threshold or (now - last_emit_ts) >= emit_interval_s:
+                        payload = "".join(chunk_buffer)
+                        chunk_buffer.clear()
+                        buffer_len = 0
+                        last_emit_ts = now
+                        if payload:
+                            emitted_chunks += 1
+                            self.chunk_received.emit(payload)
+            finally:
+                if drain_on_exit:
+                    # Best-effort drain to trigger Agent generator cleanup.
+                    deadline = time.monotonic() + 1.0
+                    try:
+                        for _ in stream_iter:
+                            if time.monotonic() >= deadline:
+                                break
+                    except Exception:
+                        pass
 
             if chunk_buffer:
                 payload = "".join(chunk_buffer)
                 if payload:
                     emitted_chunks += 1
                     self.chunk_received.emit(payload)
+
+            if timeout_error:
+                return
 
             execution_time = time.monotonic() - self._start_ts
             logger.info(

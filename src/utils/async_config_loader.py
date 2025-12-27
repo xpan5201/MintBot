@@ -16,11 +16,13 @@ import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional
 import time
+import threading
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from src.utils.logger import get_logger
 from src.utils.cache_manager import cache_manager
+from src.utils.async_loop_thread import AsyncLoopThread
 
 logger = get_logger(__name__)
 
@@ -28,13 +30,16 @@ logger = get_logger(__name__)
 class ConfigFileHandler(FileSystemEventHandler):
     """配置文件变更监听器"""
     
-    def __init__(self, callback):
-        self.callback = callback
+    def __init__(self, schedule_reload):
+        self.schedule_reload = schedule_reload
         super().__init__()
     
     def on_modified(self, event):
         if not event.is_directory:
-            asyncio.create_task(self.callback(event.src_path))
+            try:
+                self.schedule_reload(str(event.src_path))
+            except Exception as exc:
+                logger.debug(f"调度配置热重载失败: {exc}")
 
 
 class AsyncConfigLoader:
@@ -61,6 +66,8 @@ class AsyncConfigLoader:
         # 文件监听器
         self._observer: Optional[Observer] = None
         self._reload_callbacks: Dict[str, list] = {}
+        self._reload_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._reload_runner: Optional[AsyncLoopThread] = None
         
         # 统计信息
         self._stats = {
@@ -108,6 +115,7 @@ class AsyncConfigLoader:
         
         try:
             loop = asyncio.get_running_loop()
+            self._reload_loop = loop
             config = await loop.run_in_executor(
                 None,
                 self._load_json_sync,
@@ -172,6 +180,7 @@ class AsyncConfigLoader:
 
         try:
             loop = asyncio.get_running_loop()
+            self._reload_loop = loop
             config = await loop.run_in_executor(
                 None,
                 self._load_yaml_sync,
@@ -208,12 +217,37 @@ class AsyncConfigLoader:
         """启动热重载监听"""
         try:
             self._observer = Observer()
-            handler = ConfigFileHandler(self._on_config_changed)
+            handler = ConfigFileHandler(self._schedule_reload)
             self._observer.schedule(handler, str(self.config_dir), recursive=False)
             self._observer.start()
             logger.info("配置文件热重载已启动")
         except Exception as e:
             logger.error(f"启动热重载失败: {e}")
+
+    def _get_or_create_reload_runner(self) -> AsyncLoopThread:
+        runner = self._reload_runner
+        if runner is not None:
+            return runner
+        self._reload_runner = AsyncLoopThread(thread_name="mintchat-config-hot-reload")
+        return self._reload_runner
+
+    def _schedule_reload(self, file_path: str) -> None:
+        """从 watchdog 线程安全地调度异步回调。"""
+        coro = self._on_config_changed(str(file_path))
+
+        loop = self._reload_loop
+        if loop is not None and not loop.is_closed():
+            try:
+                asyncio.run_coroutine_threadsafe(coro, loop)
+                return
+            except Exception as exc:
+                logger.debug(f"投递到主 loop 失败，改用后台 loop: {exc}")
+
+        runner = self._get_or_create_reload_runner()
+        try:
+            runner.submit(coro)
+        except Exception as exc:
+            logger.debug(f"投递到后台 loop 失败: {exc}")
 
     async def _on_config_changed(self, file_path: str):
         """配置文件变更回调"""
@@ -245,9 +279,27 @@ class AsyncConfigLoader:
     def stop_hot_reload(self):
         """停止热重载"""
         if self._observer:
-            self._observer.stop()
-            self._observer.join()
+            try:
+                self._observer.stop()
+                # join 不要无限阻塞：退出阶段避免被 watchdog 线程卡住
+                self._observer.join(timeout=2.0)
+            except Exception:
+                pass
+            self._observer = None
             logger.info("配置文件热重载已停止")
+        if self._reload_runner is not None:
+            try:
+                self._reload_runner.close(timeout=1.0)
+            except Exception:
+                pass
+            self._reload_runner = None
+
+    def close(self) -> None:
+        """清理资源（幂等）。"""
+        try:
+            self.stop_hot_reload()
+        except Exception:
+            pass
 
     def get_stats(self) -> Dict:
         """获取统计信息"""

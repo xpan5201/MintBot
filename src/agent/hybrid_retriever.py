@@ -12,6 +12,7 @@
 
 import math
 import re
+import heapq
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -40,6 +41,7 @@ _LANGCHAIN_LLM_IMPORT_ERROR: Optional[BaseException] = None
 try:
     from langchain_core.prompts import ChatPromptTemplate
     from src.llm.factory import get_llm
+
     HAS_LANGCHAIN_LLM = True
 except Exception as exc:  # pragma: no cover - 环境依赖差异
     HAS_LANGCHAIN_LLM = False
@@ -55,26 +57,39 @@ except Exception as exc:  # pragma: no cover - 环境依赖差异
 class HybridRetriever:
     """
     混合检索器 - 结合向量检索和关键词检索
-    
+
     特点：
     - 向量检索：语义相似度匹配
     - BM25 检索：关键词精确匹配
     - 自适应融合：根据查询类型调整权重
     """
-    
-    def __init__(self, vectorstore, documents: List[Dict[str, Any]]):
+
+    def __init__(
+        self,
+        vectorstore: Any,
+        documents: List[Dict[str, Any]],
+        *,
+        query_expander: Optional[Any] = None,
+    ):
         """
         初始化混合检索器
-        
+
         Args:
             vectorstore: ChromaDB 向量存储
             documents: 文档列表（包含 content 和 metadata）
         """
         self.vectorstore = vectorstore
-        self.documents = documents
-        
+        self.query_expander = query_expander
+
+        self.documents = self._normalize_documents(documents)
+        self._doc_index_by_id: Dict[str, int] = {}
+        for idx, doc in enumerate(self.documents):
+            doc_id = str(doc.get("metadata", {}).get("id") or "").strip()
+            if doc_id and doc_id not in self._doc_index_by_id:
+                self._doc_index_by_id[doc_id] = idx
+
         # 构建 BM25 索引
-        if documents:
+        if self.documents:
             if BM25Okapi is None:
                 self.bm25 = None
                 global _WARNED_BM25_UNAVAILABLE
@@ -89,29 +104,138 @@ class HybridRetriever:
                         logger.warning("rank-bm25 不可用，BM25 索引未构建（仅向量检索）")
             else:
                 # 简单分词（中文按字符，英文按空格）
-                tokenized_docs = [self._tokenize(doc.get("content", "")) for doc in documents]
+                tokenized_docs = [
+                    self._tokenize(self._build_bm25_text(doc)) for doc in self.documents
+                ]
                 self.bm25 = BM25Okapi(tokenized_docs)
-                logger.info("BM25 索引构建完成，文档数量: %d", len(documents))
+                logger.info("BM25 索引构建完成，文档数量: %d", len(self.documents))
         else:
             self.bm25 = None
             logger.warning("文档列表为空，BM25 索引未构建")
-    
+
+    @staticmethod
+    def _normalize_keywords(raw: Any) -> str:
+        if isinstance(raw, str):
+            parts = [p.strip() for p in raw.split(",") if p.strip()]
+        elif isinstance(raw, list):
+            parts = [str(k).strip() for k in raw if str(k).strip()]
+        else:
+            parts = []
+        return ",".join(parts)
+
+    @classmethod
+    def _normalize_documents(cls, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        for doc in documents or []:
+            if not isinstance(doc, dict):
+                continue
+
+            metadata = doc.get("metadata")
+            if isinstance(metadata, dict):
+                meta = dict(metadata)
+                doc_id = meta.get("id") or doc.get("id")
+                if doc_id is None:
+                    continue
+                doc_id_str = str(doc_id).strip()
+                if not doc_id_str:
+                    continue
+                title = str(meta.get("title") or doc.get("title") or "").strip()
+                category = str(meta.get("category") or doc.get("category") or "").strip()
+                source = str(meta.get("source") or doc.get("source") or "").strip()
+                timestamp = str(meta.get("timestamp") or doc.get("timestamp") or "").strip()
+                keywords = cls._normalize_keywords(
+                    meta.get("keywords") or doc.get("keywords") or ""
+                )
+
+                content = str(doc.get("content") or "").strip()
+                if title and content and not content.lstrip().startswith("【"):
+                    content = f"【{title}】\n{content}"
+
+                meta.update(
+                    {
+                        "id": doc_id_str,
+                        "title": title,
+                        "category": category,
+                        "source": source,
+                        "timestamp": timestamp,
+                        "keywords": keywords,
+                    }
+                )
+                normalized.append({"content": content, "metadata": meta})
+                continue
+
+            doc_id = doc.get("id")
+            if doc_id is None:
+                continue
+            doc_id_str = str(doc_id).strip()
+            if not doc_id_str:
+                continue
+
+            title = str(doc.get("title") or "").strip()
+            content = str(doc.get("content") or "").strip()
+            category = str(doc.get("category") or "").strip()
+            source = str(doc.get("source") or "").strip()
+            timestamp = str(doc.get("timestamp") or "").strip()
+            keywords = cls._normalize_keywords(doc.get("keywords") or "")
+
+            meta = {
+                "id": doc_id_str,
+                "title": title,
+                "category": category,
+                "source": source,
+                "timestamp": timestamp,
+                "keywords": keywords,
+                "usage_count": doc.get("usage_count", 0),
+                "update_count": doc.get("update_count", 0),
+                "positive_feedback": doc.get("positive_feedback", 0),
+                "negative_feedback": doc.get("negative_feedback", 0),
+            }
+
+            full_content = f"【{title}】\n{content}" if title and content else content
+            normalized.append({"content": full_content, "metadata": meta})
+
+        return normalized
+
+    @staticmethod
+    def _build_bm25_text(doc: Dict[str, Any]) -> str:
+        """
+        构建用于 BM25 的文本（不改变输出 content）。
+
+        说明：BM25 更依赖关键词匹配，因此把 title/category/keywords/source 拼进来，提高命中率。
+        """
+        meta = doc.get("metadata") or {}
+        if not isinstance(meta, dict):
+            meta = {}
+
+        parts = [
+            str(meta.get("title") or "").strip(),
+            str(meta.get("category") or "").strip(),
+            str(meta.get("keywords") or "").strip(),
+            str(meta.get("source") or "").strip(),
+            str(doc.get("content") or "").strip(),
+        ]
+        text = " ".join([p for p in parts if p]).strip()
+        # 性能保护：避免极长文本导致 BM25 token 化爆炸
+        if len(text) > 8000:
+            text = text[:8000].strip()
+        return text
+
     def _tokenize(self, text: str) -> List[str]:
         """
         简单分词
-        
+
         Args:
             text: 文本
-        
+
         Returns:
             List[str]: 分词结果
         """
         # 中文按字符分词，英文按空格分词
         tokens = []
-        
+
         # 移除标点符号
         text = _TOKENIZE_CLEAN_RE.sub(" ", text)
-        
+
         # 分词
         for word in text.split():
             if word.strip():
@@ -121,9 +245,9 @@ class HybridRetriever:
                 else:
                     # 中文按字符
                     tokens.extend(list(word))
-        
+
         return tokens
-    
+
     def search(
         self,
         query: str,
@@ -134,38 +258,82 @@ class HybridRetriever:
     ) -> List[Dict[str, Any]]:
         """
         混合检索
-        
+
         Args:
             query: 查询文本
             k: 返回数量
             alpha: 向量检索权重（0-1），1-alpha 为关键词检索权重
             category: 类别过滤
             threshold: 相似度阈值
-        
+
         Returns:
             List[Dict]: 检索结果
         """
+        query = str(query or "").strip()
+        if not query:
+            return []
+
         if not self.vectorstore:
             logger.warning("向量存储未初始化")
             return []
-        
+
         if threshold is None:
             threshold = settings.agent.books_thresholds
-        
-        try:
-            # 1. 向量检索
-            vector_results = self.vectorstore.similarity_search_with_score(query, k=k*3)
 
-            # 2. BM25 关键词检索
-            bm25_scores = []
+        try:
+            k = max(1, int(k))
+
+            # 1. 向量检索
+            vector_results = self.vectorstore.similarity_search_with_score(query, k=k * 3)
+
+            # 2. BM25 关键词检索（仅取 top-n，避免 O(N) 结果合并）
+            bm25_scores: List[float] = []
+            bm25_bounds: Optional[Tuple[float, float]] = None
             if self.bm25 and self.documents:
-                tokenized_query = self._tokenize(query)
-                bm25_scores = self.bm25.get_scores(tokenized_query)
+                tokenized_query: List[str] = []
+                if getattr(self.query_expander, "enabled", False) and hasattr(
+                    self.query_expander, "expand_query"
+                ):
+                    try:
+                        expanded = self.query_expander.expand_query(query)
+                    except Exception:
+                        expanded = [query]
+                    for q in expanded or [query]:
+                        tokenized_query.extend(self._tokenize(str(q)))
+                else:
+                    tokenized_query = self._tokenize(query)
+
+                if tokenized_query:
+                    # 性能保护：去重并限制 token 数量，避免极端查询导致 BM25 开销过大
+                    if len(tokenized_query) > 64:
+                        tokenized_query = list(dict.fromkeys(tokenized_query))[:64]
+                    raw_scores = self.bm25.get_scores(tokenized_query)
+                    if hasattr(raw_scores, "tolist"):  # numpy array
+                        raw_scores = raw_scores.tolist()
+                    try:
+                        bm25_scores = [float(s) for s in list(raw_scores)]
+                    except Exception:
+                        bm25_scores = []
+
+                if bm25_scores:
+                    bm25_min = min(bm25_scores)
+                    bm25_max = max(bm25_scores)
+                    if bm25_max <= 0.0 or bm25_max <= bm25_min:
+                        bm25_scores = []
+                    else:
+                        bm25_bounds = (bm25_min, bm25_max)
+
             effective_alpha = alpha if bm25_scores else 1.0
 
             # 3. 融合分数
             combined_results = self._combine_scores(
-                vector_results, bm25_scores, effective_alpha, category, threshold
+                vector_results,
+                bm25_scores,
+                effective_alpha,
+                category,
+                threshold,
+                bm25_bounds=bm25_bounds,
+                bm25_top_n=max(0, k * 10),
             )
 
             # 4. 排序并返回 top-k
@@ -178,7 +346,7 @@ class HybridRetriever:
         except Exception as e:
             logger.exception("混合检索失败: %s", e)
             return []
-    
+
     def _combine_scores(
         self,
         vector_results: List[Tuple],
@@ -186,34 +354,51 @@ class HybridRetriever:
         alpha: float,
         category: Optional[str],
         threshold: float,
+        *,
+        bm25_bounds: Optional[Tuple[float, float]] = None,
+        bm25_top_n: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         融合向量检索和 BM25 检索的分数
-        
+
         Args:
             vector_results: 向量检索结果 [(doc, score), ...]
             bm25_scores: BM25 分数列表
             alpha: 向量检索权重
             category: 类别过滤
             threshold: 相似度阈值
-        
+
         Returns:
             List[Dict]: 融合后的结果
         """
-        # 归一化 BM25 分数
-        normalized_bm25 = self._normalize_scores(bm25_scores) if len(bm25_scores) > 0 else []
-
         # 构建结果字典
         results_dict = {}
 
+        def _norm_bm25(raw: float) -> float:
+            if not bm25_bounds:
+                return 0.0
+            bm25_min, bm25_max = bm25_bounds
+            if bm25_max <= bm25_min:
+                return 0.0
+            value = (float(raw) - bm25_min) / (bm25_max - bm25_min)
+            if value <= 0.0:
+                return 0.0
+            return min(value, 1.0)
+
         # 处理向量检索结果
         for doc, score in vector_results:
-            doc_id = doc.metadata.get("id")
+            doc_meta = getattr(doc, "metadata", {}) or {}
+            if not isinstance(doc_meta, dict):
+                doc_meta = {}
+            doc_id = doc_meta.get("id")
+            if not doc_id:
+                continue
+            doc_id = str(doc_id).strip()
             if not doc_id:
                 continue
 
             # 类别过滤
-            if category and doc.metadata.get("category") != category:
+            if category and str(doc_meta.get("category") or "") != str(category):
                 continue
 
             # 计算向量相似度（ChromaDB 返回的是距离，需要转换）
@@ -223,76 +408,125 @@ class HybridRetriever:
             if similarity < threshold:
                 continue
 
+            merged_meta = dict(doc_meta)
+            bm25_score = 0.0
+            idx = self._doc_index_by_id.get(doc_id)
+            if bm25_scores and idx is not None and 0 <= idx < len(bm25_scores):
+                bm25_score = _norm_bm25(bm25_scores[idx])
+
+            # 合并 documents 的元数据（更完整且更可能包含最新 usage_count 等）
+            if idx is not None and 0 <= idx < len(self.documents):
+                meta_from_docs = self.documents[idx].get("metadata") or {}
+                if isinstance(meta_from_docs, dict):
+                    merged_meta.update(meta_from_docs)
+
             results_dict[doc_id] = {
                 "id": doc_id,
                 "content": doc.page_content,
-                "metadata": doc.metadata,
+                "metadata": merged_meta,
                 "vector_score": similarity,
-                "bm25_score": 0.0,
-                "score": alpha * similarity,
+                "bm25_score": bm25_score,
+                "score": alpha * similarity + (1 - alpha) * bm25_score,
             }
 
         # 处理 BM25 检索结果
-        if normalized_bm25 and self.documents:
-            for i, bm25_score in enumerate(normalized_bm25):
+        if bm25_scores and self.documents and bm25_top_n > 0 and bm25_bounds:
+            bm25_top_n = min(len(bm25_scores), int(bm25_top_n))
+            top_idx = heapq.nlargest(
+                bm25_top_n, range(len(bm25_scores)), key=bm25_scores.__getitem__
+            )
+            for i in top_idx:
                 if i >= len(self.documents):
-                    break
+                    continue
+                raw = bm25_scores[i]
+                if raw <= 0.0:
+                    continue
+                bm25_score = _norm_bm25(raw)
+                if bm25_score <= 0.0:
+                    continue
 
                 doc = self.documents[i]
-                doc_id = doc.get("metadata", {}).get("id")
+                meta = doc.get("metadata") or {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                doc_id = str(meta.get("id") or "").strip()
                 if not doc_id:
                     continue
 
                 # 类别过滤
-                if category and doc.get("metadata", {}).get("category") != category:
+                if category and str(meta.get("category") or "") != str(category):
                     continue
 
                 if doc_id in results_dict:
-                    # 已存在，更新分数
-                    results_dict[doc_id]["bm25_score"] = bm25_score
-                    results_dict[doc_id]["score"] += (1 - alpha) * bm25_score
-                else:
-                    # 新结果
-                    results_dict[doc_id] = {
-                        "id": doc_id,
-                        "content": doc.get("content", ""),
-                        "metadata": doc.get("metadata", {}),
-                        "vector_score": 0.0,
-                        "bm25_score": bm25_score,
-                        "score": (1 - alpha) * bm25_score,
-                    }
+                    prev_bm25 = float(results_dict[doc_id].get("bm25_score", 0.0) or 0.0)
+                    if bm25_score > prev_bm25:
+                        results_dict[doc_id]["bm25_score"] = bm25_score
+                        v = float(results_dict[doc_id].get("vector_score", 0.0) or 0.0)
+                        results_dict[doc_id]["score"] = alpha * v + (1 - alpha) * bm25_score
+                    continue
+
+                results_dict[doc_id] = {
+                    "id": doc_id,
+                    "content": str(doc.get("content") or ""),
+                    "metadata": meta,
+                    "vector_score": 0.0,
+                    "bm25_score": bm25_score,
+                    "score": (1 - alpha) * bm25_score,
+                }
 
         return list(results_dict.values())
 
+    def apply_usage_increments(self, increments: Dict[str, int]) -> None:
+        """
+        将 usage_count 增量同步到内部 documents 元数据（不触发 BM25 重建）。
+
+        说明：LoreBook 在 search 后会批量写回 usage_count；为了让 reranker 的 usage 维度更及时，
+        这里同步内存态 documents 的 usage_count。
+        """
+        if not increments:
+            return
+
+        for doc_id, delta in increments.items():
+            doc_id_str = str(doc_id).strip()
+            if not doc_id_str:
+                continue
+            idx = self._doc_index_by_id.get(doc_id_str)
+            if idx is None or not (0 <= idx < len(self.documents)):
+                continue
+            meta = self.documents[idx].get("metadata")
+            if not isinstance(meta, dict):
+                continue
+            try:
+                meta["usage_count"] = int(meta.get("usage_count", 0) or 0) + int(delta)
+            except Exception:
+                try:
+                    meta["usage_count"] = int(delta)
+                except Exception:
+                    meta["usage_count"] = meta.get("usage_count", 0)
+
     def _normalize_scores(self, scores: List[float]) -> List[float]:
         """
-        归一化分数到 [0, 1]
+        归一化分数到 [0, 1]（保留旧接口，供其他调用方可能使用）。
 
-        Args:
-            scores: 原始分数列表
-
-        Returns:
-            List[float]: 归一化后的分数
+        注意：当所有分数相同（尤其是全 0）时，返回全 0，避免“无信息”被放大成强信号。
         """
-        # 转换为列表（如果是 numpy 数组）
-        if hasattr(scores, 'tolist'):
+        if hasattr(scores, "tolist"):
             scores = scores.tolist()
-
-        # 确保是列表
         if not isinstance(scores, list):
             scores = list(scores)
-
-        # 检查是否为空
         if len(scores) == 0:
             return []
 
         min_score = min(scores)
         max_score = max(scores)
+        if max_score <= min_score:
+            return [0.0] * len(scores)
+        if max_score <= 0.0:
+            return [0.0] * len(scores)
 
-        if max_score == min_score:
-            return [1.0] * len(scores)
-
-        return [(float(s) - min_score) / (max_score - min_score) for s in scores]
+        return [
+            max(0.0, min((float(s) - min_score) / (max_score - min_score), 1.0)) for s in scores
+        ]
 
 
 class Reranker:
@@ -347,11 +581,11 @@ class Reranker:
 
             # 综合评分（可配置权重）
             final_score = (
-                base_score * 0.3 +
-                recency_score * 0.15 +
-                importance_score * 0.2 +
-                usage_score * 0.15 +
-                context_score * 0.2
+                base_score * 0.3
+                + recency_score * 0.15
+                + importance_score * 0.2
+                + usage_score * 0.15
+                + context_score * 0.2
             )
 
             result["final_score"] = final_score
@@ -390,7 +624,7 @@ class Reranker:
 
             # 指数衰减：一年后衰减到 37%
             return math.exp(-days_old / 365)
-        except:
+        except Exception:
             return 0.5
 
     def _calculate_usage_score(self, result: Dict[str, Any]) -> float:
@@ -403,7 +637,11 @@ class Reranker:
         Returns:
             float: 使用频率分数 (0-1)
         """
-        usage_count = result.get("metadata", {}).get("usage_count", 0)
+        usage_raw = result.get("metadata", {}).get("usage_count", 0)
+        try:
+            usage_count = int(usage_raw or 0)
+        except Exception:
+            usage_count = 0
 
         # 对数归一化：假设最大使用次数为 100
         if usage_count <= 0:
@@ -411,11 +649,7 @@ class Reranker:
 
         return min(math.log(usage_count + 1) / math.log(100), 1.0)
 
-    def _calculate_context_score(
-        self,
-        result: Dict[str, Any],
-        context: Dict[str, Any]
-    ) -> float:
+    def _calculate_context_score(self, result: Dict[str, Any], context: Dict[str, Any]) -> float:
         """
         计算上下文相关性分数
 
@@ -438,8 +672,20 @@ class Reranker:
             return 1.0
 
         # 检查关键词匹配
-        context_keywords = set(context.get("keywords", []))
-        knowledge_keywords = set(result.get("metadata", {}).get("keywords", "").split(","))
+        raw_context_keywords = context.get("keywords", [])
+        if not isinstance(raw_context_keywords, list):
+            raw_context_keywords = []
+        context_keywords = {str(k).strip() for k in raw_context_keywords if str(k).strip()}
+
+        raw_knowledge_keywords = result.get("metadata", {}).get("keywords", "")
+        if isinstance(raw_knowledge_keywords, list):
+            knowledge_keywords = {str(k).strip() for k in raw_knowledge_keywords if str(k).strip()}
+        else:
+            knowledge_keywords = {
+                str(k).strip()
+                for k in str(raw_knowledge_keywords or "").split(",")
+                if str(k).strip()
+            }
 
         if context_keywords and knowledge_keywords:
             common_keywords = context_keywords & knowledge_keywords
@@ -478,8 +724,11 @@ class QueryExpander:
             return [query]
 
         try:
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", """你是一个查询扩展专家。请为给定的查询生成 {max_expansions} 个相关的扩展查询。
+            prompt = ChatPromptTemplate.from_messages(
+                [
+                    (
+                        "system",
+                        """你是一个查询扩展专家。请为给定的查询生成 {max_expansions} 个相关的扩展查询。
 
 扩展规则：
 1. 使用同义词替换
@@ -490,20 +739,20 @@ class QueryExpander:
 请以 JSON 格式返回：
 {{
     "expanded_queries": ["查询1", "查询2", "查询3"]
-}}"""),
-                ("human", "原始查询: {query}"),
-            ])
+}}""",
+                    ),
+                    ("human", "原始查询: {query}"),
+                ]
+            )
 
             llm = get_llm()
             chain = prompt | llm
 
-            result = chain.invoke({
-                "query": query,
-                "max_expansions": max_expansions
-            })
+            result = chain.invoke({"query": query, "max_expansions": max_expansions})
 
             # 解析 JSON
             import json
+
             data = json.loads(result.content)
             expanded = data.get("expanded_queries", [])
 
@@ -512,7 +761,7 @@ class QueryExpander:
                 expanded.insert(0, query)
 
             logger.debug("查询扩展完成: 原始=%.80s 扩展=%d个", query, len(expanded))
-            return expanded[:max_expansions + 1]
+            return expanded[: max_expansions + 1]
 
         except Exception as e:
             logger.warning("查询扩展失败: %s", e)
