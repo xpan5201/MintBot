@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib
 from importlib.machinery import PathFinder
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -108,6 +109,304 @@ def _relpath_posix(target: Path, start: Path) -> str:
     return Path(os.path.relpath(str(target), str(start))).as_posix()
 
 
+def _stable_ascii_token(value: str, *, prefix: str) -> str:
+    """Return an ASCII-only token for potentially non-ASCII strings (CubismJson can reject Unicode)."""
+    s = str(value or "")
+    if _is_ascii(s):
+        return s
+    digest = hashlib.sha1(s.encode("utf-8", "ignore")).hexdigest()[:10]
+    return f"{prefix}_{digest}"
+
+
+def _sanitize_json_ascii(data: Any) -> Any:
+    """Recursively replace non-ASCII strings/keys with stable ASCII tokens."""
+    if isinstance(data, str):
+        return data if _is_ascii(data) else _stable_ascii_token(data, prefix="u")
+    if isinstance(data, list):
+        return [_sanitize_json_ascii(item) for item in data]
+    if isinstance(data, dict):
+        sanitized: dict[str, Any] = {}
+        for k, v in data.items():
+            key = str(k)
+            if not _is_ascii(key):
+                key = _stable_ascii_token(key, prefix="k")
+            sanitized[key] = _sanitize_json_ascii(v)
+        return sanitized
+    return data
+
+
+def _cache_root_for_model(src_model_json: Path, *, cache_base: Path | None = None) -> Path:
+    base = Path(cache_base) if cache_base is not None else (_repo_root() / "data" / "live2d_cache")
+    try:
+        key_src = str(Path(src_model_json).resolve())
+    except Exception:
+        key_src = str(src_model_json)
+    digest = hashlib.sha1(str(key_src).encode("utf-8", "ignore")).hexdigest()[:12]
+    return base / f"model_{digest}_ascii"
+
+
+def _sanitize_model3_json_for_cubism(src_model_json: Path, *, cache_base: Path | None = None) -> Path:
+    """
+    Return a model3.json path that is safe for Cubism's limited JSON parser.
+
+    Empirically, CubismJson (live2d-py / Cubism Native SDK) may reject Unicode (either UTF-8 bytes or \\u escapes)
+    and can even crash on invalid documents. We generate an ASCII-only wrapper under `data/live2d_cache/`, copying
+    only necessary assets with non-ASCII names (and, when the source path contains Unicode, copying core assets too).
+    """
+    src_model_json = Path(src_model_json)
+    if not src_model_json.exists():
+        return src_model_json
+
+    model_dir = src_model_json.parent
+    exp_files = sorted(model_dir.glob("*.exp3.json"))
+    motion_files = sorted(model_dir.glob("*.motion3.json"))
+
+    try:
+        base = json.loads(src_model_json.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Failed to parse base model json for sanitizing: %s", exc)
+        return src_model_json
+    if not isinstance(base, dict):
+        return src_model_json
+
+    src_refs = base.get("FileReferences") or {}
+    if not isinstance(src_refs, dict):
+        src_refs = {}
+
+    try:
+        src_path_str = str(src_model_json.resolve())
+    except Exception:
+        src_path_str = str(src_model_json)
+    must_copy_core_assets = not _is_ascii(src_path_str)
+
+    needs_ascii = must_copy_core_assets
+    for p in exp_files + motion_files:
+        if not _is_ascii(p.name):
+            needs_ascii = True
+            break
+    if not needs_ascii:
+        try:
+            for k, v in src_refs.items():
+                if isinstance(k, str) and not _is_ascii(k):
+                    needs_ascii = True
+                    break
+                if isinstance(v, str) and not _is_ascii(v):
+                    needs_ascii = True
+                    break
+                if isinstance(v, list) and any(isinstance(it, str) and not _is_ascii(it) for it in v):
+                    needs_ascii = True
+                    break
+        except Exception:
+            pass
+
+    if not needs_ascii:
+        return src_model_json
+
+    cache_root = _cache_root_for_model(src_model_json, cache_base=cache_base)
+    expressions_dir = cache_root / "expressions"
+    motions_dir = cache_root / "motions"
+    assets_dir = cache_root / "assets"
+    sanitized_path = cache_root / "model.model3.json"
+
+    def resolve_ref(ref: str) -> Path:
+        p = Path(ref)
+        if p.is_absolute():
+            return p
+        return model_dir / p
+
+    def copy_file(src: Path, dest: Path) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(src, dest)
+        except Exception:
+            shutil.copyfile(src, dest)
+
+    def from_model_ref(ref: str) -> str:
+        return _relpath_posix(resolve_ref(ref), cache_root)
+
+    copy_jobs: list[tuple[Path, Path]] = []
+    expected: list[Path] = []
+    max_src_mtime = 0.0
+
+    def note_src(src: Path) -> None:
+        nonlocal max_src_mtime
+        try:
+            max_src_mtime = max(max_src_mtime, float(src.stat().st_mtime))
+        except Exception:
+            pass
+
+    note_src(src_model_json)
+
+    def emit_core_ref(ref: str) -> str:
+        ref_s = str(ref or "")
+        if not ref_s:
+            return ref_s
+        src = resolve_ref(ref_s)
+        if not src.exists():
+            return ref_s
+        note_src(src)
+        if not must_copy_core_assets and _is_ascii(ref_s):
+            rel = from_model_ref(ref_s)
+            if _is_ascii(rel):
+                return rel
+        if not must_copy_core_assets and _is_ascii(ref_s) and not _is_ascii(Path(ref_s).name):
+            pass
+        dest_rel: Path
+        if _is_ascii(ref_s) and not Path(ref_s).is_absolute():
+            dest_rel = Path(ref_s)
+        else:
+            suffix = "".join(src.suffixes) or src.suffix
+            digest = hashlib.sha1(str(src).encode("utf-8", "ignore")).hexdigest()[:10]
+            dest_rel = Path("assets") / f"asset_{digest}{suffix}"
+        dest = cache_root / dest_rel
+        copy_jobs.append((src, dest))
+        expected.append(dest)
+        return dest_rel.as_posix()
+
+    def emit_expression_entry(src_path: Path, *, idx: int, name: str | None) -> dict[str, str]:
+        expressions_dir.mkdir(parents=True, exist_ok=True)
+        note_src(src_path)
+        expr_name = str(name or "").strip()
+        if not expr_name or not _is_ascii(expr_name):
+            expr_name = f"expr_{idx:02d}"
+        dest_rel = Path("expressions") / f"expr_{idx:02d}.exp3.json"
+        dest = cache_root / dest_rel
+        copy_jobs.append((src_path, dest))
+        expected.append(dest)
+        return {"Name": expr_name, "File": dest_rel.as_posix()}
+
+    def emit_motion_entry(group: str, src_path: Path, *, idx: int, original: dict[str, Any] | None) -> dict[str, Any]:
+        motions_dir.mkdir(parents=True, exist_ok=True)
+        note_src(src_path)
+        safe_group = _stable_ascii_token(group, prefix="motion")
+        safe_group = re.sub(r"[^A-Za-z0-9_]+", "_", safe_group).strip("_") or "motion"
+        dest_rel = Path("motions") / f"{safe_group.lower()}_{idx:02d}.motion3.json"
+        dest = cache_root / dest_rel
+        copy_jobs.append((src_path, dest))
+        expected.append(dest)
+        item: dict[str, Any] = {}
+        if isinstance(original, dict):
+            item.update(original)
+        item["File"] = dest_rel.as_posix()
+        if "Sound" in item and isinstance(item["Sound"], str):
+            item["Sound"] = emit_core_ref(item["Sound"])
+        return item
+
+    new_refs: dict[str, Any] = {}
+    for key, value in src_refs.items():
+        if key in {"Expressions", "Motions"}:
+            continue
+        if isinstance(value, str):
+            new_refs[str(key)] = emit_core_ref(value)
+        elif isinstance(value, list):
+            converted: list[Any] = []
+            for item in value:
+                if isinstance(item, str):
+                    converted.append(emit_core_ref(item))
+                else:
+                    converted.append(item)
+            new_refs[str(key)] = converted
+        else:
+            new_refs[str(key)] = value
+
+    base_expr = src_refs.get("Expressions")
+    expressions: list[dict[str, str]] = []
+    if isinstance(base_expr, list) and base_expr:
+        for idx, entry in enumerate(base_expr, start=1):
+            if not isinstance(entry, dict):
+                continue
+            file_ref = entry.get("File")
+            if not isinstance(file_ref, str) or not file_ref:
+                continue
+            src = resolve_ref(file_ref)
+            if not src.exists():
+                continue
+            name = entry.get("Name") if isinstance(entry.get("Name"), str) else None
+            if must_copy_core_assets or (not _is_ascii(file_ref)) or (name is not None and not _is_ascii(name)):
+                expressions.append(emit_expression_entry(src, idx=idx, name=name))
+            else:
+                expr_name = name or f"expr_{idx:02d}"
+                expr_name = expr_name if _is_ascii(expr_name) else f"expr_{idx:02d}"
+                expressions.append({"Name": expr_name, "File": from_model_ref(file_ref)})
+    elif exp_files:
+        for idx, src in enumerate(exp_files, start=1):
+            if not _is_ascii(src.name) or must_copy_core_assets:
+                expressions.append(emit_expression_entry(src, idx=idx, name=None))
+    if expressions:
+        new_refs["Expressions"] = expressions
+
+    base_motions = src_refs.get("Motions")
+    motions: dict[str, list[dict[str, Any]]] = {}
+    if isinstance(base_motions, dict) and base_motions:
+        for group, items in base_motions.items():
+            if not isinstance(items, list):
+                continue
+            group_name = str(group)
+            safe_group = group_name if _is_ascii(group_name) else _stable_ascii_token(group_name, prefix="motion")
+            safe_group = re.sub(r"[^A-Za-z0-9_]+", "_", safe_group).strip("_") or "motion"
+            out_items: list[dict[str, Any]] = []
+            for idx, item in enumerate(items, start=1):
+                if not isinstance(item, dict):
+                    continue
+                file_ref = item.get("File")
+                if not isinstance(file_ref, str) or not file_ref:
+                    continue
+                src = resolve_ref(file_ref)
+                if not src.exists():
+                    continue
+                if must_copy_core_assets or (not _is_ascii(file_ref)):
+                    out_items.append(emit_motion_entry(safe_group, src, idx=idx, original=item))
+                else:
+                    copied = dict(item)
+                    copied["File"] = from_model_ref(file_ref)
+                    if "Sound" in copied and isinstance(copied["Sound"], str):
+                        copied["Sound"] = emit_core_ref(copied["Sound"])
+                    out_items.append(copied)
+            if out_items:
+                motions[safe_group] = out_items
+    elif motion_files:
+        idle: list[dict[str, Any]] = []
+        for idx, src in enumerate(motion_files, start=1):
+            if not _is_ascii(src.name) or must_copy_core_assets:
+                idle.append(emit_motion_entry("Idle", src, idx=idx, original=None))
+        if idle:
+            motions["Idle"] = idle
+    if motions:
+        new_refs["Motions"] = motions
+
+    sanitized: dict[str, Any] = dict(base)
+    sanitized["Version"] = int(base.get("Version") or 3)
+    sanitized["FileReferences"] = new_refs
+    sanitized = _sanitize_json_ascii(sanitized)
+
+    try:
+        if sanitized_path.exists():
+            cache_mtime = float(sanitized_path.stat().st_mtime)
+            if cache_mtime >= float(max_src_mtime) and all(p.exists() for p in expected):
+                return sanitized_path
+    except Exception:
+        pass
+
+    try:
+        cache_root.mkdir(parents=True, exist_ok=True)
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        for src, dest in copy_jobs:
+            try:
+                if dest.exists() and float(dest.stat().st_mtime) >= float(src.stat().st_mtime):
+                    continue
+            except Exception:
+                pass
+            try:
+                copy_file(src, dest)
+            except Exception as exc:
+                logger.warning("Failed to copy Live2D asset %s: %s", src, exc)
+        sanitized_path.write_text(json.dumps(sanitized, ensure_ascii=True, indent=2), encoding="utf-8")
+        return sanitized_path
+    except Exception as exc:
+        logger.warning("Live2D model sanitizer failed: %s", exc, exc_info=True)
+        return src_model_json
+
+
 _CSS_RGB_RE = re.compile(
     r"^\s*rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*([0-9.]+)\s*)?\)\s*$",
     re.IGNORECASE,
@@ -190,6 +489,7 @@ class Live2DGlWidget(QOpenGLWidget):
         self._model_json = Path(model_json) if model_json is not None else None
         self._model: Any = None
         self._live2d: Any = None
+        self._gl_resources_released = False
         self._ready = False
         self._paused = False  # effective paused state
         self._requested_paused = False
@@ -511,6 +811,13 @@ class Live2DGlWidget(QOpenGLWidget):
             return
 
         self._live2d = live2d_mod
+        self._gl_resources_released = False
+        try:
+            ctx = self.context()
+            if ctx is not None:
+                ctx.aboutToBeDestroyed.connect(self._on_context_about_to_be_destroyed)
+        except Exception:
+            pass
 
         try:
             # Keep logs quiet unless user explicitly enables them.
@@ -652,15 +959,60 @@ class Live2DGlWidget(QOpenGLWidget):
         except Exception:
             pass
 
+    def _cleanup_gl_resources(self) -> None:
+        if bool(getattr(self, "_gl_resources_released", False)):
+            return
+        self._gl_resources_released = True
+
+        try:
+            self._tick_timer.stop()
+        except Exception:
+            pass
+        try:
+            self._fps_boost_reset.stop()
+        except Exception:
+            pass
+
+        try:
+            self._destroy_model()
+        except Exception:
+            pass
+        try:
+            if self._live2d is not None:
+                self._live2d.glRelease()
+        except Exception:
+            pass
+
+        try:
+            self._set_ready(False)
+        except Exception:
+            pass
+
+    def _on_context_about_to_be_destroyed(self) -> None:
+        try:
+            self.makeCurrent()
+        except Exception:
+            try:
+                self._cleanup_gl_resources()
+            except Exception:
+                pass
+            return
+        try:
+            self._cleanup_gl_resources()
+        finally:
+            try:
+                self.doneCurrent()
+            except Exception:
+                pass
+
     def closeEvent(self, event):  # noqa: N802 - Qt API naming
         try:
             self.makeCurrent()
-            self._destroy_model()
-            try:
-                if self._live2d is not None:
-                    self._live2d.glRelease()
-            except Exception:
-                pass
+        except Exception:
+            self._cleanup_gl_resources()
+            return super().closeEvent(event)
+        try:
+            self._cleanup_gl_resources()
         finally:
             try:
                 self.doneCurrent()
@@ -2040,138 +2392,4 @@ class Live2DGlWidget(QOpenGLWidget):
         self._model = None
 
     def _prepare_ascii_model_json(self, src_model_json: Path) -> Path:
-        """Return a model3.json path that is safe for Cubism's limited JSON parser.
-
-        Empirically, CubismJson may reject Unicode (either UTF-8 bytes or \\u escapes) and
-        can even crash on invalid documents. The shipped model folder has Chinese-named
-        `.exp3.json` / `.motion3.json` files, so we generate an ASCII-only wrapper and
-        copy only those small files into `data/live2d_cache/`.
-        """
-
-        try:
-            model_dir = src_model_json.parent
-            exp_files = sorted(model_dir.glob("*.exp3.json"))
-            motion_files = sorted(model_dir.glob("*.motion3.json"))
-            if not exp_files and not motion_files:
-                return src_model_json
-
-            needs_ascii = False
-            for p in exp_files + motion_files:
-                if not _is_ascii(p.name):
-                    needs_ascii = True
-                    break
-            if not needs_ascii:
-                return src_model_json
-
-            repo_root = _repo_root()
-            cache_root = repo_root / "data" / "live2d_cache" / f"{model_dir.name}_ascii"
-            expressions_dir = cache_root / "expressions"
-            motions_dir = cache_root / "motions"
-            sanitized_path = cache_root / "model.model3.json"
-
-            # Fast path: reuse an up-to-date cache wrapper to avoid re-copying assets on every run.
-            try:
-                if sanitized_path.exists():
-                    max_src_mtime = float(src_model_json.stat().st_mtime)
-                    for p in exp_files + motion_files:
-                        try:
-                            max_src_mtime = max(max_src_mtime, float(p.stat().st_mtime))
-                        except Exception:
-                            pass
-                    cache_mtime = float(sanitized_path.stat().st_mtime)
-
-                    expected_expr = [
-                        expressions_dir / f"expr_{i:02d}.exp3.json" for i in range(1, len(exp_files) + 1)
-                    ]
-                    expected_motion = [
-                        motions_dir / f"idle_{i:02d}.motion3.json" for i in range(1, len(motion_files) + 1)
-                    ]
-                    if cache_mtime >= max_src_mtime and all(p.exists() for p in expected_expr + expected_motion):
-                        return sanitized_path
-            except Exception:
-                pass
-
-            # Parse the base model json (usually ASCII-only, safe for Python parser).
-            try:
-                base = json.loads(src_model_json.read_text(encoding="utf-8"))
-            except Exception as exc:
-                logger.warning("Failed to parse base model json for sanitizing: %s", exc)
-                return src_model_json
-
-            expressions_dir.mkdir(parents=True, exist_ok=True)
-            motions_dir.mkdir(parents=True, exist_ok=True)
-
-            src_refs = base.get("FileReferences") or {}
-            new_refs: dict[str, Any] = {}
-
-            def from_model_ref(ref: str) -> str:
-                # Convert model-relative file refs to paths relative to cache_root.
-                return _relpath_posix(model_dir / Path(ref), cache_root)
-
-            for key, value in src_refs.items():
-                if key in {"Expressions", "Motions"}:
-                    continue
-                if isinstance(value, str):
-                    new_refs[key] = from_model_ref(value)
-                elif isinstance(value, list):
-                    converted: list[Any] = []
-                    for item in value:
-                        if isinstance(item, str):
-                            converted.append(from_model_ref(item))
-                        else:
-                            converted.append(item)
-                    new_refs[key] = converted
-                else:
-                    new_refs[key] = value
-
-            # Copy non-ASCII expression files into cache with ASCII names.
-            expressions: list[dict[str, str]] = []
-            for idx, src_path in enumerate(exp_files, start=1):
-                name = f"expr_{idx:02d}"
-                dest_name = f"{name}.exp3.json"
-                dest_path = expressions_dir / dest_name
-                try:
-                    shutil.copy2(src_path, dest_path)
-                except Exception:
-                    try:
-                        shutil.copyfile(src_path, dest_path)
-                    except Exception as exc:
-                        logger.warning("Failed to copy expression %s: %s", src_path, exc)
-                        continue
-                expressions.append({"Name": name, "File": f"expressions/{dest_name}"})
-            if expressions:
-                new_refs["Expressions"] = expressions
-
-            # Copy non-ASCII motion files into cache with ASCII names.
-            if motion_files:
-                idle: list[dict[str, str]] = []
-                for idx, src_path in enumerate(motion_files, start=1):
-                    dest_name = f"idle_{idx:02d}.motion3.json"
-                    dest_path = motions_dir / dest_name
-                    try:
-                        shutil.copy2(src_path, dest_path)
-                    except Exception:
-                        try:
-                            shutil.copyfile(src_path, dest_path)
-                        except Exception as exc:
-                            logger.warning("Failed to copy motion %s: %s", src_path, exc)
-                            continue
-                    idle.append({"File": f"motions/{dest_name}"})
-                if idle:
-                    new_refs["Motions"] = {"Idle": idle}
-
-            sanitized: dict[str, Any] = {
-                "Version": int(base.get("Version") or 3),
-                "FileReferences": new_refs,
-            }
-            if "Groups" in base:
-                sanitized["Groups"] = base["Groups"]
-
-            sanitized_path.write_text(
-                json.dumps(sanitized, ensure_ascii=True, indent=2),
-                encoding="utf-8",
-            )
-            return sanitized_path
-        except Exception as exc:
-            logger.warning("Live2D model sanitizer failed: %s", exc, exc_info=True)
-            return src_model_json
+        return _sanitize_model3_json_for_cubism(src_model_json)
