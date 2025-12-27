@@ -205,3 +205,4 @@ uv pip install --upgrade setuptools
 ## 许可证
 
 MIT，见 `LICENSE`。
+# MintBot
