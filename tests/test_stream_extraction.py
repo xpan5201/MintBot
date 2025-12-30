@@ -29,4 +29,3 @@ def test_extract_reply_from_response_handles_dict_messages() -> None:
         ]
     }
     assert agent._extract_reply_from_response(response) == "hello"
-

@@ -2,15 +2,14 @@
 
 Theme selection priority:
 1) Environment variable: MINTCHAT_GUI_THEME
-2) config.yaml: GUI.theme (or gui.theme)
+2) config.user.yaml: GUI.theme (or gui.theme)
 3) Default: mint
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 import os
 
 ENV_GUI_THEME = "MINTCHAT_GUI_THEME"
@@ -38,14 +37,10 @@ def normalize_theme_name(value: Optional[str]) -> str:
 
 @lru_cache(maxsize=1)
 def _read_theme_from_config() -> Optional[str]:
-    config_path = Path(__file__).resolve().parents[2] / "config.yaml"
-    if not config_path.exists():
-        return None
-
     try:
-        import yaml  # optional dependency in project
+        from src.config.config_files import load_merged_config
 
-        data: Any = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        data, _user_path, _dev_path, _legacy_used = load_merged_config()
     except Exception:
         return None
 
@@ -74,4 +69,3 @@ def get_active_theme_name() -> str:
 
 def is_anime_theme() -> bool:
     return get_active_theme_name() == THEME_ANIME
-

@@ -191,7 +191,9 @@ class ConcurrentMemoryRetriever:
             user_id = getattr(self.long_term_memory, "user_id", None)
             long_term_obj = getattr(self.long_term_memory, "long_term", None)
             lt_version = getattr(long_term_obj, "write_version", 0)
-            cache_key_data = f"u={user_id}|ltv={lt_version}|{query}_{long_term_k}_{core_k}_{diary_k}_{lore_k}"
+            cache_key_data = (
+                f"u={user_id}|ltv={lt_version}|{query}_{long_term_k}_{core_k}_{diary_k}_{lore_k}"
+            )
             cache_key = hashlib.md5(cache_key_data.encode()).hexdigest()
             cached_result = cache_manager.memory_cache.get(cache_key)
             if cached_result is not None:
@@ -223,8 +225,7 @@ class ConcurrentMemoryRetriever:
         self.stats["total_retrievals"] += 1
         self.stats["last_latency_ms"] = round(elapsed_ms, 2)
         self.stats["avg_time_ms"] = (
-            self.stats["avg_time_ms"] * (self.stats["total_retrievals"] - 1)
-            + elapsed_ms
+            self.stats["avg_time_ms"] * (self.stats["total_retrievals"] - 1) + elapsed_ms
         ) / self.stats["total_retrievals"]
 
         # 记录详细日志
@@ -395,7 +396,7 @@ class ConcurrentMemoryRetriever:
     ) -> List[Any]:
         """
         带指标记录的异步等待，增强错误处理
-        
+
         改进：
         - 改进错误信息处理（避免空错误信息）
         - 记录性能指标

@@ -15,6 +15,7 @@ from .shortcut_settings_dialog import ShortcutSettingsDialog  # v2.42.0
 from .export_template_dialog import ExportTemplateDialog  # v2.42.0
 from .tts_performance_monitor import TTSPerformanceMonitor  # v2.44.0
 from .performance_chart import PerformanceChart  # v2.45.0
+from .confirm_dialog import ConfirmDialog, ConfirmDialogTexts  # v2.52.0
 
 __all__ = [
     "TTSStatusPanel",
@@ -28,5 +29,6 @@ __all__ = [
     "ExportTemplateDialog",  # v2.42.0
     "TTSPerformanceMonitor",  # v2.44.0
     "PerformanceChart",  # v2.45.0
+    "ConfirmDialog",  # v2.52.0
+    "ConfirmDialogTexts",  # v2.52.0
 ]
-

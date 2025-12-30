@@ -8,14 +8,18 @@
 
 from PyQt6.QtWidgets import QPushButton, QWidget
 from PyQt6.QtCore import (
-    Qt, QPropertyAnimation, QEasingCurve, QPoint, QTimer,
-    pyqtSignal, QSequentialAnimationGroup, pyqtProperty
+    Qt,
+    QPropertyAnimation,
+    QEasingCurve,
+    QPoint,
+    QTimer,
+    pyqtSignal,
+    QSequentialAnimationGroup,
+    pyqtProperty,
 )
 from PyQt6.QtGui import QPainter, QColor, QBrush, QMouseEvent
 
-from .material_design_light import (
-    MD3_DURATION, MD3_STATE_LAYERS
-)
+from .material_design_light import MD3_DURATION, MD3_STATE_LAYERS
 
 
 class InteractiveButton(QPushButton):
@@ -80,12 +84,15 @@ class InteractiveButton(QPushButton):
         self.ripple_active = True
 
         # 计算最大半径
-        max_radius = max(
-            self.ripple_center.x(),
-            self.width() - self.ripple_center.x(),
-            self.ripple_center.y(),
-            self.height() - self.ripple_center.y()
-        ) * 1.5
+        max_radius = (
+            max(
+                self.ripple_center.x(),
+                self.width() - self.ripple_center.x(),
+                self.ripple_center.y(),
+                self.height() - self.ripple_center.y(),
+            )
+            * 1.5
+        )
 
         # 开始涟漪动画
         self.ripple_animation.setStartValue(0)
@@ -151,11 +158,7 @@ class InteractiveButton(QPushButton):
             ripple_color = QColor(0, 0, 0, int(self.ripple_opacity * 255))
             painter.setBrush(QBrush(ripple_color))
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(
-                self.ripple_center,
-                self.ripple_radius,
-                self.ripple_radius
-            )
+            painter.drawEllipse(self.ripple_center, self.ripple_radius, self.ripple_radius)
 
 
 class InteractiveCard(QWidget):

@@ -24,6 +24,7 @@ _LANGCHAIN_LLM_IMPORT_ERROR: Optional[BaseException] = None
 try:
     from langchain_core.prompts import ChatPromptTemplate
     from src.llm.factory import get_llm
+
     HAS_LANGCHAIN_LLM = True
 except Exception as exc:  # pragma: no cover - 环境依赖差异
     HAS_LANGCHAIN_LLM = False
@@ -39,46 +40,43 @@ except Exception as exc:  # pragma: no cover - 环境依赖差异
 class KnowledgeScorer:
     """
     知识评分器
-    
+
     评分维度：
     - 使用频率（25%）
     - 用户反馈（30%）
     - 内容质量（30%）
     - 来源可信度（15%）
     """
-    
+
     def calculate_quality_score(self, knowledge: Dict[str, Any]) -> float:
         """
         计算知识质量分数
-        
+
         Args:
             knowledge: 知识条目
-        
+
         Returns:
             float: 质量分数 (0-1)
         """
         # 使用频率分数
         usage_score = self._calculate_usage_score(knowledge)
-        
+
         # 用户反馈分数
         feedback_score = self._calculate_feedback_score(knowledge)
-        
+
         # 内容质量分数
         content_score = self._calculate_content_score(knowledge)
-        
+
         # 来源可信度分数
         source_score = self._calculate_source_score(knowledge)
-        
+
         # 综合评分
         quality_score = (
-            usage_score * 0.25 +
-            feedback_score * 0.3 +
-            content_score * 0.3 +
-            source_score * 0.15
+            usage_score * 0.25 + feedback_score * 0.3 + content_score * 0.3 + source_score * 0.15
         )
-        
+
         return quality_score
-    
+
     def _calculate_usage_score(self, knowledge: Dict[str, Any]) -> float:
         """使用频率分数"""
         usage_count = knowledge.get("usage_count", 0)
@@ -86,22 +84,22 @@ class KnowledgeScorer:
             return 0.0
         # 对数归一化：假设最大使用次数为 100
         return min(math.log(usage_count + 1) / math.log(100), 1.0)
-    
+
     def _calculate_feedback_score(self, knowledge: Dict[str, Any]) -> float:
         """用户反馈分数"""
         positive = knowledge.get("positive_feedback", 0)
         negative = knowledge.get("negative_feedback", 0)
         total = positive + negative
-        
+
         if total == 0:
             return 0.5  # 默认中性
-        
+
         return positive / total
-    
+
     def _calculate_content_score(self, knowledge: Dict[str, Any]) -> float:
         """内容质量分数"""
         content = knowledge.get("content", "")
-        
+
         # 长度分数（太短或太长都不好）
         length = len(content)
         if length < 10:
@@ -112,21 +110,21 @@ class KnowledgeScorer:
             length_score = 1.0
         else:
             length_score = 0.8
-        
+
         # 结构分数（是否有标点、段落等）
         has_punctuation = any(p in content for p in "。！？，、；：.!?,;:")
         structure_score = 1.0 if has_punctuation else 0.5
-        
+
         # 关键词分数
         keywords = knowledge.get("keywords", "")
         keyword_score = 1.0 if keywords else 0.5
-        
+
         return (length_score + structure_score + keyword_score) / 3
-    
+
     def _calculate_source_score(self, knowledge: Dict[str, Any]) -> float:
         """来源可信度分数"""
         source = knowledge.get("source", "manual")
-        
+
         source_scores = {
             "manual": 0.9,  # 手动添加，可信度高
             "conversation:llm": 0.8,  # LLM 提取，较可信
@@ -135,21 +133,21 @@ class KnowledgeScorer:
             "mcp": 0.8,  # MCP 工具，较可信
             "import": 0.5,  # 批量导入，需验证
         }
-        
+
         return source_scores.get(source, 0.5)
 
 
 class KnowledgeValidator:
     """
     知识验证器
-    
+
     验证内容：
     - 基本验证（标题、内容）
     - 内容质量验证
     - 一致性验证
     - 时效性验证
     """
-    
+
     def validate_knowledge(self, knowledge: Dict[str, Any]) -> Dict[str, Any]:
         """
         验证知识
@@ -218,7 +216,22 @@ class KnowledgeValidator:
         content_words = set(content.split())
 
         # 移除常见停用词
-        stop_words = {"的", "了", "是", "在", "和", "与", "或", "a", "an", "the", "is", "are", "was", "were"}
+        stop_words = {
+            "的",
+            "了",
+            "是",
+            "在",
+            "和",
+            "与",
+            "或",
+            "a",
+            "an",
+            "the",
+            "is",
+            "are",
+            "was",
+            "were",
+        }
         title_words = title_words - stop_words
         content_words = content_words - stop_words
 
@@ -258,9 +271,7 @@ class ConflictDetector:
         self.enabled = HAS_LANGCHAIN_LLM and settings.agent.use_llm_for_knowledge_extraction
 
     def detect_conflicts(
-        self,
-        knowledge: Dict[str, Any],
-        existing_knowledge: List[Dict[str, Any]]
+        self, knowledge: Dict[str, Any], existing_knowledge: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """
         检测知识冲突
@@ -284,11 +295,13 @@ class ConflictDetector:
 
             # 检查是否有矛盾
             if self._has_contradiction(knowledge, existing):
-                conflicts.append({
-                    "existing_knowledge": existing,
-                    "conflict_type": "contradiction",
-                    "confidence": 0.8,
-                })
+                conflicts.append(
+                    {
+                        "existing_knowledge": existing,
+                        "conflict_type": "contradiction",
+                        "confidence": 0.8,
+                    }
+                )
 
         return conflicts
 
@@ -312,8 +325,11 @@ class ConflictDetector:
             return False
 
         try:
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", """你是一个知识冲突检测专家。请判断两条知识是否存在矛盾。
+            prompt = ChatPromptTemplate.from_messages(
+                [
+                    (
+                        "system",
+                        """你是一个知识冲突检测专家。请判断两条知识是否存在矛盾。
 
 判断规则：
 1. 如果两条知识描述的是同一事物，但内容相互矛盾，返回 true
@@ -324,21 +340,26 @@ class ConflictDetector:
 {{
     "has_contradiction": true/false,
     "reason": "矛盾原因或说明"
-}}"""),
-                ("human", "知识1: {title1}\n{content1}\n\n知识2: {title2}\n{content2}"),
-            ])
+}}""",
+                    ),
+                    ("human", "知识1: {title1}\n{content1}\n\n知识2: {title2}\n{content2}"),
+                ]
+            )
 
             llm = get_llm()
             chain = prompt | llm
 
-            result = chain.invoke({
-                "title1": k1.get("title", ""),
-                "content1": k1.get("content", ""),
-                "title2": k2.get("title", ""),
-                "content2": k2.get("content", ""),
-            })
+            result = chain.invoke(
+                {
+                    "title1": k1.get("title", ""),
+                    "content1": k1.get("content", ""),
+                    "title2": k2.get("title", ""),
+                    "content2": k2.get("content", ""),
+                }
+            )
 
             import json
+
             data = json.loads(result.content)
             return data.get("has_contradiction", False)
 
@@ -361,9 +382,7 @@ class KnowledgeQualityManager:
         self.conflict_detector = ConflictDetector()
 
     def assess_knowledge(
-        self,
-        knowledge: Dict[str, Any],
-        existing_knowledge: Optional[List[Dict[str, Any]]] = None
+        self, knowledge: Dict[str, Any], existing_knowledge: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         全面评估知识
@@ -384,9 +403,7 @@ class KnowledgeQualityManager:
         # 冲突检测
         conflicts = []
         if existing_knowledge:
-            conflicts = self.conflict_detector.detect_conflicts(
-                knowledge, existing_knowledge
-            )
+            conflicts = self.conflict_detector.detect_conflicts(knowledge, existing_knowledge)
 
         return {
             "is_valid": validation_result["is_valid"],

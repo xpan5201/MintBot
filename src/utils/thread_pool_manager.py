@@ -21,6 +21,7 @@ logger = get_logger(__name__)
 @dataclass
 class ThreadPoolStats:
     """线程池统计信息"""
+
     name: str
     max_workers: int
     active_tasks: int = 0
@@ -33,7 +34,7 @@ class ThreadPoolStats:
 
 class ManagedThreadPool:
     """托管线程池 - 带监控和统计"""
-    
+
     def __init__(
         self,
         name: str,
@@ -42,7 +43,7 @@ class ManagedThreadPool:
     ):
         """
         初始化托管线程池
-        
+
         Args:
             name: 线程池名称
             max_workers: 最大工作线程数
@@ -51,50 +52,43 @@ class ManagedThreadPool:
         self.name = name
         self.max_workers = max_workers
         self._executor = ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix=thread_name_prefix or f"MintChat-{name}"
+            max_workers=max_workers, thread_name_prefix=thread_name_prefix or f"MintChat-{name}"
         )
         self._futures: List[Future] = []
         self._lock = threading.Lock()
         self._stats = ThreadPoolStats(name=name, max_workers=max_workers)
         self._shutdown = False
-        
+
         logger.info(f"线程池 '{name}' 初始化完成 (max_workers={max_workers})")
-    
-    def submit(
-        self,
-        func: Callable,
-        *args,
-        timeout: Optional[float] = None,
-        **kwargs
-    ) -> Future:
+
+    def submit(self, func: Callable, *args, timeout: Optional[float] = None, **kwargs) -> Future:
         """
         提交任务到线程池
-        
+
         Args:
             func: 要执行的函数
             *args: 位置参数
             timeout: 超时时间（秒）
             **kwargs: 关键字参数
-            
+
         Returns:
             Future对象
         """
         if self._shutdown:
             raise RuntimeError(f"线程池 '{self.name}' 已关闭")
-        
+
         start_time = time.time()
-        
+
         def wrapped_func():
             try:
                 result = func(*args, **kwargs)
                 execution_time = time.time() - start_time
-                
+
                 with self._lock:
                     self._stats.completed_tasks += 1
                     self._stats.total_execution_time += execution_time
                     self._stats.last_activity = datetime.now()
-                
+
                 return result
             except Exception as e:
                 with self._lock:
@@ -102,24 +96,24 @@ class ManagedThreadPool:
                     self._stats.last_activity = datetime.now()
                 logger.error(f"线程池 '{self.name}' 任务执行失败: {e}")
                 raise
-        
+
         future = self._executor.submit(wrapped_func)
-        
+
         with self._lock:
             self._futures.append(future)
             self._stats.active_tasks += 1
-        
+
         # 添加完成回调
         def on_done(f):
             with self._lock:
                 self._stats.active_tasks -= 1
                 if f in self._futures:
                     self._futures.remove(f)
-        
+
         future.add_done_callback(on_done)
-        
+
         return future
-    
+
     def get_stats(self) -> ThreadPoolStats:
         """获取统计信息"""
         with self._lock:
@@ -133,50 +127,50 @@ class ManagedThreadPool:
                 created_at=self._stats.created_at,
                 last_activity=self._stats.last_activity,
             )
-    
+
     def wait_for_completion(self, timeout: Optional[float] = None) -> bool:
         """
         等待所有任务完成
-        
+
         Args:
             timeout: 超时时间（秒）
-            
+
         Returns:
             是否所有任务都完成
         """
         from concurrent.futures import wait
-        
+
         with self._lock:
             futures = list(self._futures)
-        
+
         if not futures:
             return True
-        
+
         done, not_done = wait(futures, timeout=timeout)
         return len(not_done) == 0
-    
+
     def shutdown(self, wait: bool = True, timeout: Optional[float] = None) -> None:
         """
         关闭线程池
-        
+
         Args:
             wait: 是否等待任务完成
             timeout: 等待超时时间（秒）
         """
         if self._shutdown:
             return
-        
+
         self._shutdown = True
         logger.info(f"正在关闭线程池 '{self.name}'...")
-        
+
         if wait and timeout:
             self.wait_for_completion(timeout=timeout)
-        
+
         self._executor.shutdown(wait=wait)
-        
+
         with self._lock:
             self._futures.clear()
-        
+
         logger.info(f"线程池 '{self.name}' 已关闭")
 
 
@@ -194,7 +188,7 @@ class ThreadPoolManager:
         return cls._instance
 
     def __init__(self):
-        if hasattr(self, '_initialized'):
+        if hasattr(self, "_initialized"):
             return
 
         self._initialized = True
@@ -243,9 +237,7 @@ class ThreadPoolManager:
                 return self._pools[name]
 
             pool = ManagedThreadPool(
-                name=name,
-                max_workers=max_workers,
-                thread_name_prefix=thread_name_prefix
+                name=name, max_workers=max_workers, thread_name_prefix=thread_name_prefix
             )
             self._pools[name] = pool
 
@@ -258,12 +250,7 @@ class ThreadPoolManager:
             return self._pools.get(name)
 
     def submit_to_pool(
-        self,
-        pool_name: str,
-        func: Callable,
-        *args,
-        timeout: Optional[float] = None,
-        **kwargs
+        self, pool_name: str, func: Callable, *args, timeout: Optional[float] = None, **kwargs
     ) -> Future:
         """
         提交任务到指定线程池
@@ -287,10 +274,7 @@ class ThreadPoolManager:
     def get_all_stats(self) -> Dict[str, ThreadPoolStats]:
         """获取所有线程池的统计信息"""
         with self._global_lock:
-            return {
-                name: pool.get_stats()
-                for name, pool in self._pools.items()
-            }
+            return {name: pool.get_stats() for name, pool in self._pools.items()}
 
     def print_stats(self):
         """打印所有线程池的统计信息"""
@@ -302,9 +286,7 @@ class ThreadPoolManager:
 
         for name, stat in stats.items():
             avg_time = (
-                stat.total_execution_time / stat.completed_tasks
-                if stat.completed_tasks > 0
-                else 0
+                stat.total_execution_time / stat.completed_tasks if stat.completed_tasks > 0 else 0
             )
 
             logger.info(f"\n线程池: {name}")
@@ -379,5 +361,3 @@ def submit_cpu_task(func: Callable, *args, **kwargs) -> Future:
 def submit_background_task(func: Callable, *args, **kwargs) -> Future:
     """提交后台任务（低优先级）"""
     return get_thread_pool_manager().submit_to_pool("background", func, *args, **kwargs)
-
-

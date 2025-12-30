@@ -41,12 +41,15 @@ from PyQt6.QtGui import (
     QImageReader,
     QColor,
     QFont,
+    QFontMetrics,
     QPen,
+    QGuiApplication,
 )
 from pathlib import Path
 from functools import lru_cache
 from datetime import datetime
 import uuid
+import math
 from src.utils.logger import get_logger
 
 from src.gui.material_design_enhanced import MD3_ENHANCED_COLORS, MD3_ENHANCED_RADIUS
@@ -101,15 +104,15 @@ def _load_attachment_thumbnail_pixmap(
 
 class RichTextInput(QTextEdit):
     """支持富文本的输入框 - 可内联显示图片"""
-    
+
     # 信号
     send_requested = pyqtSignal()  # 请求发送
     content_changed = pyqtSignal()  # 内容改变
     files_pasted = pyqtSignal(list)  # 粘贴的文件路径列表（用于“粘贴图片即附件”）
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         # 配置
         self.setAcceptRichText(True)  # 支持富文本
         # ChatGPT 风格：更短的占位文案（快捷键提示放到 tooltip）
@@ -121,17 +124,20 @@ class RichTextInput(QTextEdit):
         # 性能：减少输入/高度变化时的无效重绘
         try:
             if hasattr(self, "setViewportUpdateMode"):
-                self.setViewportUpdateMode(QAbstractScrollArea.ViewportUpdateMode.MinimalViewportUpdate)
+                self.setViewportUpdateMode(
+                    QAbstractScrollArea.ViewportUpdateMode.MinimalViewportUpdate
+                )
         except Exception:
             pass
-        
+
         # 高度设置
         self._single_line_height = 56
         self._max_lines = 4
         self.setFixedHeight(self._single_line_height)
-        
+
         # ChatGPT 风格：输入框本身透明/无边框，由外层 Card 负责边框与圆角
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             QTextEdit {{
                 background: transparent;
                 border: none;
@@ -171,22 +177,82 @@ class RichTextInput(QTextEdit):
             QScrollBar::sub-page:vertical {{
                 background: none;
             }}
-        """)
-        
+        """
+        )
+
         # 防抖定时器
         self._height_adjust_timer = QTimer(self)
         self._height_adjust_timer.setSingleShot(True)
         self._height_adjust_timer.setInterval(50)
         self._height_adjust_timer.timeout.connect(self._adjust_height)
-        
+
+        # IME 组合输入状态：避免在 preedit 阶段强制改变尺寸导致文本/光标异常
+        self._ime_composing = False
+        self._height_adjust_pending = False
+
         # 连接信号
-        self.textChanged.connect(lambda: self._height_adjust_timer.start())
+        self.textChanged.connect(self._on_text_changed)
         self.textChanged.connect(self.content_changed.emit)
 
         # 资源跟踪：QTextDocument 会缓存 addResource() 的图片；长时间使用可能导致内存增长。
         # 这里记录插入过的资源 key，便于在 clear_content() 时显式释放图片数据。
         self._image_resource_keys: set[str] = set()
-    
+
+    def _on_text_changed(self) -> None:
+        try:
+            if self._ime_composing:
+                self._height_adjust_pending = True
+                try:
+                    self._height_adjust_timer.stop()
+                except Exception:
+                    pass
+                return
+            self._height_adjust_pending = False
+            self._height_adjust_timer.start()
+        except Exception:
+            self._height_adjust_timer.start()
+
+    def inputMethodEvent(self, event):  # noqa: N802 - Qt API naming
+        """IME 组合输入事件：在 preedit 阶段避免触发布局/尺寸抖动。"""
+        try:
+            preedit = event.preeditString() or ""
+        except Exception:
+            preedit = ""
+
+        if preedit:
+            self._ime_composing = True
+            try:
+                self._height_adjust_timer.stop()
+            except Exception:
+                pass
+        else:
+            self._ime_composing = False
+
+        super().inputMethodEvent(event)
+
+        if not self._ime_composing and self._height_adjust_pending:
+            self._height_adjust_pending = False
+            try:
+                self._height_adjust_timer.start()
+            except Exception:
+                pass
+
+    def request_send(self) -> None:
+        """请求发送：尽量先提交输入法 preedit，再触发发送信号。"""
+        try:
+            self.setFocus()
+        except Exception:
+            pass
+
+        try:
+            input_method = QGuiApplication.inputMethod()
+            if input_method is not None:
+                input_method.commit()
+        except Exception:
+            pass
+
+        QTimer.singleShot(0, self.send_requested.emit)
+
     def keyPressEvent(self, event):
         """处理按键事件"""
         # Enter发送，Shift+Enter换行
@@ -195,10 +261,13 @@ class RichTextInput(QTextEdit):
                 # Shift+Enter: 插入换行
                 super().keyPressEvent(event)
             else:
+                # IME 组合输入时，Enter 往往用于选词/提交，不应触发发送
+                if self._ime_composing:
+                    return super().keyPressEvent(event)
                 # Enter: 发送消息（是否允许发送由上层根据文本/表情包/附件决定）
-                self.send_requested.emit()
+                self.request_send()
                 return
-        
+
         super().keyPressEvent(event)
 
     def _persist_pasted_image(self, image: QImage) -> str:
@@ -285,33 +354,50 @@ class RichTextInput(QTextEdit):
             pass
 
         super().insertFromMimeData(source)
-    
+
     def _adjust_height(self):
         """自动调整高度"""
-        doc_height = self.document().size().height()
-        line_height = 24  # 每行约24px
-        
+        if self._ime_composing:
+            self._height_adjust_pending = True
+            return
+
+        try:
+            doc_height = float(self.document().size().height() or 0.0)
+        except Exception:
+            doc_height = 0.0
+
+        line_height = 24
+        try:
+            metrics = QFontMetrics(self.font())
+            line_height = max(line_height, int(metrics.lineSpacing()))
+        except Exception:
+            pass
+
         # 计算行数
-        lines = max(1, int(doc_height / line_height))
+        try:
+            lines = max(1, int(math.ceil(doc_height / float(line_height))))
+        except Exception:
+            lines = max(1, int(doc_height / line_height))
         lines = min(lines, self._max_lines)
-        
+
         # 计算新高度
         if lines == 1:
             new_height = self._single_line_height
         else:
             new_height = self._single_line_height + (lines - 1) * line_height
-        
-        self.setFixedHeight(new_height)
-    
+
+        if new_height != self.height():
+            self.setFixedHeight(new_height)
+
     def insert_emoji(self, emoji: str):
         """插入emoji表情"""
         cursor = self.textCursor()
         cursor.insertText(emoji)
         self.setFocus()
-    
+
     def insert_sticker(self, sticker_path: str):
         """插入表情包图片（内联显示）
-        
+
         Args:
             sticker_path: 表情包文件路径
         """
@@ -325,22 +411,24 @@ class RichTextInput(QTextEdit):
                 mtime_ns = path.stat().st_mtime_ns
             except OSError:
                 mtime_ns = 0
-             
+
             # 加载图片
             scaled_image = _load_inline_sticker_image(str(path), _INLINE_STICKER_SIZE, mtime_ns)
             if scaled_image.isNull():
                 logger.error(f"无法加载表情包: {sticker_path}")
                 return
-             
+
             # 添加到文档资源
             doc = self.document()
             resource_url = QUrl.fromLocalFile(str(path))
             resource_url.setQuery(f"inline=1&size={_INLINE_STICKER_SIZE}&mtime={mtime_ns}")
             resource_key = resource_url.toString()
             if resource_key not in self._image_resource_keys:
-                doc.addResource(QTextDocument.ResourceType.ImageResource, resource_url, scaled_image)
+                doc.addResource(
+                    QTextDocument.ResourceType.ImageResource, resource_url, scaled_image
+                )
                 self._image_resource_keys.add(resource_key)
-             
+
             # 插入图片
             cursor = self.textCursor()
             image_format = QTextImageFormat()
@@ -348,7 +436,7 @@ class RichTextInput(QTextEdit):
             image_format.setWidth(_INLINE_STICKER_SIZE)
             image_format.setHeight(_INLINE_STICKER_SIZE)
             image_format.setProperty(1000, sticker_path)  # 保存原始路径
- 
+
             cursor.insertImage(image_format)
             # v2.46.x: 确保后续文本不继承图片格式，避免 get_sticker_paths() 误判为重复表情包
             cursor.insertText(" ", QTextCharFormat())  # 添加空格，方便继续输入
@@ -409,7 +497,7 @@ class RichTextInput(QTextEdit):
         """获取纯文本（不包含图片）"""
         text = self.toPlainText()
         # 移除图片占位符（通常是特殊字符）
-        text = text.replace('\ufffc', '').strip()
+        text = text.replace("\ufffc", "").strip()
         return text
 
     def clear_content(self):
@@ -577,7 +665,9 @@ class ChatComposerIconButton(QPushButton):
             painter.drawEllipse(circle)
 
             icon_color = QColor(
-                MD3_ENHANCED_COLORS["on_surface_variant"] if enabled else MD3_ENHANCED_COLORS["outline"]
+                MD3_ENHANCED_COLORS["on_surface_variant"]
+                if enabled
+                else MD3_ENHANCED_COLORS["outline"]
             )
             if self._hover_t > 0.5 and enabled:
                 icon_color = QColor(MD3_ENHANCED_COLORS["on_surface"])
@@ -585,18 +675,24 @@ class ChatComposerIconButton(QPushButton):
             # Active (toggled) state: slightly stronger outline + subtle tint.
             if self._active and enabled:
                 try:
-                    tint = QColor(MD3_ENHANCED_COLORS.get("primary", MD3_ENHANCED_COLORS["on_surface"]))
+                    tint = QColor(
+                        MD3_ENHANCED_COLORS.get("primary", MD3_ENHANCED_COLORS["on_surface"])
+                    )
                     tint.setAlpha(26)
                     painter.setPen(Qt.PenStyle.NoPen)
                     painter.setBrush(tint)
                     painter.drawEllipse(circle)
 
-                    outline2 = QColor(MD3_ENHANCED_COLORS.get("primary", MD3_ENHANCED_COLORS["on_surface"]))
+                    outline2 = QColor(
+                        MD3_ENHANCED_COLORS.get("primary", MD3_ENHANCED_COLORS["on_surface"])
+                    )
                     outline2.setAlpha(210)
                     painter.setPen(QPen(outline2, 1.2))
                     painter.setBrush(Qt.BrushStyle.NoBrush)
                     painter.drawEllipse(circle)
-                    icon_color = QColor(MD3_ENHANCED_COLORS.get("primary", MD3_ENHANCED_COLORS["on_surface"]))
+                    icon_color = QColor(
+                        MD3_ENHANCED_COLORS.get("primary", MD3_ENHANCED_COLORS["on_surface"])
+                    )
                 except Exception:
                     pass
 
@@ -652,7 +748,9 @@ class EnhancedInputWidget(QWidget):
         self.file_preview_container.setVisible(False)
         self.file_preview_container.setStyleSheet("background: transparent;")
         try:
-            self.file_preview_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.file_preview_container.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
             self.file_preview_container.setFixedHeight(64)
         except Exception:
             pass
@@ -742,7 +840,7 @@ class EnhancedInputWidget(QWidget):
             icon_size=19,
             variant=ChatComposerIconButton.VARIANT_FILLED,
         )
-        self.send_btn.clicked.connect(self.input_text.send_requested.emit)
+        self.send_btn.clicked.connect(self.input_text.request_send)
         input_row.addWidget(self.send_btn, 0, Qt.AlignmentFlag.AlignBottom)
 
         card_layout.addLayout(input_row)
@@ -955,8 +1053,7 @@ class EnhancedInputWidget(QWidget):
 
         # 添加到预览区域
         self.file_preview_content_layout.insertWidget(
-            self.file_preview_content_layout.count() - 1,
-            preview_item
+            self.file_preview_content_layout.count() - 1, preview_item
         )
 
         # 显示预览区域
@@ -1096,7 +1193,9 @@ class EnhancedInputWidget(QWidget):
             """
         )
         remove_btn.clicked.connect(lambda: self._remove_file(file_path, preview_item))
-        item_layout.addWidget(remove_btn, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+        item_layout.addWidget(
+            remove_btn, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight
+        )
 
         return preview_item
 
@@ -1176,6 +1275,4 @@ class EnhancedInputWidget(QWidget):
 
     def has_content(self) -> bool:
         """检查是否有内容"""
-        return bool(self.get_text().strip() or
-                   self.input_text.has_images() or
-                   self.pending_files)
+        return bool(self.get_text().strip() or self.input_text.has_images() or self.pending_files)

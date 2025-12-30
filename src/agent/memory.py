@@ -88,6 +88,7 @@ _QUESTION_MARKERS = ("？", "?", "吗", "呢", "啊")
 # v3.2: 导入记忆优化器
 try:
     from src.agent.memory_optimizer import MemoryOptimizer
+
     MEMORY_OPTIMIZER_AVAILABLE = True
 except ImportError:
     logger.warning("记忆优化器未安装，将使用基础记忆功能")
@@ -95,6 +96,7 @@ except ImportError:
 
 try:
     from src.agent.memory_optimizer import CharacterConsistencyScorer
+
     CHARACTER_SCORER_AVAILABLE = True
 except ImportError:
     CharacterConsistencyScorer = None  # type: ignore[assignment]
@@ -277,11 +279,7 @@ class LongTermMemory:
         elif user_id is not None:
             # 用户特定路径
             self.persist_directory = (
-                Path(settings.data_dir)
-                / "users"
-                / str(user_id)
-                / "vectordb"
-                / "long_term_memory"
+                Path(settings.data_dir) / "users" / str(user_id) / "vectordb" / "long_term_memory"
             )
         else:
             # 全局路径（向后兼容）
@@ -425,6 +423,7 @@ class LongTermMemory:
             return True
         except Exception as e:
             from src.utils.exceptions import handle_exception
+
             handle_exception(e, logger, "添加长期记忆失败")
             return False
 
@@ -476,6 +475,7 @@ class LongTermMemory:
             return len(texts)
         except Exception as e:
             from src.utils.exceptions import handle_exception
+
             handle_exception(e, logger, "批量添加长期记忆失败")
             return 0
 
@@ -692,12 +692,12 @@ class LongTermMemory:
         batch_size = max(1, int(batch_size))
 
         for idx in range(0, len(texts), batch_size):
-            chunk_texts = texts[idx: idx + batch_size]
-            chunk_metas = metadatas[idx: idx + batch_size]
+            chunk_texts = texts[idx : idx + batch_size]
+            chunk_metas = metadatas[idx : idx + batch_size]
             try:
                 with self._vectorstore_lock:
                     if overwrite:
-                        chunk_ids = ids[idx: idx + batch_size]
+                        chunk_ids = ids[idx : idx + batch_size]
                         self.vectorstore.add_texts(
                             texts=chunk_texts,
                             metadatas=chunk_metas,
@@ -865,7 +865,7 @@ class LongTermMemory:
             else:
                 delete_ids = list(ids_to_delete)
                 for offset in range(0, len(delete_ids), batch_size):
-                    chunk = delete_ids[offset: offset + batch_size]
+                    chunk = delete_ids[offset : offset + batch_size]
                     with self._vectorstore_lock:
                         collection.delete(ids=chunk)
                         self._write_version += 1  # 删除也会改变检索结果，触发缓存失效
@@ -1054,16 +1054,18 @@ class LongTermMemory:
                     denom += character_weight
                 final_score = numerator / denom
 
-                memories.append({
-                    "content": doc.page_content,
-                    "metadata": metadata,
-                    "score": score,  # 原始分数
-                    "similarity": similarity,  # 相似度
-                    "recency_score": recency_score,  # 时间性
-                    "importance": importance,  # 重要性
-                    "character_consistency": character_consistency,  # 角色一致性
-                    "final_score": final_score,  # 综合评分
-                })
+                memories.append(
+                    {
+                        "content": doc.page_content,
+                        "metadata": metadata,
+                        "score": score,  # 原始分数
+                        "similarity": similarity,  # 相似度
+                        "recency_score": recency_score,  # 时间性
+                        "importance": importance,  # 重要性
+                        "character_consistency": character_consistency,  # 角色一致性
+                        "final_score": final_score,  # 综合评分
+                    }
+                )
 
             # v3.3: 按综合评分排序，返回top-k
             memories.sort(key=lambda x: x["final_score"], reverse=True)
@@ -1181,9 +1183,7 @@ class MemoryManager:
 
         # 长期记忆
         self.enable_long_term = (
-            enable_long_term
-            if enable_long_term is not None
-            else settings.long_term_memory_enabled
+            enable_long_term if enable_long_term is not None else settings.long_term_memory_enabled
         )
 
         if self.enable_long_term:
@@ -1196,7 +1196,7 @@ class MemoryManager:
         self.enable_optimizer = (
             enable_optimizer
             if enable_optimizer is not None
-            else getattr(settings.agent, 'memory_optimizer_enabled', True)
+            else getattr(settings.agent, "memory_optimizer_enabled", True)
         )
 
         if self.enable_optimizer and MEMORY_OPTIMIZER_AVAILABLE:
@@ -1223,9 +1223,7 @@ class MemoryManager:
 
         # v3.3: 自动巩固（可选，避免与 Agent 自身后台巩固重复）
         self._auto_consolidate_enabled = (
-            bool(enable_auto_consolidate)
-            if enable_auto_consolidate is not None
-            else True
+            bool(enable_auto_consolidate) if enable_auto_consolidate is not None else True
         )
         self._auto_consolidate_interval = max(1, int(auto_consolidate_interval or 10))
         self._auto_consolidate_count = 0

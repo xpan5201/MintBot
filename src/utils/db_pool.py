@@ -47,10 +47,13 @@ class DatabaseConnectionPool:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
 
         # 连接池
-        self._pool: Queue = Queue(maxsize=max_connections)
-        self._all_connections: list = []
-        self._lock = threading.Lock()
+        self._pool: Queue[sqlite3.Connection] = Queue(maxsize=max_connections)
+        self._all_connections: list[sqlite3.Connection] = []
+        self._lock = threading.RLock()
+        self._create_lock = threading.Lock()
         self._closed = False
+        self._creating_connections = 0
+        self._journal_mode_configured = False
 
         # 统计信息
         self._stats = {
@@ -61,9 +64,7 @@ class DatabaseConnectionPool:
             "warmup_connections": 0,
         }
 
-        logger.info(
-            f"数据库连接池初始化: {database_path} (最大连接数: {max_connections})"
-        )
+        logger.info(f"数据库连接池初始化: {database_path} (最大连接数: {max_connections})")
 
         # 连接池预热
         if warmup:
@@ -71,32 +72,59 @@ class DatabaseConnectionPool:
 
     def _create_connection(self) -> sqlite3.Connection:
         """创建新的数据库连接"""
+        conn: sqlite3.Connection | None = None
         try:
-            conn = sqlite3.connect(
-                str(self.database_path),
-                timeout=self.timeout,
-                check_same_thread=self.check_same_thread,
-            )
-            # 启用外键约束
-            conn.execute("PRAGMA foreign_keys = ON")
-            # 设置WAL模式以提高并发性能
-            conn.execute("PRAGMA journal_mode = WAL")
-            # 优化性能
-            conn.execute("PRAGMA synchronous = NORMAL")
-            conn.execute("PRAGMA cache_size = -64000")  # 64MB缓存
-            conn.execute("PRAGMA temp_store = MEMORY")
+            with self._create_lock:
+                conn = sqlite3.connect(
+                    str(self.database_path),
+                    timeout=self.timeout,
+                    check_same_thread=self.check_same_thread,
+                )
+                # 启用外键约束
+                conn.execute("PRAGMA foreign_keys = ON")
+
+                # journal_mode 是数据库级设置；并发重复设置可能导致 `database is locked`
+                with self._lock:
+                    configure_journal_mode = not self._journal_mode_configured
+
+                if configure_journal_mode:
+                    conn.execute("PRAGMA journal_mode = WAL")
+                    with self._lock:
+                        self._journal_mode_configured = True
+
+                # 优化性能
+                conn.execute("PRAGMA synchronous = NORMAL")
+                conn.execute("PRAGMA cache_size = -64000")  # 64MB缓存
+                conn.execute("PRAGMA temp_store = MEMORY")
 
             with self._lock:
+                if self._closed:
+                    raise RuntimeError("连接池已关闭")
+
                 self._all_connections.append(conn)
                 self._stats["total_connections"] += 1
+                total_connections = self._stats["total_connections"]
 
-            logger.debug(f"创建新数据库连接 (总数: {self._stats['total_connections']})")
+            logger.debug(f"创建新数据库连接 (总数: {total_connections})")
             return conn
 
         except sqlite3.Error as e:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             error_msg = f"创建数据库连接失败: {e}"
             logger.error(error_msg)
             raise sqlite3.Error(error_msg)
+
+        except Exception:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            raise
 
     def _warmup_pool(self):
         """
@@ -130,7 +158,7 @@ class DatabaseConnectionPool:
         if self._closed:
             raise RuntimeError("连接池已关闭")
 
-        conn = None
+        conn: sqlite3.Connection | None = None
         start_time = time.time()
 
         with self._lock:
@@ -142,21 +170,34 @@ class DatabaseConnectionPool:
                 conn = self._pool.get(block=False)
                 logger.debug("从连接池获取连接")
             except Empty:
-                # 池中没有可用连接，创建新连接
+                create_new = False
                 with self._lock:
-                    if self._stats["total_connections"] < self.max_connections:
+                    if self._closed:
+                        raise RuntimeError("连接池已关闭")
+                    if (
+                        self._stats["total_connections"] + self._creating_connections
+                        < self.max_connections
+                    ):
+                        self._creating_connections += 1
+                        create_new = True
+
+                if create_new:
+                    try:
                         conn = self._create_connection()
-                    else:
-                        # 达到最大连接数，等待可用连接
-                        logger.debug("等待可用连接...")
-                        try:
-                            conn = self._pool.get(timeout=self.timeout)
-                        except Empty:
-                            with self._lock:
-                                self._stats["total_timeouts"] += 1
-                            error_msg = f"获取数据库连接超时 ({self.timeout}秒)"
-                            logger.error(error_msg)
-                            raise TimeoutError(error_msg)
+                    finally:
+                        with self._lock:
+                            self._creating_connections = max(0, self._creating_connections - 1)
+                else:
+                    # 达到最大连接数，等待可用连接
+                    logger.debug("等待可用连接...")
+                    try:
+                        conn = self._pool.get(timeout=self.timeout)
+                    except Empty:
+                        with self._lock:
+                            self._stats["total_timeouts"] += 1
+                        error_msg = f"获取数据库连接超时 ({self.timeout}秒)"
+                        logger.error(error_msg)
+                        raise TimeoutError(error_msg)
 
             with self._lock:
                 self._stats["active_connections"] += 1
@@ -171,23 +212,39 @@ class DatabaseConnectionPool:
         finally:
             # 归还连接到池中
             if conn is not None:
+                should_return_to_pool = True
                 try:
                     # 回滚未提交的事务
                     conn.rollback()
-                    # 归还到池中
-                    self._pool.put(conn, block=False)
-                    logger.debug("连接已归还到池中")
+                    with self._lock:
+                        if self._closed:
+                            should_return_to_pool = False
+
+                    if should_return_to_pool:
+                        # 归还到池中
+                        self._pool.put(conn, block=False)
+                        logger.debug("连接已归还到池中")
                 except Exception as e:
                     logger.error(f"归还连接失败: {e}")
-                    # 连接可能已损坏，关闭它
+                    should_return_to_pool = False
+
+                if not should_return_to_pool:
                     try:
                         conn.close()
                     except Exception as close_error:
-                        logger.debug(f"关闭损坏连接失败: {close_error}")
-                        pass
+                        logger.debug(f"关闭连接失败: {close_error}")
+
+                    with self._lock:
+                        try:
+                            self._all_connections.remove(conn)
+                        except ValueError:
+                            pass
+                        self._stats["total_connections"] = len(self._all_connections)
 
                 with self._lock:
-                    self._stats["active_connections"] -= 1
+                    self._stats["active_connections"] = max(
+                        0, self._stats["active_connections"] - 1
+                    )
 
             elapsed = time.time() - start_time
             if elapsed > 1.0:
@@ -240,9 +297,7 @@ class DatabaseConnectionPool:
             finally:
                 cursor.close()
 
-    def executemany(
-        self, query: str, parameters_list: list, commit: bool = True
-    ) -> None:
+    def executemany(self, query: str, parameters_list: list, commit: bool = True) -> None:
         """
         批量执行SQL查询
 
@@ -273,27 +328,43 @@ class DatabaseConnectionPool:
                 **self._stats,
                 "pool_size": self._pool.qsize(),
                 "max_connections": self.max_connections,
+                "creating_connections": self._creating_connections,
+                "closed": self._closed,
             }
 
     def close(self) -> None:
         """关闭连接池，释放所有连接"""
-        if self._closed:
-            return
-
-        self._closed = True
-        logger.info("正在关闭数据库连接池...")
+        idle_connections: list[sqlite3.Connection] = []
 
         with self._lock:
-            # 关闭所有连接
-            for conn in self._all_connections:
-                try:
-                    conn.close()
-                except Exception as e:
-                    logger.error(f"关闭连接失败: {e}")
+            if self._closed:
+                return
 
-            self._all_connections.clear()
-            self._stats["total_connections"] = 0
-            self._stats["active_connections"] = 0
+            self._closed = True
+            self._creating_connections = 0
+
+            while True:
+                try:
+                    idle_connections.append(self._pool.get_nowait())
+                except Empty:
+                    break
+
+            for conn in idle_connections:
+                try:
+                    self._all_connections.remove(conn)
+                except ValueError:
+                    pass
+
+            self._stats["total_connections"] = len(self._all_connections)
+            self._stats["active_connections"] = max(0, self._stats["active_connections"])
+
+        logger.info("正在关闭数据库连接池...")
+
+        for conn in idle_connections:
+            try:
+                conn.close()
+            except Exception as e:
+                logger.error(f"关闭连接失败: {e}")
 
         logger.info("数据库连接池已关闭")
 

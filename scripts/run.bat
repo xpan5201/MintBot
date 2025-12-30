@@ -28,17 +28,19 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM 初始化 config.yaml（如缺失则从模板创建）
-if not exist "config.yaml" (
-    if exist "config.yaml.example" (
-        copy "config.yaml.example" "config.yaml" >nul
-        echo [信息] 已创建 config.yaml，请编辑并填入 API Key 后再启动。
+REM 初始化 config.user.yaml（如缺失则从模板创建；兼容 legacy config.yaml）
+if not exist "config.user.yaml" (
+    if exist "config.yaml" (
+        echo [信息] 检测到 legacy 配置 config.yaml（仍可兼容读取），建议迁移到 config.user.yaml。
+    ) else if exist "config.user.yaml.example" (
+        copy "config.user.yaml.example" "config.user.yaml" >nul
+        echo [信息] 已创建 config.user.yaml，请编辑并填入 API Key 后再启动。
         echo.
         pause
         popd
         exit /b 0
     ) else (
-        echo [错误] 未找到 config.yaml.example
+        echo [错误] 未找到 config.user.yaml.example
         echo.
         pause
         popd
@@ -66,7 +68,7 @@ if errorlevel 1 (
     echo [错误] 启动失败
     echo.
     echo 请检查:
-    echo   1. config.yaml 文件是否存在并配置正确
+    echo   1. config.user.yaml（或 legacy config.yaml）文件是否存在并配置正确
     echo   2. API Key 是否有效
     echo   3. 依赖是否完整安装（可重试: uv sync --locked --no-install-project）
     echo.

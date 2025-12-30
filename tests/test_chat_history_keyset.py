@@ -54,4 +54,3 @@ def test_export_user_data_includes_full_chat_history(temp_dir: Path) -> None:
     assert payload["user_id"] == user_id
     assert payload["chat_history"][contact]
     assert len(payload["chat_history"][contact]) == len(messages)
-

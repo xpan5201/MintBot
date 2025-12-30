@@ -18,8 +18,12 @@
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QStackedWidget, QGraphicsOpacityEffect,
-    QVBoxLayout, QHBoxLayout, QPushButton
+    QWidget,
+    QStackedWidget,
+    QGraphicsOpacityEffect,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QParallelAnimationGroup, QPoint, QRect
 from PyQt6.QtGui import QColor, QMouseEvent, QCursor
@@ -28,7 +32,11 @@ from .auth_window import IllustrationPanel
 from .login_form import LoginForm
 from .register_form import RegisterForm
 from .change_password_form import ChangePasswordForm
-from .material_design_enhanced import MD3_ENHANCED_DURATION, MD3_ENHANCED_EASING, MD3_ENHANCED_COLORS
+from .material_design_enhanced import (
+    MD3_ENHANCED_DURATION,
+    MD3_ENHANCED_EASING,
+    MD3_ENHANCED_COLORS,
+)
 from .theme_manager import is_anime_theme
 
 from src.utils.logger import get_logger
@@ -55,10 +63,9 @@ class AuthManager(QWidget):
         """
         super().__init__(parent)
 
-        # 窗口属性设置
+        # 窗口属性设置（与主 GUI 一致：不置顶，避免干扰其他窗口）
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |  # 无边框
-            Qt.WindowType.WindowStaysOnTopHint   # 置顶显示
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowSystemMenuHint  # 无边框
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)  # 透明背景
 
@@ -96,8 +103,20 @@ class AuthManager(QWidget):
         └─────────────────────────────────────┘
         """
         # ========== 主布局 ==========
+        # 阴影参数需与外边距匹配，避免绘制区域超出窗口导致 UpdateLayeredWindowIndirect 报错
+        shadow_blur = 24
+        shadow_offset_y = 8
+        shadow_margin_x = shadow_blur + 4
+        shadow_margin_top = shadow_blur + 4
+        shadow_margin_bottom = shadow_blur + shadow_offset_y + 4
+
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)  # 为阴影留出空间
+        main_layout.setContentsMargins(
+            shadow_margin_x,
+            shadow_margin_top,
+            shadow_margin_x,
+            shadow_margin_bottom,
+        )
         main_layout.setSpacing(0)
 
         # ========== 主容器 ==========
@@ -105,12 +124,14 @@ class AuthManager(QWidget):
         container_background = MD3_ENHANCED_COLORS["surface_bright"]
         if is_anime_theme():
             container_background = MD3_ENHANCED_COLORS.get("gradient_surface", container_background)
-        self.container.setStyleSheet(f"""
+        self.container.setStyleSheet(
+            f"""
             QWidget {{
                 background: {container_background};
                 border-radius: 16px;
             }}
-        """)
+        """
+        )
 
         # 容器布局：水平分割（左侧插画 + 右侧内容）
         container_layout = QHBoxLayout(self.container)
@@ -129,32 +150,44 @@ class AuthManager(QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        # --- 顶部栏：关闭按钮 ---
+        # --- 顶部栏：窗口按钮 ---
         top_bar = QWidget()
         top_bar.setStyleSheet("background: transparent;")
         top_bar_layout = QHBoxLayout(top_bar)
         top_bar_layout.setContentsMargins(0, 8, 8, 0)
         top_bar_layout.addStretch()
 
-        # 关闭按钮
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(32, 32)
+        from .light_frameless_window import MacWindowControlButton
+
+        controls = QWidget()
+        controls.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(14)
+
+        max_btn = MacWindowControlButton(MacWindowControlButton.TYPE_MAXIMIZE, size=18)
+        min_btn = MacWindowControlButton(MacWindowControlButton.TYPE_MINIMIZE, size=18)
+        close_btn = MacWindowControlButton(MacWindowControlButton.TYPE_CLOSE, size=18)
+
+        def _toggle_maximize() -> None:
+            try:
+                if self.isMaximized():
+                    self.showNormal()
+                else:
+                    self.showMaximized()
+            except Exception:
+                pass
+
+        max_btn.clicked.connect(_toggle_maximize)
+        min_btn.clicked.connect(self.showMinimized)
         close_btn.clicked.connect(self.close)
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {MD3_ENHANCED_COLORS['on_surface_variant']};
-                border: none;
-                border-radius: 16px;
-                font-size: 20px;
-            }}
-            QPushButton:hover {{
-                background: {MD3_ENHANCED_COLORS['error_container']};
-                color: {MD3_ENHANCED_COLORS['on_error_container']};
-            }}
-        """)
-        top_bar_layout.addWidget(close_btn)
+
+        # 主 GUI 的三色按钮在左上角（红-黄-绿）。这里位于右侧，因此顺序反过来。
+        controls_layout.addWidget(max_btn)
+        controls_layout.addWidget(min_btn)
+        controls_layout.addWidget(close_btn)
+        top_bar_layout.addWidget(controls)
+
         right_layout.addWidget(top_bar)
 
         # --- 表单堆叠：登录/注册/找回密码 ---
@@ -192,10 +225,11 @@ class AuthManager(QWidget):
 
         # 添加阴影效果
         from PyQt6.QtWidgets import QGraphicsDropShadowEffect
+
         shadow = QGraphicsDropShadowEffect(self.container)
-        shadow.setBlurRadius(30)
+        shadow.setBlurRadius(shadow_blur)
         shadow.setXOffset(0)
-        shadow.setYOffset(8)
+        shadow.setYOffset(shadow_offset_y)
         shadow.setColor(QColor(0, 0, 0, 60))
         self.container.setGraphicsEffect(shadow)
 
@@ -203,6 +237,7 @@ class AuthManager(QWidget):
         """窗口居中显示"""
         try:
             from PyQt6.QtWidgets import QApplication
+
             screen = QApplication.primaryScreen().geometry()
             x = (screen.width() - self.width()) // 2
             y = (screen.height() - self.height()) // 2
@@ -342,9 +377,11 @@ class AuthManager(QWidget):
             # 延迟关闭认证管理器，确保主窗口已完全创建和显示
             # 增加延迟时间到500ms，确保主窗口完全显示
             from PyQt6.QtCore import QTimer
+
             QTimer.singleShot(500, self.close)
         except Exception as e:
             from src.utils.exceptions import handle_exception
+
             handle_exception(e, logger, "登录成功处理失败")
 
     def on_register_success(self):
@@ -382,19 +419,26 @@ class AuthManager(QWidget):
         try:
             if event.button() == Qt.MouseButton.LeftButton:
                 # 检查是否点击在可拖动区域（避免点击输入框等控件时拖动）
-                pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
+                pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
                 widget_under_mouse = self.childAt(pos)
 
                 # 如果点击的是输入框、按钮等交互控件，不启动拖动
                 from PyQt6.QtWidgets import QLineEdit, QCheckBox
-                if widget_under_mouse and isinstance(widget_under_mouse, (QLineEdit, QPushButton, QCheckBox)):
+
+                if widget_under_mouse and isinstance(
+                    widget_under_mouse, (QLineEdit, QPushButton, QCheckBox)
+                ):
                     event.ignore()
                     return
 
                 # 启动拖动
                 self._is_dragging = True
                 # 记录鼠标相对于窗口的位置
-                global_pos = event.globalPosition().toPoint() if hasattr(event, 'globalPosition') else event.globalPos()
+                global_pos = (
+                    event.globalPosition().toPoint()
+                    if hasattr(event, "globalPosition")
+                    else event.globalPos()
+                )
                 self._drag_start_position = global_pos - self.frameGeometry().topLeft()
 
                 # 设置鼠标样式
@@ -409,7 +453,11 @@ class AuthManager(QWidget):
         try:
             if self._is_dragging and event.buttons() == Qt.MouseButton.LeftButton:
                 # 拖动窗口
-                global_pos = event.globalPosition().toPoint() if hasattr(event, 'globalPosition') else event.globalPos()
+                global_pos = (
+                    event.globalPosition().toPoint()
+                    if hasattr(event, "globalPosition")
+                    else event.globalPos()
+                )
                 self.move(global_pos - self._drag_start_position)
                 event.accept()
             else:

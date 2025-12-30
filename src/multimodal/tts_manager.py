@@ -28,6 +28,7 @@ from src.utils.logger import logger
 @dataclass
 class TTSConfig:
     """TTS 配置数据类"""
+
     api_url: str = "http://127.0.0.1:9880/tts"
     ref_audio_path: str = ""
     ref_audio_text: str = ""
@@ -68,9 +69,9 @@ class AgentSpeechProfile:
     """面向智能体的情感语音参数"""
 
     mood_value: float = 0.0  # -1.0 (低落) ~ 1.0 (兴奋)
-    energy: float = 0.0      # -1.0 (低沉) ~ 1.0 (活力)
-    persona: str = ""        # 角色名称，用于日志和可选 voice tag
-    speaking_style: str = "" # 语音风格提示词
+    energy: float = 0.0  # -1.0 (低沉) ~ 1.0 (活力)
+    persona: str = ""  # 角色名称，用于日志和可选 voice tag
+    speaking_style: str = ""  # 语音风格提示词
     emphasis: Optional[str] = None  # 额外强调的情绪，如 "撒娇"、"认真"
 
 
@@ -127,13 +128,9 @@ class TTSManager:
             self._disk_cache = PersistentTTSAudioCache(
                 root_dir=cache_dir,
                 max_entries=config.disk_cache_max_items,
-                max_disk_usage_bytes=(
-                    config.disk_cache_max_bytes or None
-                ),
+                max_disk_usage_bytes=(config.disk_cache_max_bytes or None),
                 compress=config.disk_cache_compress,
-                ttl_seconds=(
-                    config.disk_cache_ttl_seconds or None
-                ),
+                ttl_seconds=(config.disk_cache_ttl_seconds or None),
             )
             logger.info(
                 "TTS 磁盘缓存启用: dir=%s, 最大条目=%d",
@@ -153,9 +150,7 @@ class TTSManager:
         self._inflight_lock = asyncio.Lock()
         self._cache_lock = asyncio.Lock()  # 内存缓存并发安全锁（异步）
         self._cache_thread_lock = threading.Lock()  # 内存缓存线程安全锁（同步）
-        self._parallel_semaphore = asyncio.Semaphore(
-            max(1, int(config.max_parallel_requests))
-        )
+        self._parallel_semaphore = asyncio.Semaphore(max(1, int(config.max_parallel_requests)))
 
         logger.info(f"初始化 TTS 管理器: {config.api_url}")
         if self._cache_enabled:
@@ -291,7 +286,7 @@ class TTSManager:
                     del self._cache[oldest_key]
             self._cache[cache_key] = audio_data
             self._cache_order.append(cache_key)
-        
+
         # 异步写入磁盘缓存（避免阻塞事件循环）
         if self._disk_cache is not None:
             try:
@@ -311,7 +306,9 @@ class TTSManager:
     def _clamp(value: float, min_value: float, max_value: float) -> float:
         return max(min_value, min(max_value, value))
 
-    def _apply_agent_profile(self, params: Dict[str, Any], profile: Optional[AgentSpeechProfile]) -> None:
+    def _apply_agent_profile(
+        self, params: Dict[str, Any], profile: Optional[AgentSpeechProfile]
+    ) -> None:
         """根据智能体的情绪 / 语气调整 TTS 采样参数"""
         if profile is None:
             return
@@ -340,7 +337,7 @@ class TTSManager:
             params.setdefault("emphasis", profile.emphasis)
         if profile.persona:
             params.setdefault("voice_name", profile.persona)
-    
+
     async def synthesize_text(
         self,
         text: str,
@@ -456,9 +453,7 @@ class TTSManager:
                     **extra,
                 )
 
-        await asyncio.gather(
-            *[_worker(idx, sentence) for idx, sentence in enumerate(sentences)]
-        )
+        await asyncio.gather(*[_worker(idx, sentence) for idx, sentence in enumerate(sentences)])
         return results
 
     async def synthesize_paragraph(
@@ -483,10 +478,7 @@ class TTSManager:
             shared_kwargs: 额外透传给 synthesize_text 的参数
         """
         processor = StreamProcessor(
-            min_sentence_length=(
-                min_sentence_length
-                or self.config.paragraph_min_sentence_length
-            )
+            min_sentence_length=(min_sentence_length or self.config.paragraph_min_sentence_length)
         )
         sentences = list(processor.process_chunk(text))
         # flush 时输出所有剩余内容，确保开头结尾的文本不会被丢失
@@ -593,9 +585,7 @@ class TTSManager:
         finally:
             await self._release_inflight(cache_key, future)
 
-    async def _get_or_create_inflight(
-        self, cache_key: str
-    ) -> tuple[asyncio.Future, bool]:
+    async def _get_or_create_inflight(self, cache_key: str) -> tuple[asyncio.Future, bool]:
         async with self._inflight_lock:
             future = self._inflight_futures.get(cache_key)
             if future is None:
@@ -606,9 +596,7 @@ class TTSManager:
             self._stats["inflight_waits"] += 1
             return future, False
 
-    async def _release_inflight(
-        self, cache_key: str, future: asyncio.Future
-    ) -> None:
+    async def _release_inflight(self, cache_key: str, future: asyncio.Future) -> None:
         """释放正在进行的请求（并发安全）"""
         async with self._inflight_lock:
             current = self._inflight_futures.get(cache_key)
@@ -630,19 +618,19 @@ class TTSManager:
                     except Exception:
                         pass
             self._inflight_futures.clear()
-        
+
         # 2. 关闭客户端
         try:
             await self.client.close()
         except Exception as e:
             logger.warning(f"关闭TTS客户端时出错: {e}")
-        
+
         # 3. 清空缓存
         try:
             await self.clear_cache()
         except Exception as e:
             logger.warning(f"清空TTS缓存时出错: {e}")
-        
+
         self._running = False
         logger.info("TTS 管理器已关闭")
 
@@ -672,4 +660,3 @@ def get_tts_manager(config: Optional[TTSConfig] = None) -> TTSManager:
         _tts_manager = TTSManager(config)
 
     return _tts_manager
-

@@ -75,7 +75,10 @@ class AsyncBatchExecutor:
         if HAS_TASKGROUP:
             try:
                 async with asyncio.TaskGroup() as tg:
-                    task_futures = [tg.create_task(_execute_with_semaphore(task, i)) for i, task in enumerate(tasks)]
+                    task_futures = [
+                        tg.create_task(_execute_with_semaphore(task, i))
+                        for i, task in enumerate(tasks)
+                    ]
 
                 # 收集结果
                 for future in task_futures:
@@ -93,7 +96,8 @@ class AsyncBatchExecutor:
         # Python 3.10及以下使用 gather
         else:
             task_results = await asyncio.gather(
-                *[_execute_with_semaphore(task, i) for i, task in enumerate(tasks)], return_exceptions=True
+                *[_execute_with_semaphore(task, i) for i, task in enumerate(tasks)],
+                return_exceptions=True,
             )
 
             for task_result in task_results:
@@ -131,7 +135,9 @@ class AsyncBatchExecutor:
                     return result
             except Exception as e:
                 if attempt < max_retries:
-                    logger.warning(f"任务执行失败，{retry_delay}秒后重试 ({attempt + 1}/{max_retries}): {e}")
+                    logger.warning(
+                        f"任务执行失败，{retry_delay}秒后重试 ({attempt + 1}/{max_retries}): {e}"
+                    )
                     await asyncio.sleep(retry_delay)
                 else:
                     logger.error(f"任务执行失败，已达最大重试次数: {e}")
@@ -224,7 +230,9 @@ class AsyncCache:
         self._locks.clear()
 
 
-def async_timed(func: Callable[..., Coroutine[Any, Any, T]]) -> Callable[..., Coroutine[Any, Any, T]]:
+def async_timed(
+    func: Callable[..., Coroutine[Any, Any, T]],
+) -> Callable[..., Coroutine[Any, Any, T]]:
     """
     异步函数计时装饰器
 
@@ -263,7 +271,9 @@ def async_cached(ttl: float = 300.0):
     """
     cache = AsyncCache(ttl=ttl)
 
-    def decorator(func: Callable[..., Coroutine[Any, Any, T]]) -> Callable[..., Coroutine[Any, Any, T]]:
+    def decorator(
+        func: Callable[..., Coroutine[Any, Any, T]],
+    ) -> Callable[..., Coroutine[Any, Any, T]]:
         @wraps(func)
         async def wrapper(*args, **kwargs) -> T:
             # 生成缓存键
@@ -317,4 +327,3 @@ def get_batch_executor() -> AsyncBatchExecutor:
 def get_async_cache() -> AsyncCache:
     """获取全局异步缓存"""
     return _async_cache
-

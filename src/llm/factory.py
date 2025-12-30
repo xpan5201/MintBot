@@ -60,7 +60,7 @@ def get_llm(
         if not _WARNED_EMPTY_KEY:
             _WARNED_EMPTY_KEY = True
             logger.warning(
-                "LLM API Key 为空，若使用云端模型请在 config.yaml 配置 settings.llm.key"
+                "LLM API Key 为空，若使用云端模型请在 config.user.yaml 配置 LLM.key（或通过环境变量提供）。"
             )
 
     return _build_openai_llm(
@@ -107,7 +107,7 @@ def get_vision_llm() -> Optional[Any]:
     if not resolved_key and not _WARNED_EMPTY_VISION_KEY:
         _WARNED_EMPTY_VISION_KEY = True
         logger.warning(
-            "VISION_LLM 已启用但 API Key 为空；若使用云端视觉模型，请在 config.yaml 配置 VISION_LLM.key "
+            "VISION_LLM 已启用但 API Key 为空；若使用云端视觉模型，请在 config.user.yaml 配置 VISION_LLM.key "
             "（或通过环境变量提供）。"
         )
 

@@ -155,6 +155,7 @@ def init_tts() -> bool:
             # 检查是否已有事件循环
             try:
                 asyncio.get_running_loop()
+
                 # 如果已有事件循环，在新线程中运行（避免阻塞当前事件循环）
                 def run_in_new_loop():
                     """在新线程中创建新的事件循环并运行健康检查"""
@@ -164,7 +165,7 @@ def init_tts() -> bool:
                         return new_loop.run_until_complete(_test_tts_service(_tts_config))
                     finally:
                         new_loop.close()
-                
+
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(run_in_new_loop)
                     try:
@@ -182,7 +183,7 @@ def init_tts() -> bool:
                 except Exception as e:
                     logger.warning(f"TTS 健康检查失败: {e}")
                     is_available = False
-            
+
             _tts_available = is_available
             if is_available:
                 logger.info("✅ GPT-SoVITS 服务可用")
@@ -204,7 +205,7 @@ def init_tts() -> bool:
             _tts_available = False
             logger.info("=" * 60)
             return False
-        
+
         logger.info("=" * 60)
         return True
 
@@ -242,4 +243,3 @@ def is_tts_available() -> bool:
         bool: TTS 是否可用
     """
     return _tts_available
-

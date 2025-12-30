@@ -28,4 +28,3 @@ def test_stream_llm_response_skips_non_messages_stream_modes() -> None:
         executor.shutdown(wait=True, cancel_futures=True)
 
     assert out == ["hi"]
-

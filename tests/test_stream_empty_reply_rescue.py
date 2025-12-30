@@ -31,7 +31,9 @@ def test_chat_stream_uses_rescue_on_empty_reply() -> None:
 
     saved: dict[str, str] = {}
 
-    def post_actions(_save_message: str, reply: str, _save_to_long_term: bool, *, stream: bool) -> None:
+    def post_actions(
+        _save_message: str, reply: str, _save_to_long_term: bool, *, stream: bool
+    ) -> None:
         assert stream is True
         saved["reply"] = reply
 
@@ -70,7 +72,9 @@ def test_chat_stream_does_not_append_default_when_filtered_empty_but_streamed() 
 
     saved: dict[str, str] = {}
 
-    def post_actions(_save_message: str, reply: str, _save_to_long_term: bool, *, stream: bool) -> None:
+    def post_actions(
+        _save_message: str, reply: str, _save_to_long_term: bool, *, stream: bool
+    ) -> None:
         assert stream is True
         saved["reply"] = reply
 

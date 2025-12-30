@@ -645,10 +645,12 @@ class StreamStructuredPrefixStripper:
             marker = "toolselectionresponse"
             if marker.startswith(candidate_lower) and candidate_lower != marker:
                 # The marker might be arriving in fragments. Keep buffering until we can decide.
-                if force or (self._max_buffer_chars and len(candidate) > self._max_buffer_chars):
+                if force:
                     self._done = True
                     self._buffer = ""
-                    return ""
+                    # If we only received a very short prefix (e.g. "tool"/"tools"), it might be legit text.
+                    # Drop only when we have enough chars to be confident it's the marker.
+                    return "" if len(candidate_lower) >= 8 else full_text
                 self._buffer = full_text
                 return ""
 
@@ -713,6 +715,22 @@ class StreamStructuredPrefixStripper:
                 if force or (self._max_buffer_chars and len(cleaned) > self._max_buffer_chars):
                     self._done = True
                     self._buffer = ""
+                    probe = cleaned.lstrip().lower()
+                    compact = probe.replace(" ", "")
+                    looks_like_tool_payload = (
+                        "toolselectionresponse" in compact
+                        or "tool_calls" in compact
+                        or '"tool_calls"' in compact
+                        or '"tools"' in compact
+                        or '"type":"function"' in compact
+                        or (
+                            '"function"' in compact
+                            and '"arguments"' in compact
+                            and '"name"' in compact
+                        )
+                    )
+                    if looks_like_tool_payload:
+                        return ""
                     return original_on_keep
                 self._buffer = full_text
                 return ""
@@ -830,6 +848,16 @@ class StreamToolTraceScrubber:
         if stripped.startswith("{") or stripped.startswith("["):
             return True
         if "\n{" in text or "\n[" in text:
+            return True
+
+        stripped_lower = stripped.lower()
+        marker = "toolselectionresponse"
+        if (
+            stripped_lower
+            and stripped_lower != marker
+            and len(stripped_lower) >= 8
+            and marker.startswith(stripped_lower)
+        ):
             return True
 
         lower = text.lower()
@@ -951,6 +979,9 @@ class StreamToolTraceScrubber:
                 if marker.startswith(lower) and lower != marker:
                     if not force:
                         break
+                    # Force flush: drop incomplete marker fragments instead of leaking them to UI.
+                    s = ""
+                    continue
                 if lower.startswith(marker):
                     nl = candidate.find("\n")
                     if nl < 0:
@@ -1005,9 +1036,13 @@ class StreamToolTraceScrubber:
                     s = s[nl + 1 :]
                     continue
 
-                if lowered.startswith("tool_re") and not force:
-                    # Likely a split TOOL_RESULT prefix; keep buffering.
-                    break
+                if lowered.startswith("tool_re"):
+                    # Likely a split TOOL_RESULT prefix; keep buffering unless we're force flushing.
+                    if not force:
+                        break
+                    s = ""
+                    self._in_tool_result = False
+                    continue
 
                 out_parts.append(s)
                 s = ""
@@ -1023,7 +1058,22 @@ class StreamToolTraceScrubber:
             if fragment is None:
                 # Incomplete JSON: keep buffered so partial tool traces won't show.
                 if force:
-                    out_parts.append(s)
+                    probe = s.lstrip().lower()
+                    compact = probe.replace(" ", "")
+                    looks_like_tool_payload = (
+                        "toolselectionresponse" in compact
+                        or "tool_calls" in compact
+                        or '"tool_calls"' in compact
+                        or '"tools"' in compact
+                        or '"type":"function"' in compact
+                        or (
+                            '"function"' in compact
+                            and '"arguments"' in compact
+                            and '"name"' in compact
+                        )
+                    )
+                    if not looks_like_tool_payload:
+                        out_parts.append(s)
                     s = ""
                 break
 
@@ -1571,6 +1621,7 @@ class MintChatAgent:
             ValueError: 如果 LLM 提供商不支持或 API Key 未配置
         """
         provider = settings.default_llm_provider
+        timeout_s = float(getattr(getattr(self, "_llm_timeouts", None), "total", 120.0))
 
         try:
             streaming_requested = bool(getattr(self, "enable_streaming", False))
@@ -1588,7 +1639,7 @@ class MintChatAgent:
                     temperature=self.temperature,
                     max_tokens=settings.model_max_tokens,
                     api_key=settings.openai_api_key,
-                    timeout=120.0,
+                    timeout=timeout_s,
                     max_retries=2,
                 )
                 if streaming_requested:
@@ -1599,7 +1650,7 @@ class MintChatAgent:
                     # 兼容不同版本 LangChain：不支持 streaming 参数时自动回退
                     openai_kwargs.pop("streaming", None)
                     llm = ChatOpenAI(**openai_kwargs)
-                logger.info(f"使用 OpenAI 模型: {self.model_name}，超时: 120秒")
+                logger.info(f"使用 OpenAI 模型: {self.model_name}，超时: {timeout_s:g}秒")
 
             elif provider == "anthropic":
                 if not HAS_ANTHROPIC:
@@ -1614,7 +1665,7 @@ class MintChatAgent:
                     temperature=self.temperature,
                     max_tokens=settings.model_max_tokens,
                     anthropic_api_key=settings.anthropic_api_key,
-                    timeout=120.0,
+                    timeout=timeout_s,
                     max_retries=2,
                 )
                 if streaming_requested:
@@ -1624,7 +1675,7 @@ class MintChatAgent:
                 except TypeError:
                     anthropic_kwargs.pop("streaming", None)
                     llm = ChatAnthropic(**anthropic_kwargs)
-                logger.info(f"使用 Anthropic 模型: {self.model_name}，超时: 120秒")
+                logger.info(f"使用 Anthropic 模型: {self.model_name}，超时: {timeout_s:g}秒")
 
             elif provider == "google":
                 if not HAS_GOOGLE:
@@ -1639,7 +1690,7 @@ class MintChatAgent:
                     temperature=self.temperature,
                     max_output_tokens=settings.model_max_tokens,
                     google_api_key=settings.google_api_key,
-                    timeout=120.0,
+                    timeout=timeout_s,
                 )
                 if streaming_requested:
                     google_kwargs["streaming"] = True
@@ -1648,7 +1699,7 @@ class MintChatAgent:
                 except TypeError:
                     google_kwargs.pop("streaming", None)
                     llm = ChatGoogleGenerativeAI(**google_kwargs)
-                logger.info(f"使用 Google 模型: {self.model_name}，超时: 120秒")
+                logger.info(f"使用 Google 模型: {self.model_name}，超时: {timeout_s:g}秒")
 
             else:
                 # 使用自定义 OpenAI 兼容 API（如 SiliconFlow、DeepSeek 等）
@@ -1666,7 +1717,7 @@ class MintChatAgent:
                     max_tokens=settings.model_max_tokens,
                     api_key=settings.llm.key,
                     base_url=settings.llm.api,
-                    timeout=120.0,
+                    timeout=timeout_s,
                     max_retries=2,
                 )
                 if streaming_requested:
@@ -1678,7 +1729,7 @@ class MintChatAgent:
                     llm = ChatOpenAI(**compat_kwargs)
                 logger.info(
                     f"使用自定义 OpenAI 兼容 API: {settings.llm.api}, "
-                    f"模型: {self.model_name}，超时: 120秒"
+                    f"模型: {self.model_name}，超时: {timeout_s:g}秒"
                 )
 
             return llm
@@ -1794,6 +1845,16 @@ class MintChatAgent:
 - 优先给**结论 + 3~5 个要点**；需要更多细节时，再向主人追问或分步展开。
 - 尽量避免输出原始 JSON/超长列表/日志；必要时先总结，再补充关键链接或条目。
 - 工具返回为空/失败/超时：说明原因，并给出下一步建议（换关键词、补充城市/出发地等）。
+
+## Live2D 状态事件（可选，面向 GUI 角色表现）
+
+- 你可以在回复中附加**隐藏 JSON 指令**来触发表情/动作：`[[live2d:{"event":"EVENT","intensity":0.0-1.0,"hold_s":0.2-30}]]`
+  - UI 会自动剥离该指令，不会显示给主人，也不会保存到聊天记录。
+  - 仅用于 Live2D 控制，不要解释，不要放进正文；除这条隐藏指令外不要输出原始 JSON。
+  - `event` 可以是**表情语义标签**：`angry/shy/dizzy/love/sad/surprise`，也可以是中文关键词（如“猫尾/雾气/鱼干/脸黑”），或直接写 `.exp3.json` 文件名。
+  - `event` 也可以是**动作标签**（触发点头/摇头等）：`nod/shake`（同义：`yes/no/affirm/deny/肯定/否定/点头/摇头`）。
+  - `intensity` 为 0~1（可省略），`hold_s` 为停留秒数（可省略）。
+- 使用原则：**少量、自然、服务于情绪表达**，不要在同一条回复里反复切换；不要向主人解释这些指令。
 """
             system_prompt = base_system_prompt + enhanced_instruction
             # Cache for rescue paths (e.g., tool-result rewrite without re-running the agent graph).
@@ -2457,9 +2518,8 @@ class MintChatAgent:
                 tool_recorder = getattr(bundle, "tool_recorder", None)
                 if tool_recorder is not None:
                     user_message = (
-                        (bundle.original_message or bundle.processed_message or bundle.save_message)
-                        or ""
-                    )
+                        bundle.original_message or bundle.processed_message or bundle.save_message
+                    ) or ""
                     prefers_raw = (
                         self._user_prefers_raw_tool_output(user_message) if user_message else False
                     )
@@ -2939,6 +2999,45 @@ class MintChatAgent:
             except AgentTimeoutError as secondary_exc:
                 raise AgentTimeoutError("LLM 压缩上下文快速重试仍然超时") from secondary_exc
 
+    async def _ainvoke_with_failover(
+        self,
+        bundle: AgentConversationBundle,
+        *,
+        timeout_s: Optional[float] = None,
+    ) -> Any:
+        """
+        对异步环境下的 LLM 调用增加快速压缩重试以提升成功率。
+        """
+        try:
+            return await self._ainvoke_agent_with_timeout(
+                bundle.messages,
+                timeout_s=timeout_s,
+                tool_recorder=getattr(bundle, "tool_recorder", None),
+            )
+        except AgentTimeoutError as primary_exc:
+            if not self._fast_retry_enabled:
+                raise
+
+            logger.warning("LLM 调用超时，尝试压缩上下文快速重试(异步)")
+            try:
+                fallback_messages = await self._prepare_messages_async(
+                    bundle.processed_message,
+                    compression="on",
+                    use_cache=True,
+                )
+            except Exception as rebuild_exc:
+                logger.error("构建快速重试上下文失败: %s", rebuild_exc)
+                raise primary_exc
+
+            try:
+                return await self._ainvoke_agent_with_timeout(
+                    fallback_messages,
+                    timeout_s=timeout_s,
+                    tool_recorder=getattr(bundle, "tool_recorder", None),
+                )
+            except AgentTimeoutError as secondary_exc:
+                raise AgentTimeoutError("LLM 压缩上下文快速重试仍然超时") from secondary_exc
+
     def _build_image_analysis_fallback_reply(
         self, bundle: "AgentConversationBundle"
     ) -> Optional[str]:
@@ -3019,8 +3118,8 @@ class MintChatAgent:
             return image_fallback
 
         user_message = (
-            (bundle.original_message or bundle.processed_message or bundle.save_message) or ""
-        )
+            bundle.original_message or bundle.processed_message or bundle.save_message
+        ) or ""
         tool_recorder = getattr(bundle, "tool_recorder", None)
         tool_trace_fallback = self._format_tool_trace_fallback(
             tool_recorder, user_message=user_message
@@ -3119,8 +3218,8 @@ class MintChatAgent:
             return image_fallback
 
         user_message = (
-            (bundle.original_message or bundle.processed_message or bundle.save_message) or ""
-        )
+            bundle.original_message or bundle.processed_message or bundle.save_message
+        ) or ""
         tool_recorder = getattr(bundle, "tool_recorder", None)
         tool_trace_fallback = self._format_tool_trace_fallback(
             tool_recorder, user_message=user_message
@@ -4471,7 +4570,9 @@ class MintChatAgent:
                         wind_dir = _as_clean_text(
                             payload.get("winddirection") or payload.get("windDirection")
                         )
-                        wind_power = _as_clean_text(payload.get("windpower") or payload.get("windPower"))
+                        wind_power = _as_clean_text(
+                            payload.get("windpower") or payload.get("windPower")
+                        )
                         wind = (wind_dir + wind_power).strip()
                     if wind:
                         kv["wind"] = wind
@@ -4482,7 +4583,9 @@ class MintChatAgent:
                     if humidity_s:
                         humidity_s = re.sub(r"[^0-9.+-]", "", humidity_s) or humidity_s
                         kv["humidity_percent"] = humidity_s
-                    tip = _as_clean_text(payload.get("tip") or payload.get("advice") or payload.get("notice"))
+                    tip = _as_clean_text(
+                        payload.get("tip") or payload.get("advice") or payload.get("notice")
+                    )
                     if tip:
                         kv["tip"] = tip
                     return _fmt_weather(kv)
@@ -4494,7 +4597,9 @@ class MintChatAgent:
                     for item in results_raw[:10]:
                         if isinstance(item, dict):
                             title = _as_clean_text(item.get("title") or item.get("name"))
-                            link = _as_clean_text(item.get("url") or item.get("link") or item.get("href"))
+                            link = _as_clean_text(
+                                item.get("url") or item.get("link") or item.get("href")
+                            )
                             snippet = _as_clean_text(item.get("snippet") or item.get("description"))
                             parts = [p for p in (title, link, snippet) if p]
                             if parts:
@@ -4530,9 +4635,7 @@ class MintChatAgent:
                         result_lines.append(f"{len(result_lines)+1}. {name}{suffix}")
                     kv = {
                         "keywords": _as_clean_text(
-                            payload.get("keywords")
-                            or payload.get("keyword")
-                            or payload.get("q")
+                            payload.get("keywords") or payload.get("keyword") or payload.get("q")
                         ),
                         "city": _as_clean_text(payload.get("city")),
                     }
@@ -4619,7 +4722,11 @@ class MintChatAgent:
             if not value:
                 match = re.search(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}", raw)
                 value = match.group(0) if match else ""
-            return f"{user_name}，现在是 {value} 喵~" if value else f"{user_name}，我这边没有拿到明确的时间喵~"
+            return (
+                f"{user_name}，现在是 {value} 喵~"
+                if value
+                else f"{user_name}，我这边没有拿到明确的时间喵~"
+            )
 
         def _fmt_date(kv: dict[str, str]) -> str:
             date = (kv.get("local_date") or kv.get("date") or "").strip()
@@ -4639,7 +4746,7 @@ class MintChatAgent:
                 if error == "missing_amap_key":
                     return (
                         f"{user_name}，我想帮你查天气，不过我这边还没配置高德 API Key。"
-                        f"你可以在 config.yaml 里填 AMAP.api_key（或设置环境变量 AMAP_API_KEY），"
+                        f"你可以在 config.user.yaml 里填 AMAP.api_key（或设置环境变量 AMAP_API_KEY），"
                         "然后再问我一次喵~"
                     )
                 message = f"{user_name}，天气查询失败了（{error}）"
@@ -4689,7 +4796,7 @@ class MintChatAgent:
                 if error == "missing_amap_key":
                     return (
                         f"{user_name}，我想帮你查地图，不过我这边还没配置高德 API Key。"
-                        f"你可以在 config.yaml 里填 AMAP.api_key（或设置环境变量 AMAP_API_KEY），"
+                        f"你可以在 config.user.yaml 里填 AMAP.api_key（或设置环境变量 AMAP_API_KEY），"
                         "然后再问我一次喵~"
                     )
                 message = f"{user_name}，地图查询失败了（{error}）"
@@ -4800,7 +4907,9 @@ class MintChatAgent:
             text = output or ""
 
             if output:
-                first_line = output.splitlines()[0].strip() if output.splitlines() else output.strip()
+                first_line = (
+                    output.splitlines()[0].strip() if output.splitlines() else output.strip()
+                )
                 if first_line.lower().startswith("tool_result"):
                     _tool, kv, results = _split_tool_result(output)
                     tool_name = (_tool or name).strip()
@@ -5129,8 +5238,22 @@ class MintChatAgent:
                 return True
 
         raw_markers = ("原样", "原始", "raw", "不加工", "未经处理", "原文")
-        directive_markers = ("输出", "返回", "给我", "提供", "按", "按照", "以", "用", "格式", "return", "output")
-        if any(tok in compact for tok in raw_markers) and any(tok in compact for tok in directive_markers):
+        directive_markers = (
+            "输出",
+            "返回",
+            "给我",
+            "提供",
+            "按",
+            "按照",
+            "以",
+            "用",
+            "格式",
+            "return",
+            "output",
+        )
+        if any(tok in compact for tok in raw_markers) and any(
+            tok in compact for tok in directive_markers
+        ):
             return True
 
         if "结构化" in compact and any(tok in compact for tok in directive_markers):
@@ -5443,7 +5566,9 @@ class MintChatAgent:
 
             if enable_lore_learning:
                 try:
-                    self.lore_book.learn_from_conversation(save_message, full_reply, auto_extract=True)
+                    self.lore_book.learn_from_conversation(
+                        save_message, full_reply, auto_extract=True
+                    )
                 except Exception as exc:
                     logger.debug("从对话中学习知识失败（可忽略）: %s", exc)
 
@@ -5850,9 +5975,8 @@ class MintChatAgent:
             tool_recorder = getattr(bundle, "tool_recorder", None)
             if tool_recorder is not None:
                 user_message = (
-                    (bundle.original_message or bundle.processed_message or bundle.save_message)
-                    or ""
-                )
+                    bundle.original_message or bundle.processed_message or bundle.save_message
+                ) or ""
                 prefers_raw = (
                     self._user_prefers_raw_tool_output(user_message) if user_message else False
                 )
@@ -5954,6 +6078,59 @@ class MintChatAgent:
             if stage_timer:
                 stage_timer.mark("build_bundle")
 
+            # 若 streaming 曾因失败被临时禁用，冷却时间到后自动恢复（避免必须重启应用）。
+            try:
+                if getattr(self, "_streaming_user_enabled", False) and not getattr(
+                    self, "enable_streaming", False
+                ):
+                    disabled_until = float(getattr(self, "_streaming_disabled_until", 0.0) or 0.0)
+                    if disabled_until <= 0 or time.monotonic() >= disabled_until:
+                        self.enable_streaming = True
+                        self._stream_failure_count = 0
+                        self._streaming_disabled_until = 0.0
+                        logger.info("streaming 已自动恢复")
+            except Exception:
+                pass
+
+            if not bool(getattr(self, "enable_streaming", True)):
+                try:
+                    response = await self._ainvoke_with_failover(
+                        bundle,
+                        timeout_s=getattr(self, "_stream_failover_timeout_s", None),
+                    )
+                    if stage_timer:
+                        stage_timer.mark("invoke_llm")
+                    reply = self._extract_reply_from_response(response)
+                    if not reply.strip() or reply.strip() == _DEFAULT_EMPTY_REPLY:
+                        rescued = await self._arescue_empty_reply(
+                            bundle, raw_reply=reply, source="no_stream_async"
+                        )
+                        if rescued:
+                            reply = rescued
+                    if not reply.strip():
+                        reply = _DEFAULT_EMPTY_REPLY
+
+                    if cancel_event and cancel_event.is_set():
+                        logger.info("非流式对话已取消（停止输出与保存）")
+                        return
+
+                    self._post_reply_actions(
+                        bundle.save_message, reply, save_to_long_term, stream=False
+                    )
+                    if stage_timer:
+                        stage_timer.mark("post_reply")
+                    yield reply
+                    logger.info("非流式回复完成（streaming disabled, async）")
+                except AgentTimeoutError as timeout_exc:
+                    outcome = "timeout"
+                    logger.error("非流式对话超时: %s", timeout_exc)
+                    yield "抱歉主人，模型那边暂时没有回应，我们稍后再聊好么？喵~"
+                except Exception as exc:
+                    outcome = "error"
+                    logger.error("非流式对话失败: %s", exc)
+                    yield f"抱歉主人，我遇到了一些问题：{str(exc)} 喵~"
+                return
+
             reply_parts: list[str] = []
             try:
                 stream_iter = self._astream_llm_response(
@@ -5977,17 +6154,60 @@ class MintChatAgent:
                         pass
                     logger.info("异步流式对话已取消（停止输出与保存）")
                     return
+                if reply_parts:
+                    self._stream_failure_count = 0
             except AgentTimeoutError as stream_timeout:
                 # v3.3.4: 改进错误信息处理
                 error_msg = str(stream_timeout) or repr(stream_timeout) or "异步流式输出超时"
                 if cancel_event and cancel_event.is_set():
                     logger.info("异步流式对话已取消（忽略超时）: %s", error_msg)
                     return
-                logger.error(f"异步流式输出超时: {error_msg}")
-                fallback = "抱歉主人，模型暂时没有新输出，我们稍后再继续聊好嘛？喵~"
-                if not reply_parts:
-                    reply_parts.append(fallback)
-                    yield fallback
+                if reply_parts:
+                    logger.warning("LLM 异步流式输出中断（已输出部分内容）: %s", error_msg)
+                    self._stream_failure_count = 0
+                else:
+                    logger.error("LLM 异步流式输出超时: %s", error_msg)
+                    self._stream_failure_count = int(getattr(self, "_stream_failure_count", 0)) + 1
+                    if self._stream_failure_count >= int(
+                        getattr(self, "_stream_disable_after_failures", 2)
+                    ):
+                        if getattr(self, "enable_streaming", False):
+                            logger.warning(
+                                "检测到多次流式失败（%s 次），将暂时禁用 streaming 以提升可用性",
+                                self._stream_failure_count,
+                            )
+                        try:
+                            cooldown_s = float(getattr(self, "_stream_disable_cooldown_s", 60.0))
+                        except Exception:
+                            cooldown_s = 60.0
+                        if cooldown_s <= 0:
+                            # 仅本次禁用：下次对话自动恢复
+                            self._streaming_disabled_until = time.monotonic()
+                        else:
+                            self._streaming_disabled_until = time.monotonic() + cooldown_s
+                        self.enable_streaming = False
+
+                    try:
+                        response = await self._ainvoke_with_failover(
+                            bundle,
+                            timeout_s=getattr(self, "_stream_failover_timeout_s", None),
+                        )
+                        reply = self._extract_reply_from_response(response)
+                        if not reply.strip() or reply.strip() == _DEFAULT_EMPTY_REPLY:
+                            rescued = await self._arescue_empty_reply(
+                                bundle, raw_reply=reply, source="astream_failover"
+                            )
+                            if rescued:
+                                reply = rescued
+                        if not reply.strip():
+                            reply = _DEFAULT_EMPTY_REPLY
+                        reply_parts.append(reply)
+                        yield reply
+                    except Exception as failover_exc:
+                        logger.warning("流式失败后的非流式兜底也失败: %s", failover_exc)
+                        fallback = "抱歉主人，模型暂时没有新输出，我们稍后再继续聊好嘛？喵~"
+                        reply_parts.append(fallback)
+                        yield fallback
             except Exception as stream_error:
                 # v3.3.4: 改进错误信息处理
                 from src.utils.exceptions import handle_exception
@@ -6021,9 +6241,8 @@ class MintChatAgent:
             tool_recorder = getattr(bundle, "tool_recorder", None)
             if tool_recorder is not None:
                 user_message = (
-                    (bundle.original_message or bundle.processed_message or bundle.save_message)
-                    or ""
-                )
+                    bundle.original_message or bundle.processed_message or bundle.save_message
+                ) or ""
                 prefers_raw = (
                     self._user_prefers_raw_tool_output(user_message) if user_message else False
                 )

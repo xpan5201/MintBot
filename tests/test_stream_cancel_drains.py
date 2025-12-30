@@ -42,4 +42,3 @@ def test_chat_stream_drains_iterator_on_cancel_event() -> None:
 
     assert chunks == ["A"]
     assert cleaned["done"] is True
-

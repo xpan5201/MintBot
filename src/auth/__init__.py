@@ -7,4 +7,4 @@
 from .database import UserDatabase
 from .auth_service import AuthService
 
-__all__ = ['UserDatabase', 'AuthService']
+__all__ = ["UserDatabase", "AuthService"]

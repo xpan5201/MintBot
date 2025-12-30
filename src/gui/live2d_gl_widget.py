@@ -136,16 +136,20 @@ def _sanitize_json_ascii(data: Any) -> Any:
 
 
 def _cache_root_for_model(src_model_json: Path, *, cache_base: Path | None = None) -> Path:
+    # Bump this when the sanitizer output layout/schema changes (forces a rebuild).
+    LIVE2D_CACHE_SCHEMA_VERSION = 2
     base = Path(cache_base) if cache_base is not None else (_repo_root() / "data" / "live2d_cache")
     try:
         key_src = str(Path(src_model_json).resolve())
     except Exception:
         key_src = str(src_model_json)
     digest = hashlib.sha1(str(key_src).encode("utf-8", "ignore")).hexdigest()[:12]
-    return base / f"model_{digest}_ascii"
+    return base / f"model_{digest}_ascii_v{LIVE2D_CACHE_SCHEMA_VERSION}"
 
 
-def _sanitize_model3_json_for_cubism(src_model_json: Path, *, cache_base: Path | None = None) -> Path:
+def _sanitize_model3_json_for_cubism(
+    src_model_json: Path, *, cache_base: Path | None = None
+) -> Path:
     """
     Return a model3.json path that is safe for Cubism's limited JSON parser.
 
@@ -193,7 +197,9 @@ def _sanitize_model3_json_for_cubism(src_model_json: Path, *, cache_base: Path |
                 if isinstance(v, str) and not _is_ascii(v):
                     needs_ascii = True
                     break
-                if isinstance(v, list) and any(isinstance(it, str) and not _is_ascii(it) for it in v):
+                if isinstance(v, list) and any(
+                    isinstance(it, str) and not _is_ascii(it) for it in v
+                ):
                     needs_ascii = True
                     break
         except Exception:
@@ -275,7 +281,9 @@ def _sanitize_model3_json_for_cubism(src_model_json: Path, *, cache_base: Path |
         expected.append(dest)
         return {"Name": expr_name, "File": dest_rel.as_posix()}
 
-    def emit_motion_entry(group: str, src_path: Path, *, idx: int, original: dict[str, Any] | None) -> dict[str, Any]:
+    def emit_motion_entry(
+        group: str, src_path: Path, *, idx: int, original: dict[str, Any] | None
+    ) -> dict[str, Any]:
         motions_dir.mkdir(parents=True, exist_ok=True)
         note_src(src_path)
         safe_group = _stable_ascii_token(group, prefix="motion")
@@ -312,6 +320,8 @@ def _sanitize_model3_json_for_cubism(src_model_json: Path, *, cache_base: Path |
     base_expr = src_refs.get("Expressions")
     expressions: list[dict[str, str]] = []
     if isinstance(base_expr, list) and base_expr:
+        seen_expr_files: set[str] = set()
+        base_expr_count = len(base_expr)
         for idx, entry in enumerate(base_expr, start=1):
             if not isinstance(entry, dict):
                 continue
@@ -321,13 +331,35 @@ def _sanitize_model3_json_for_cubism(src_model_json: Path, *, cache_base: Path |
             src = resolve_ref(file_ref)
             if not src.exists():
                 continue
+            try:
+                seen_expr_files.add(src.name)
+            except Exception:
+                pass
             name = entry.get("Name") if isinstance(entry.get("Name"), str) else None
-            if must_copy_core_assets or (not _is_ascii(file_ref)) or (name is not None and not _is_ascii(name)):
+            if (
+                must_copy_core_assets
+                or (not _is_ascii(file_ref))
+                or (name is not None and not _is_ascii(name))
+            ):
                 expressions.append(emit_expression_entry(src, idx=idx, name=name))
             else:
                 expr_name = name or f"expr_{idx:02d}"
                 expr_name = expr_name if _is_ascii(expr_name) else f"expr_{idx:02d}"
                 expressions.append({"Name": expr_name, "File": from_model_ref(file_ref)})
+        # Some community models ship extra `.exp3.json` files without listing them in model3.json.
+        # Include them so the UI can still trigger expressions by file name.
+        extra_idx = base_expr_count + 1
+        for src in exp_files:
+            try:
+                if src.name in seen_expr_files:
+                    continue
+            except Exception:
+                continue
+            try:
+                expressions.append(emit_expression_entry(src, idx=extra_idx, name=None))
+                extra_idx += 1
+            except Exception:
+                continue
     elif exp_files:
         for idx, src in enumerate(exp_files, start=1):
             if not _is_ascii(src.name) or must_copy_core_assets:
@@ -342,7 +374,11 @@ def _sanitize_model3_json_for_cubism(src_model_json: Path, *, cache_base: Path |
             if not isinstance(items, list):
                 continue
             group_name = str(group)
-            safe_group = group_name if _is_ascii(group_name) else _stable_ascii_token(group_name, prefix="motion")
+            safe_group = (
+                group_name
+                if _is_ascii(group_name)
+                else _stable_ascii_token(group_name, prefix="motion")
+            )
             safe_group = re.sub(r"[^A-Za-z0-9_]+", "_", safe_group).strip("_") or "motion"
             out_items: list[dict[str, Any]] = []
             for idx, item in enumerate(items, start=1):
@@ -400,7 +436,9 @@ def _sanitize_model3_json_for_cubism(src_model_json: Path, *, cache_base: Path |
                 copy_file(src, dest)
             except Exception as exc:
                 logger.warning("Failed to copy Live2D asset %s: %s", src, exc)
-        sanitized_path.write_text(json.dumps(sanitized, ensure_ascii=True, indent=2), encoding="utf-8")
+        sanitized_path.write_text(
+            json.dumps(sanitized, ensure_ascii=True, indent=2), encoding="utf-8"
+        )
         return sanitized_path
     except Exception as exc:
         logger.warning("Live2D model sanitizer failed: %s", exc, exc_info=True)
@@ -417,7 +455,9 @@ def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
 
-def _css_color_to_rgba(css: str, *, force_alpha: float | None = None) -> tuple[float, float, float, float]:
+def _css_color_to_rgba(
+    css: str, *, force_alpha: float | None = None
+) -> tuple[float, float, float, float]:
     s = str(css or "").strip()
     if not s:
         return (0.0, 0.0, 0.0, 1.0)
@@ -458,13 +498,258 @@ def _css_color_to_rgba(css: str, *, force_alpha: float | None = None) -> tuple[f
     return (0.0, 0.0, 0.0, 1.0)
 
 
+def _choose_expression_file_for_event(event: str, available: list[str]) -> str | None:
+    """Pick a `.exp3.json` file name from `available` given a semantic event token."""
+    event = str(event or "").strip()
+    if not event or not available:
+        return None
+
+    available_set = set(available)
+
+    # Direct file name.
+    if event.endswith(".exp3.json") and event in available_set:
+        return event
+
+    # Common semantic mapping (best-effort; falls back to keyword search).
+    key = event.lower().strip()
+    direct: dict[str, list[str]] = {
+        "angry": ["生气.exp3.json"],
+        "mad": ["生气.exp3.json"],
+        "shy": ["脸红.exp3.json"],
+        "blush": ["脸红.exp3.json"],
+        "dizzy": ["晕.exp3.json"],
+        "love": ["心心眼.exp3.json"],
+        "like": ["心心眼.exp3.json"],
+        "sad": ["哭哭.exp3.json"],
+        "cry": ["哭哭.exp3.json"],
+        "surprise": ["星星眼.exp3.json"],
+        "surprised": ["星星眼.exp3.json"],
+        # Extra semantic keys for models that ship many expressions (e.g. Blue_cat).
+        "tail": ["猫尾.exp3.json"],
+        "cat_tail": ["猫尾.exp3.json"],
+        "ears": ["耳朵.exp3.json"],
+        "ear": ["耳朵.exp3.json"],
+        "headphones": ["耳机.exp3.json"],
+        "headset": ["耳机.exp3.json"],
+        "fog": ["雾气.exp3.json"],
+        "mist": ["雾气.exp3.json"],
+        "tongue": ["舌头.exp3.json"],
+        "fish": ["鱼干.exp3.json"],
+        "snack": ["鱼干.exp3.json"],
+        "small": ["变小.exp3.json"],
+        "smol": ["变小.exp3.json"],
+        "black": ["脸黑.exp3.json"],
+        "flower": ["花花.exp3.json"],
+        "rice": ["打米.exp3.json"],
+        "armor": ["钢板.exp3.json"],
+        "plate": ["钢板.exp3.json"],
+        "only_head": ["只有头.exp3.json"],
+        "head_only": ["只有头.exp3.json"],
+        "small_chest": ["小胸.exp3.json"],
+        "chest": ["小胸.exp3.json"],
+    }
+    for cand in direct.get(key, []):
+        if cand in available_set:
+            return cand
+
+    # Keyword match against file stems (Chinese/English).
+    keywords: dict[str, tuple[str, ...]] = {
+        "angry": ("生气", "怒", "气死", "恼", "火"),
+        "shy": ("脸红", "害羞", "羞", "不好意思"),
+        "dizzy": ("晕", "头晕", "眩晕"),
+        "love": ("心心眼", "喜欢", "爱", "亲", "抱"),
+        "sad": ("哭哭", "哭", "难过", "伤心", "委屈"),
+        "surprise": ("星星眼", "惊", "哇", "诶"),
+        "tail": ("猫尾", "尾巴", "tail"),
+        "ears": ("耳朵", "ears", "ear"),
+        "headphones": ("耳机", "耳麦", "headset", "headphones"),
+        "fog": ("雾气", "雾", "fog", "mist"),
+        "tongue": ("舌头", "吐舌", "blep", "tongue"),
+        "fish": ("鱼干", "小鱼", "fish"),
+        "small": ("变小", "小小", "small", "smol"),
+        "black": ("脸黑", "黑脸", "black"),
+        "flower": ("花花", "花", "flower"),
+        "rice": ("打米", "米", "rice"),
+        "armor": ("钢板", "装甲", "armor", "plate"),
+        "only_head": ("只有头", "只剩头", "headonly", "onlyhead"),
+        "small_chest": ("小胸", "胸", "chest"),
+    }
+
+    # If the event itself is a meaningful token (e.g. "生气"), treat it as a keyword.
+    search_terms: list[str] = [event]
+    if key in keywords:
+        search_terms.extend(list(keywords[key]))
+    else:
+        # Non-English tokens (e.g. "头晕") may not match the dict keys; try detecting by inclusion.
+        try:
+            for _k, terms in keywords.items():
+                if any(t and t in event for t in terms):
+                    search_terms.extend(list(terms))
+                    break
+        except Exception:
+            pass
+
+    def norm(s: str) -> str:
+        s = str(s or "").strip().lower()
+        return re.sub(r"\s+", "", s)
+
+    needle_terms = [norm(t) for t in search_terms if t]
+    if not needle_terms:
+        return None
+
+    for fname in available:
+        stem = fname[:-9] if fname.endswith(".exp3.json") else fname
+        hay = norm(stem)
+        if any(term and term in hay for term in needle_terms):
+            return fname
+    return None
+
+
+def _gesture_kind_for_event(event: str) -> str | None:
+    """Map a semantic event token to a Live2D gesture kind (best-effort).
+
+    Gestures are implemented by parameter-driven VTuber motion (no dedicated motion assets required).
+    """
+
+    raw = str(event or "").strip()
+    if not raw:
+        return None
+    key = raw.lower().strip()
+
+    # Direct gesture keys (English).
+    direct: dict[str, str] = {
+        "nod": "nod",
+        "yes": "nod",
+        "affirm": "nod",
+        "affirmative": "nod",
+        "agree": "nod",
+        "shake": "shake",
+        "no": "shake",
+        "deny": "shake",
+        "negative": "shake",
+        "disagree": "shake",
+        "tilt": "tilt",
+        "lean": "lean",
+        "look_left": "look_left",
+        "look_right": "look_right",
+        "look_up": "look_up",
+        "look_down": "look_down",
+    }
+    if key in direct:
+        return direct[key]
+
+    # Direct gesture keys (Chinese).
+    direct_cn: dict[str, str] = {
+        "点头": "nod",
+        "点点头": "nod",
+        "肯定": "nod",
+        "摇头": "shake",
+        "摇摇头": "shake",
+        "否定": "shake",
+    }
+    if raw in direct_cn:
+        return direct_cn[raw]
+
+    # Reasonable defaults for emotion-like events.
+    emo: dict[str, str] = {
+        "angry": "shake",
+        "mad": "shake",
+        "love": "tilt",
+        "like": "tilt",
+        "shy": "look_down",
+        "dizzy": "tilt",
+        "sad": "look_down",
+        "surprise": "look_up",
+        "surprised": "look_up",
+    }
+    if key in emo:
+        return emo[key]
+
+    # Also accept explicit Chinese emotion keywords in the event token.
+    if any(tok in raw for tok in ("生气", "气死", "气炸", "愤怒")):
+        return "shake"
+    if any(tok in raw for tok in ("喜欢", "爱", "心心眼", "亲亲", "抱抱")):
+        return "tilt"
+    if any(tok in raw for tok in ("害羞", "脸红")):
+        return "look_down"
+    if any(tok in raw for tok in ("头晕", "晕")):
+        return "tilt"
+    if any(tok in raw for tok in ("难过", "哭", "哭哭")):
+        return "look_down"
+    if any(tok in raw for tok in ("惊讶", "星星眼")):
+        return "look_up"
+
+    return None
+
+
+def _hit_test_any_area(model: Any, names: tuple[str, ...], x: float, y: float) -> bool:
+    """Return True if any hit-area name matches at (x, y)."""
+    try:
+        hit_test = getattr(model, "HitTest", None)
+        if not callable(hit_test):
+            return False
+    except Exception:
+        return False
+
+    for name in names:
+        try:
+            if hit_test(str(name), float(x), float(y)):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _event_key_for_hit_parts(parts: object) -> str | None:
+    """Infer a semantic event key from `model.HitPart(x, y)` results (best-effort)."""
+    if parts is None:
+        return None
+    if isinstance(parts, str):
+        part_ids = [parts]
+    elif isinstance(parts, (list, tuple, set)):
+        part_ids = [str(x) for x in parts if str(x)]
+    else:
+        try:
+            part_ids = [str(parts)]
+        except Exception:
+            part_ids = []
+    if not part_ids:
+        return None
+
+    tokens = " ".join(part_ids).lower()
+
+    # Prefer more specific parts first.
+    if any(t in tokens for t in ("tail", "尾")):
+        return "tail"
+    if any(t in tokens for t in ("headphone", "headset", "耳机")):
+        return "headphones"
+    if any(t in tokens for t in ("ear", "耳")):
+        return "ears"
+    if any(t in tokens for t in ("tongue", "舌")):
+        return "tongue"
+    if any(t in tokens for t in ("fish", "鱼")):
+        return "fish"
+    if any(t in tokens for t in ("flower", "花")):
+        return "flower"
+    if any(t in tokens for t in ("armor", "plate", "钢板")):
+        return "armor"
+    if any(t in tokens for t in ("black", "黑")):
+        return "black"
+
+    return None
+
+
 class Live2DGlWidget(QOpenGLWidget):
     """Render a Live2D Cubism 3+ model inside QOpenGLWidget."""
 
     VIEW_MODE_FULL = "full"
     VIEW_MODE_PORTRAIT = "portrait"
+    DEFAULT_EXPRESSION_FILE = "手势 抱娃娃.exp3.json"
 
     status_changed = pyqtSignal()
+    # Thread-safe bridge: external callers can request a state event without worrying about Qt thread affinity.
+    # (Signal emission from non-GUI threads is delivered via queued connection.)
+    state_event_requested = pyqtSignal(str, float, float, str)
 
     def __init__(self, *, model_json: Path | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -499,6 +784,20 @@ class Live2DGlWidget(QOpenGLWidget):
         self._auto_view_enabled = True
         self._view_mode = self.VIEW_MODE_FULL
         self._interaction_locked = False
+        # Expression policy: keep a stable default and only change expressions via explicit user actions.
+        self._default_expression_file = str(self.DEFAULT_EXPRESSION_FILE)
+        self._base_expression_id: str | None = None
+        self._base_expression_mode = ""  # "set" (override) or "add" (stack) for the base expression
+        self._state_expression_id: str | None = None
+        self._state_expression_mode = ""  # "set" (override) or "add" (stack) when active
+        self._state_expression_expire_t = 0.0
+        self._state_expression_event = ""
+        self._state_expression_last_apply_t = 0.0
+        self._expr_files_cache_dir: Path | None = None
+        self._expr_files_cache_mtime = 0.0
+        self._expr_files_cache: list[str] = []
+        self._expr_candidates_cache: dict[str, list[str]] = {}
+        self._model_expression_ids: list[str] = []
         self._update_accepts_dt: bool | None = None
         self._param_setter = None
         self._lipsync_supported: bool | None = None
@@ -509,6 +808,11 @@ class Live2DGlWidget(QOpenGLWidget):
         self._param_setter_supports_weight: bool | None = None
         self._param_supported: dict[str, bool] = {}
         self._param_index_cache: dict[str, int] = {}
+
+        try:
+            self.state_event_requested.connect(self._on_state_event_requested)
+        except Exception:
+            pass
 
         # "VTuber" idle layer: subtle motion + blinking + occasional expressions.
         # Implemented best-effort on top of the model without requiring a dedicated motion set.
@@ -533,6 +837,9 @@ class Live2DGlWidget(QOpenGLWidget):
         self._vtuber_gesture_bz = 0.0
         self._vtuber_gesture_ex = 0.0
         self._vtuber_gesture_ey = 0.0
+        self._vtuber_gesture_freq = 0.0
+        self._vtuber_gesture_phase = 0.0
+        self._vtuber_gesture_skew = 0.0
         self._vtuber_eye_open_last: float | None = None
 
         # Smooth pose state (prevents robotic "teleporting" between targets).
@@ -585,6 +892,15 @@ class Live2DGlWidget(QOpenGLWidget):
         # idle motion. Temporarily boost during interaction / speech for a snappier feel.
         self._tick_ms_normal = 33  # ~30 FPS
         self._tick_ms_boost = 16  # ~60 FPS
+        # Adaptive FPS under load: when the UI thread is under pressure, temporarily reduce FPS to keep
+        # the app responsive instead of stuttering.
+        self._tick_ms_medium = 40  # ~25 FPS
+        self._tick_ms_heavy = 50  # ~20 FPS
+        self._fps_load_mode = 0  # 0=normal, 1=medium, 2=heavy
+        self._fps_load_hold_until = 0.0
+        self._fps_load_last_eval_t = 0.0
+        self._render_ms_ema = 0.0
+        self._render_ms_last = 0.0
 
         self._tick_timer = QTimer(self)
         self._tick_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -623,8 +939,9 @@ class Live2DGlWidget(QOpenGLWidget):
         except Exception:
             pass
         try:
-            # Prefer partial updates for slightly lower compositor overhead on some platforms.
-            self.setUpdateBehavior(QOpenGLWidget.UpdateBehavior.PartialUpdate)
+            # Prefer the default non-preserved update behavior (better performance on Qt 5.5+).
+            # QOpenGLWidget always redraws each frame anyway (Live2D), so preserving content adds overhead.
+            self.setUpdateBehavior(QOpenGLWidget.UpdateBehavior.NoPartialUpdate)
         except Exception:
             pass
 
@@ -677,11 +994,15 @@ class Live2DGlWidget(QOpenGLWidget):
         self.update()
 
     def toggle_view_mode(self) -> str:
-        next_mode = self.VIEW_MODE_PORTRAIT if self._view_mode == self.VIEW_MODE_FULL else self.VIEW_MODE_FULL
+        next_mode = (
+            self.VIEW_MODE_PORTRAIT
+            if self._view_mode == self.VIEW_MODE_FULL
+            else self.VIEW_MODE_FULL
+        )
         self.set_view_mode(next_mode)
         return str(self._view_mode)
 
-    def trigger_reaction(self, kind: str = "manual") -> None:
+    def trigger_reaction(self, kind: str = "manual", *, pos: QPointF | None = None) -> None:
         """Trigger a light, non-intrusive reaction (motion + optional expression)."""
         if not self._ready or self._model is None:
             return
@@ -691,36 +1012,176 @@ class Live2DGlWidget(QOpenGLWidget):
         except Exception:
             pass
 
+        model = self._model
+
         preferred = "TapHead"
         alt = "TapBody"
         if str(kind) in {"user_send", "user"}:
             preferred, alt = alt, preferred
 
+        # When triggered by an actual click on the model, prefer HitTest/HitPart to decide reactions.
+        # This makes interactions feel more natural and prevents non-click triggers (e.g. button)
+        # from unexpectedly changing the base expression.
+        hit_head = False
+        part_event: str | None = None
+        xy: tuple[float, float] | None = None
+        if pos is not None:
+            try:
+                xy = self._drag_pos_to_model_px(pos)
+            except Exception:
+                xy = None
+
+        if xy is not None:
+            x, y = xy
+            # Hit-area names vary across models; try common variants.
+            head_areas = ("Head", "HitAreaHead", "Face", "HitArea_Face", "head", "face")
+            body_areas = (
+                "Body",
+                "HitAreaBody",
+                "Bust",
+                "HitArea_Body",
+                "HitAreaBust",
+                "body",
+                "bust",
+            )
+            try:
+                if _hit_test_any_area(model, head_areas, x, y):
+                    preferred, alt = "TapHead", "TapBody"
+                    hit_head = True
+                elif _hit_test_any_area(model, body_areas, x, y):
+                    preferred, alt = "TapBody", "TapHead"
+            except Exception:
+                hit_head = False
+
+            # Optional part-level detection for richer interactions (e.g. tail/ears).
+            if not hit_head and hasattr(model, "HitPart"):
+                try:
+                    part_ids = model.HitPart(float(x), float(y))
+                    part_event = _event_key_for_hit_parts(part_ids)
+                except Exception:
+                    part_event = None
+
         group = None
         try:
-            motions = self._model.GetMotionGroups() if hasattr(self._model, "GetMotionGroups") else {}
+            motions = model.GetMotionGroups() if hasattr(model, "GetMotionGroups") else {}
+            names: set[str] = set()
             if isinstance(motions, dict):
-                if preferred in motions:
-                    group = preferred
-                elif alt in motions:
-                    group = alt
+                try:
+                    names = {str(k) for k in motions.keys() if str(k)}
+                except Exception:
+                    names = set()
+            elif isinstance(motions, (list, tuple, set)):
+                try:
+                    names = {str(x) for x in motions if str(x)}
+                except Exception:
+                    names = set()
+            if preferred in names:
+                group = preferred
+            elif alt in names:
+                group = alt
         except Exception:
             group = None
 
         if group:
             try:
-                self._model.StartRandomMotion(group, 3)
+                model.StartRandomMotion(group, 3)
             except Exception:
                 pass
         else:
             try:
-                self._model.StartRandomMotion("Idle", 1)
+                model.StartRandomMotion("Idle", 1)
             except Exception:
                 pass
 
+        # Part-level reactions are transient: keep the user's base expression stable.
+        if part_event:
+            try:
+                self.apply_state_event(
+                    str(part_event), intensity=0.82, hold_s=3.8, source="manual_part"
+                )
+            except Exception:
+                pass
+
+        # Keep the default expression stable; only allow expression changes on explicit user interaction.
+        # (assistant/user auto reactions should not override the user's chosen look).
         try:
-            if hasattr(self._model, "SetRandomExpression"):
-                self._model.SetRandomExpression()
+            allow_expression = bool(pos is not None and hit_head)
+            if allow_expression and model is not None:
+                # Prefer AddExpression for base expression changes so chat-driven state events can still stack.
+                if hasattr(model, "AddExpression") and hasattr(model, "RemoveExpression"):
+                    try:
+                        try:
+                            expr_ids = list(getattr(self, "_model_expression_ids", []) or [])
+                            if not expr_ids:
+                                self._refresh_model_expression_ids()
+                                expr_ids = list(getattr(self, "_model_expression_ids", []) or [])
+                        except Exception:
+                            expr_ids = []
+
+                        if expr_ids:
+                            # Clear any SetExpression override so additive expressions are visible.
+                            try:
+                                if hasattr(model, "ResetExpression"):
+                                    model.ResetExpression()
+                            except Exception:
+                                pass
+
+                            base_id = str(getattr(self, "_base_expression_id", "") or "").strip()
+                            base_mode = str(getattr(self, "_base_expression_mode", "") or "")
+                            if base_id and base_mode == "add":
+                                try:
+                                    model.RemoveExpression(base_id)
+                                except Exception:
+                                    pass
+
+                            # User action wins: cancel any transient state expression.
+                            try:
+                                state_id = str(
+                                    getattr(self, "_state_expression_id", "") or ""
+                                ).strip()
+                                state_mode = str(getattr(self, "_state_expression_mode", "") or "")
+                                if state_id and state_mode == "add":
+                                    if not (base_mode == "add" and base_id and state_id == base_id):
+                                        model.RemoveExpression(state_id)
+                                elif state_id and state_mode == "set":
+                                    if hasattr(model, "ResetExpression"):
+                                        model.ResetExpression()
+                            except Exception:
+                                pass
+                            self._state_expression_id = None
+                            self._state_expression_mode = ""
+                            self._state_expression_expire_t = 0.0
+                            self._state_expression_event = ""
+
+                            choices = expr_ids
+                            if base_id and len(expr_ids) > 1:
+                                try:
+                                    filtered = [
+                                        str(x) for x in expr_ids if str(x) and str(x) != base_id
+                                    ]
+                                except Exception:
+                                    filtered = []
+                                if filtered:
+                                    choices = filtered
+                            new_id = str(random.choice(choices))
+                            model.AddExpression(new_id)
+                            self._base_expression_id = new_id
+                            self._base_expression_mode = "add"
+                    except Exception:
+                        pass
+                elif hasattr(model, "SetRandomExpression"):
+                    # Fallback: older behavior (may prevent AddExpression stacking for a while).
+                    try:
+                        exp_id = model.SetRandomExpression()
+                        if exp_id:
+                            self._base_expression_id = str(exp_id)
+                            self._base_expression_mode = "set"
+                        self._state_expression_id = None
+                        self._state_expression_mode = ""
+                        self._state_expression_expire_t = 0.0
+                        self._state_expression_event = ""
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -889,6 +1350,11 @@ class Live2DGlWidget(QOpenGLWidget):
         if not self._ready or self._model is None or self._live2d is None:
             return
 
+        try:
+            render_t0 = float(time.perf_counter())
+        except Exception:
+            render_t0 = 0.0
+
         dt_s = self._last_dt_s
         try:
             if self._elapsed.isValid():
@@ -958,6 +1424,18 @@ class Live2DGlWidget(QOpenGLWidget):
             self._model.Draw()
         except Exception:
             pass
+
+        # Adapt FPS under load based on real render cost. This is intentionally best-effort:
+        # failure to measure must not break rendering.
+        if render_t0:
+            try:
+                render_ms = max(0.0, (float(time.perf_counter()) - float(render_t0)) * 1000.0)
+            except Exception:
+                render_ms = 0.0
+            try:
+                self._maybe_adapt_fps_under_load(now, dt_s, float(render_ms))
+            except Exception:
+                pass
 
     def _cleanup_gl_resources(self) -> None:
         if bool(getattr(self, "_gl_resources_released", False)):
@@ -1057,7 +1535,9 @@ class Live2DGlWidget(QOpenGLWidget):
                     zoom = max(0.55, min(2.2, zoom))
                     k /= max(0.6, zoom)
                     self._user_offset_x += float(delta.x()) / w * k
-                    self._user_offset_y += float(delta.y()) / h * k
+                    # Cubism coordinate space is Y-up; Qt mouse coords are Y-down.
+                    # Invert Y so "drag up -> model up" matches user expectation.
+                    self._user_offset_y -= float(delta.y()) / h * k
                     # Clamp to a sane range to avoid losing the model.
                     self._user_offset_x = max(-0.8, min(0.8, self._user_offset_x))
                     self._user_offset_y = max(-0.8, min(0.6, self._user_offset_y))
@@ -1164,7 +1644,11 @@ class Live2DGlWidget(QOpenGLWidget):
             if event.button() == Qt.MouseButton.LeftButton and self._pan_candidate:
                 self._pan_candidate = False
                 self._pan_candidate_pos = None
-                self.trigger_reaction("manual")
+                try:
+                    pos: QPointF = event.position()
+                except Exception:
+                    pos = None
+                self.trigger_reaction("manual", pos=pos)
                 event.accept()
                 return
         except Exception:
@@ -1240,7 +1724,12 @@ class Live2DGlWidget(QOpenGLWidget):
             try:
                 from src.gui.notifications import Toast, show_toast
 
-                show_toast(self.window(), f"已加载 Live2D：{chosen.name}", Toast.TYPE_SUCCESS, duration=1800)
+                show_toast(
+                    self.window(),
+                    f"已加载 Live2D：{chosen.name}",
+                    Toast.TYPE_SUCCESS,
+                    duration=1800,
+                )
             except Exception:
                 pass
             event.acceptProposedAction()
@@ -1287,7 +1776,7 @@ class Live2DGlWidget(QOpenGLWidget):
             try:
                 if self._ready and not self._tick_timer.isActive():
                     self._elapsed.restart()
-                    self._tick_timer.setInterval(self._tick_ms_normal)
+                    self._apply_tick_interval()
                     self._tick_timer.start()
             except Exception:
                 pass
@@ -1299,6 +1788,20 @@ class Live2DGlWidget(QOpenGLWidget):
     def _on_tick(self) -> None:
         if self._paused or not self._ready or self._model is None:
             return
+        try:
+            expire = float(getattr(self, "_state_expression_expire_t", 0.0) or 0.0)
+        except Exception:
+            expire = 0.0
+        if expire > 0.0:
+            try:
+                now = float(time.monotonic())
+            except Exception:
+                now = 0.0
+            if now and now >= float(expire):
+                try:
+                    self._maybe_restore_base_expression(now)
+                except Exception:
+                    pass
         self.update()
 
     def _create_model(self) -> None:
@@ -1376,6 +1879,10 @@ class Live2DGlWidget(QOpenGLWidget):
         except Exception:
             pass
         self._model = model
+        try:
+            self._refresh_model_expression_ids()
+        except Exception:
+            pass
         self._end_pan()
 
         # Initial size & pose.
@@ -1387,6 +1894,12 @@ class Live2DGlWidget(QOpenGLWidget):
         # Start a gentle idle motion if possible (prefer model-provided groups).
         try:
             self._start_default_idle_motion()
+        except Exception:
+            pass
+
+        # Default expression: keep "hugging doll" gesture as the stable baseline.
+        try:
+            self._apply_default_expression(src_model_json)
         except Exception:
             pass
 
@@ -1522,6 +2035,9 @@ class Live2DGlWidget(QOpenGLWidget):
             self._vtuber_gesture_bz = 0.0
             self._vtuber_gesture_ex = 0.0
             self._vtuber_gesture_ey = 0.0
+            self._vtuber_gesture_freq = 0.0
+            self._vtuber_gesture_phase = 0.0
+            self._vtuber_gesture_skew = 0.0
 
         # Still active.
         if float(getattr(self, "_vtuber_gesture_end_t", 0.0) or 0.0) > now_f:
@@ -1561,33 +2077,35 @@ class Live2DGlWidget(QOpenGLWidget):
         ax = ay = az = bx = by = bz = ex = ey = 0.0
         if kind == "nod":
             dur = random.uniform(1.0, 1.35)
-            ay = random.uniform(10.0, 15.0)
+            ay = random.uniform(18.0, 26.0)
         elif kind == "shake":
             dur = random.uniform(1.05, 1.45)
-            ax = random.uniform(12.0, 18.0)
+            ax = random.uniform(22.0, 32.0)
         elif kind == "tilt":
             dur = random.uniform(1.0, 1.3)
-            az = random.uniform(6.0, 11.0)
+            az = random.uniform(10.0, 16.0)
         elif kind == "look_left":
             dur = random.uniform(1.2, 1.7)
-            ex = -random.uniform(0.22, 0.38)
-            ax = -random.uniform(4.0, 7.0)
+            ex = -random.uniform(0.42, 0.68)
+            ax = -random.uniform(8.0, 14.0)
         elif kind == "look_right":
             dur = random.uniform(1.2, 1.7)
-            ex = random.uniform(0.22, 0.38)
-            ax = random.uniform(4.0, 7.0)
+            ex = random.uniform(0.42, 0.68)
+            ax = random.uniform(8.0, 14.0)
         elif kind == "look_up":
             dur = random.uniform(1.1, 1.6)
-            ey = random.uniform(0.18, 0.32)
-            ay = random.uniform(6.0, 10.0)
+            ey = random.uniform(0.28, 0.50)
+            ay = random.uniform(12.0, 18.0)
         elif kind == "look_down":
             dur = random.uniform(1.1, 1.6)
-            ey = -random.uniform(0.16, 0.28)
-            ay = -random.uniform(8.0, 12.0)
+            ey = -random.uniform(0.26, 0.48)
+            ay = -random.uniform(14.0, 21.0)
         elif kind == "lean":
             dur = random.uniform(1.4, 2.1)
-            bx = random.uniform(-10.0, 10.0)
-            az = random.uniform(-5.0, 5.0)
+            bx = random.uniform(-18.0, 18.0)
+            by = random.uniform(-6.0, 6.0)
+            bz = random.uniform(-12.0, 12.0)
+            az = random.uniform(-8.0, 8.0)
 
         self._vtuber_gesture_kind = str(kind)
         self._vtuber_gesture_start_t = now_f
@@ -1600,9 +2118,145 @@ class Live2DGlWidget(QOpenGLWidget):
         self._vtuber_gesture_bz = float(bz)
         self._vtuber_gesture_ex = float(ex)
         self._vtuber_gesture_ey = float(ey)
-        self._vtuber_next_gesture_t = (now_f + float(dur)) + random.uniform(4.0, 7.5)
+        base_cycles = 1.0
+        if kind == "nod":
+            base_cycles = 2.0
+        elif kind == "shake":
+            base_cycles = 3.0
+        elif kind in {"tilt", "lean"}:
+            base_cycles = 1.15
+        self._vtuber_gesture_freq = float(base_cycles) * random.uniform(0.92, 1.08)
+        self._vtuber_gesture_phase = random.uniform(-0.45, 0.45)
+        self._vtuber_gesture_skew = random.uniform(-0.12, 0.12)
+        self._vtuber_next_gesture_t = (now_f + float(dur)) + random.uniform(3.2, 6.2)
 
-    def _vtuber_gesture_offsets(self, now: float) -> tuple[float, float, float, float, float, float, float, float]:
+    def _vtuber_force_gesture(
+        self,
+        kind: str,
+        *,
+        intensity: float = 0.7,
+        duration_s: float | None = None,
+    ) -> bool:
+        """Force-start a VTuber gesture (used by chat-driven state events).
+
+        This is best-effort and does not require motion assets.
+        """
+
+        if self._model is None:
+            return False
+
+        kind = str(kind or "").strip().lower()
+        if not kind:
+            return False
+
+        allowed = {
+            "nod",
+            "shake",
+            "tilt",
+            "look_left",
+            "look_right",
+            "look_up",
+            "look_down",
+            "lean",
+        }
+        if kind not in allowed:
+            return False
+
+        try:
+            now_f = float(time.monotonic())
+        except Exception:
+            now_f = 0.0
+        if not now_f:
+            return False
+
+        iv = _clamp01(float(intensity))
+        amp_scale = 0.62 + 0.80 * float(iv)  # 0.62..1.42
+
+        dur = None
+        if duration_s is not None:
+            try:
+                dur = float(duration_s)
+            except Exception:
+                dur = None
+        if dur is None:
+            if kind == "nod":
+                dur = random.uniform(0.95, 1.25)
+            elif kind == "shake":
+                dur = random.uniform(0.95, 1.30)
+            elif kind == "tilt":
+                dur = random.uniform(0.95, 1.25)
+            elif kind.startswith("look_"):
+                dur = random.uniform(1.05, 1.55)
+            else:
+                dur = random.uniform(1.20, 1.85)
+        dur = max(0.35, min(4.0, float(dur)))
+
+        ax = ay = az = bx = by = bz = ex = ey = 0.0
+        if kind == "nod":
+            ay = random.uniform(18.0, 26.0) * amp_scale
+        elif kind == "shake":
+            ax = random.uniform(22.0, 32.0) * amp_scale
+        elif kind == "tilt":
+            az = random.uniform(10.0, 16.0) * amp_scale
+        elif kind == "look_left":
+            ex = -random.uniform(0.42, 0.68) * amp_scale
+            ax = -random.uniform(8.0, 14.0) * amp_scale
+        elif kind == "look_right":
+            ex = random.uniform(0.42, 0.68) * amp_scale
+            ax = random.uniform(8.0, 14.0) * amp_scale
+        elif kind == "look_up":
+            ey = random.uniform(0.28, 0.50) * amp_scale
+            ay = random.uniform(12.0, 18.0) * amp_scale
+        elif kind == "look_down":
+            ey = -random.uniform(0.26, 0.48) * amp_scale
+            ay = -random.uniform(14.0, 21.0) * amp_scale
+        elif kind == "lean":
+            bx = random.uniform(-18.0, 18.0) * amp_scale
+            by = random.uniform(-6.0, 6.0) * amp_scale
+            bz = random.uniform(-12.0, 12.0) * amp_scale
+            az = random.uniform(-8.0, 8.0) * amp_scale
+
+        # Clamp eye params to avoid extreme values on rigs with narrow ranges.
+        ex = max(-1.0, min(1.0, float(ex)))
+        ey = max(-1.0, min(1.0, float(ey)))
+
+        self._vtuber_gesture_kind = str(kind)
+        self._vtuber_gesture_start_t = float(now_f)
+        self._vtuber_gesture_end_t = float(now_f + dur)
+        self._vtuber_gesture_ax = float(ax)
+        self._vtuber_gesture_ay = float(ay)
+        self._vtuber_gesture_az = float(az)
+        self._vtuber_gesture_bx = float(bx)
+        self._vtuber_gesture_by = float(by)
+        self._vtuber_gesture_bz = float(bz)
+        self._vtuber_gesture_ex = float(ex)
+        self._vtuber_gesture_ey = float(ey)
+
+        base_cycles = 1.0
+        if kind == "nod":
+            base_cycles = 2.0
+        elif kind == "shake":
+            base_cycles = 3.0
+        elif kind in {"tilt", "lean"}:
+            base_cycles = 1.15
+        self._vtuber_gesture_freq = float(base_cycles) * random.uniform(0.95, 1.07)
+        self._vtuber_gesture_phase = random.uniform(-0.25, 0.25)
+        self._vtuber_gesture_skew = random.uniform(-0.10, 0.10)
+        self._vtuber_next_gesture_t = (now_f + float(dur)) + random.uniform(3.6, 6.8)
+
+        try:
+            self._boost_fps(1200)
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+        return True
+
+    def _vtuber_gesture_offsets(
+        self, now: float
+    ) -> tuple[float, float, float, float, float, float, float, float]:
         if not now:
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         try:
@@ -1621,7 +2275,6 @@ class Live2DGlWidget(QOpenGLWidget):
 
         dur = max(1e-3, end_t - start_t)
         p = max(0.0, min(1.0, (now_f - start_t) / dur))
-        env = math.sin(math.pi * p)  # 0->1->0
         tau = 2.0 * math.pi
 
         kind = str(getattr(self, "_vtuber_gesture_kind", "") or "")
@@ -1629,18 +2282,47 @@ class Live2DGlWidget(QOpenGLWidget):
         ay = float(getattr(self, "_vtuber_gesture_ay", 0.0) or 0.0)
         az = float(getattr(self, "_vtuber_gesture_az", 0.0) or 0.0)
         bx = float(getattr(self, "_vtuber_gesture_bx", 0.0) or 0.0)
+        by = float(getattr(self, "_vtuber_gesture_by", 0.0) or 0.0)
+        bz = float(getattr(self, "_vtuber_gesture_bz", 0.0) or 0.0)
         ex = float(getattr(self, "_vtuber_gesture_ex", 0.0) or 0.0)
         ey = float(getattr(self, "_vtuber_gesture_ey", 0.0) or 0.0)
+        freq = float(getattr(self, "_vtuber_gesture_freq", 0.0) or 0.0)
+        phase = float(getattr(self, "_vtuber_gesture_phase", 0.0) or 0.0)
+        skew = float(getattr(self, "_vtuber_gesture_skew", 0.0) or 0.0)
+
+        if freq <= 0.0:
+            if kind == "nod":
+                freq = 2.0
+            elif kind == "shake":
+                freq = 3.0
+            else:
+                freq = 1.0
+
+        # Naturalize gesture timing: apply a small non-linear warp + skew so the movement
+        # isn't perfectly symmetric/robotic.
+        p_warp = float(p) + 0.10 * float(skew) * math.sin(math.pi * float(p))
+        p_warp = max(0.0, min(1.0, p_warp))
+        env = math.sin(math.pi * p_warp)
+        try:
+            env = pow(max(0.0, min(1.0, env)), 1.15)
+        except Exception:
+            pass
 
         ox = oy = oz = obx = oby = obz = oex = oey = 0.0
         if kind == "nod":
             # 2 nods.
-            oy = ay * math.sin(tau * 2.0 * p) * env
+            oy = ay * math.sin(tau * float(freq) * p_warp + phase) * env
+            oz = (
+                (0.18 * float(ay)) * math.sin(tau * 0.55 * float(freq) * p_warp + phase + 1.3) * env
+            )
         elif kind == "shake":
             # 3 shakes.
-            ox = ax * math.sin(tau * 3.0 * p) * env
+            ox = ax * math.sin(tau * float(freq) * p_warp + phase) * env
+            oz = (
+                (0.08 * float(ax)) * math.sin(tau * 0.55 * float(freq) * p_warp + phase + 0.7) * env
+            )
         elif kind == "tilt":
-            oz = az * math.sin(tau * 1.0 * p) * env
+            oz = az * math.sin(tau * float(freq) * p_warp + phase) * env
         elif kind.startswith("look_"):
             # Look then return.
             oex = ex * env
@@ -1649,9 +2331,45 @@ class Live2DGlWidget(QOpenGLWidget):
             oy = ay * env
         elif kind == "lean":
             obx = bx * env
-            oz = az * env
+            oby = by * env
+            obz = bz * env
+            oz = az * math.sin(tau * float(freq) * p_warp + phase) * env
 
         return (ox, oy, oz, obx, oby, obz, oex, oey)
+
+    def _drag_pos_to_model_px(self, pos: QPointF) -> tuple[float, float]:
+        """Convert a Qt local mouse pos to the coordinate space expected by `model.Drag`.
+
+        live2d-py typically works in the same pixel space as `model.Resize`. Qt events provide logical
+        coordinates, while `resizeGL` may pass device-pixel sizes. We scale accordingly to avoid HiDPI
+        mismatch (more consistent interaction across DPI settings).
+        """
+
+        try:
+            ww_px, hh_px = self._last_viewport_px
+        except Exception:
+            ww_px, hh_px = 0, 0
+        try:
+            w_log = max(1.0, float(self.width()))
+            h_log = max(1.0, float(self.height()))
+        except Exception:
+            w_log, h_log = 1.0, 1.0
+
+        try:
+            ww_f = float(ww_px) if ww_px and ww_px > 0 else float(w_log)
+            hh_f = float(hh_px) if hh_px and hh_px > 0 else float(h_log)
+        except Exception:
+            ww_f, hh_f = float(w_log), float(h_log)
+
+        sx = ww_f / max(1.0, float(w_log))
+        sy = hh_f / max(1.0, float(h_log))
+        try:
+            x = float(pos.x()) * float(sx)
+            y = float(pos.y()) * float(sy)
+        except Exception:
+            x = float(getattr(pos, "x", 0.0)() if callable(getattr(pos, "x", None)) else 0.0)
+            y = float(getattr(pos, "y", 0.0)() if callable(getattr(pos, "y", None)) else 0.0)
+        return (float(x), float(y))
 
     def _vtuber_pre_update(self, now: float) -> None:
         """Per-frame pre-update hooks: pointer drag + subtle idle movement."""
@@ -1698,7 +2416,8 @@ class Live2DGlWidget(QOpenGLWidget):
                         self._drag_smooth_pos = QPointF(sx, sy)
                     use = self._drag_smooth_pos or target
 
-                model.Drag(float(use.x()), float(use.y()))
+                x, y = self._drag_pos_to_model_px(use)
+                model.Drag(float(x), float(y))
             except Exception:
                 pass
         else:
@@ -1733,8 +2452,12 @@ class Live2DGlWidget(QOpenGLWidget):
                     pass
                 else:
                     try:
-                        ww = max(1.0, float(self.width()))
-                        hh = max(1.0, float(self.height()))
+                        try:
+                            vw, vh = self._last_viewport_px
+                        except Exception:
+                            vw, vh = 0, 0
+                        ww = max(1.0, float(vw) if vw and vw > 0 else float(self.width()))
+                        hh = max(1.0, float(vh) if vh and vh > 0 else float(self.height()))
                         t0 = float(getattr(self, "_vtuber_t0", 0.0) or 0.0)
                         t = max(0.0, float(now) - t0) if now and t0 else 0.0
                         tau = 2.0 * math.pi
@@ -1742,11 +2465,14 @@ class Live2DGlWidget(QOpenGLWidget):
                         base_x = ww * 0.52
                         base_y = hh * 0.34
 
-                        amp_x = ww * 0.055
-                        amp_y = hh * 0.050
+                        # A slightly stronger idle drag makes subtle Live2D rigs more readable.
+                        amp_x = ww * 0.088
+                        amp_y = hh * 0.078
 
                         wobble_x = math.sin(tau * 0.16 * t) + 0.35 * math.sin(tau * 0.47 * t + 0.4)
-                        wobble_y = math.sin(tau * 0.13 * t + 1.2) + 0.28 * math.sin(tau * 0.41 * t + 2.1)
+                        wobble_y = math.sin(tau * 0.13 * t + 1.2) + 0.28 * math.sin(
+                            tau * 0.41 * t + 2.1
+                        )
 
                         x = base_x + amp_x * wobble_x
                         y = base_y + amp_y * wobble_y
@@ -1764,7 +2490,7 @@ class Live2DGlWidget(QOpenGLWidget):
                     except Exception:
                         pass
 
-        # Periodic auto motion/expression to keep the model feeling alive.
+        # Periodic auto motion to keep the model feeling alive.
         if bool(getattr(self, "_vtuber_enabled", True)) and now:
             try:
                 if float(now) >= float(getattr(self, "_vtuber_next_idle_motion_t", 0.0) or 0.0):
@@ -1775,21 +2501,20 @@ class Live2DGlWidget(QOpenGLWidget):
                         self._boost_fps(1100)
             except Exception:
                 pass
-            try:
-                if float(now) >= float(getattr(self, "_vtuber_next_expression_t", 0.0) or 0.0):
-                    self._vtuber_next_expression_t = float(now) + random.uniform(16.0, 30.0)
-                    try:
-                        if hasattr(model, "SetRandomExpression"):
-                            model.SetRandomExpression()
-                            self._boost_fps(900)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
 
     def _vtuber_post_update(self, now: float, dt_s: float) -> None:
         """Post-update: apply parameter tweaks (blink/breath) so they aren't overwritten."""
-        if not bool(getattr(self, "_vtuber_enabled", True)):
+        vtuber_enabled = bool(getattr(self, "_vtuber_enabled", True))
+        gesture_active = False
+        try:
+            if now:
+                now_f = float(now)
+                start_t = float(getattr(self, "_vtuber_gesture_start_t", 0.0) or 0.0)
+                end_t = float(getattr(self, "_vtuber_gesture_end_t", 0.0) or 0.0)
+                gesture_active = bool(start_t > 0.0 and end_t > 0.0 and now_f < end_t)
+        except Exception:
+            gesture_active = False
+        if not (vtuber_enabled or gesture_active):
             return
         if self._model is None:
             return
@@ -1801,26 +2526,30 @@ class Live2DGlWidget(QOpenGLWidget):
         if setter is None:
             return
 
-        # Eye blink (best-effort).
-        try:
-            self._apply_vtuber_blink(now, setter)
-        except Exception:
-            pass
+        if vtuber_enabled:
+            # Eye blink (best-effort).
+            try:
+                self._apply_vtuber_blink(now, setter)
+            except Exception:
+                pass
 
         # VTuber: subtle idle motion + periodic gestures (nod/shake/look/lean).
         if now:
-            try:
-                self._vtuber_maybe_start_gesture(now)
-            except Exception:
-                pass
+            if vtuber_enabled:
+                try:
+                    self._vtuber_maybe_start_gesture(now)
+                except Exception:
+                    pass
             try:
                 ox, oy, oz, obx, oby, obz, oex, oey = self._vtuber_gesture_offsets(now)
             except Exception:
                 ox = oy = oz = obx = oby = obz = oex = oey = 0.0
 
             supports_weight = bool(getattr(self, "_param_setter_supports_weight", False))
-            w = 0.62 if supports_weight else 1.0
-            amp_gain = 1.0 if supports_weight else 0.8
+            w = 0.72 if supports_weight else 1.0
+            amp_gain = 1.35 if supports_weight else 1.18
+            if self._view_mode == self.VIEW_MODE_PORTRAIT:
+                amp_gain *= 1.09
 
             hovering = False
             try:
@@ -1828,7 +2557,7 @@ class Live2DGlWidget(QOpenGLWidget):
             except Exception:
                 hovering = False
             if hovering and (not bool(getattr(self, "_interaction_locked", False))):
-                amp_gain *= 0.55
+                amp_gain *= 0.78
 
             try:
                 t0 = float(getattr(self, "_vtuber_t0", 0.0) or 0.0)
@@ -1845,12 +2574,12 @@ class Live2DGlWidget(QOpenGLWidget):
                 dt = 1.0 / 30.0
 
             # Base idle: seated upper-body motion.
-            angle_x = 6.2 * math.sin(tau * 0.12 * t) + 1.6 * math.sin(tau * 0.31 * t + 0.4)
-            angle_y = 3.2 * math.sin(tau * 0.10 * t + 1.1) + 1.1 * math.sin(tau * 0.24 * t + 2.0)
-            angle_z = 2.4 * math.sin(tau * 0.09 * t + 0.2)
-            body_x = 4.2 * math.sin(tau * 0.08 * t + 0.4)
-            body_y = 1.6 * math.sin(tau * 0.06 * t + 0.8)
-            body_z = 1.9 * math.sin(tau * 0.07 * t + 2.0)
+            angle_x = 11.2 * math.sin(tau * 0.12 * t) + 2.8 * math.sin(tau * 0.31 * t + 0.4)
+            angle_y = 6.4 * math.sin(tau * 0.10 * t + 1.1) + 2.0 * math.sin(tau * 0.24 * t + 2.0)
+            angle_z = 4.8 * math.sin(tau * 0.09 * t + 0.2)
+            body_x = 7.6 * math.sin(tau * 0.08 * t + 0.4)
+            body_y = 3.2 * math.sin(tau * 0.06 * t + 0.8)
+            body_z = 3.8 * math.sin(tau * 0.07 * t + 2.0)
             breath = 0.5 + 0.5 * math.sin(tau * 0.18 * t + 0.7)
 
             eye_x = 0.22 * math.sin(tau * 0.19 * t + 1.0) + 0.06 * math.sin(tau * 0.57 * t)
@@ -1858,14 +2587,30 @@ class Live2DGlWidget(QOpenGLWidget):
 
             # Smooth noise: breaks the "too periodic" feel.
             try:
-                self._noise_ax = self._ou_step(float(getattr(self, "_noise_ax", 0.0) or 0.0), dt=dt, tau=2.2, sigma=1.1)
-                self._noise_ay = self._ou_step(float(getattr(self, "_noise_ay", 0.0) or 0.0), dt=dt, tau=2.6, sigma=0.9)
-                self._noise_az = self._ou_step(float(getattr(self, "_noise_az", 0.0) or 0.0), dt=dt, tau=2.8, sigma=0.7)
-                self._noise_bx = self._ou_step(float(getattr(self, "_noise_bx", 0.0) or 0.0), dt=dt, tau=3.1, sigma=0.6)
-                self._noise_by = self._ou_step(float(getattr(self, "_noise_by", 0.0) or 0.0), dt=dt, tau=3.4, sigma=0.5)
-                self._noise_bz = self._ou_step(float(getattr(self, "_noise_bz", 0.0) or 0.0), dt=dt, tau=3.6, sigma=0.5)
-                self._noise_ex = self._ou_step(float(getattr(self, "_noise_ex", 0.0) or 0.0), dt=dt, tau=1.4, sigma=0.06)
-                self._noise_ey = self._ou_step(float(getattr(self, "_noise_ey", 0.0) or 0.0), dt=dt, tau=1.4, sigma=0.05)
+                self._noise_ax = self._ou_step(
+                    float(getattr(self, "_noise_ax", 0.0) or 0.0), dt=dt, tau=2.2, sigma=1.1
+                )
+                self._noise_ay = self._ou_step(
+                    float(getattr(self, "_noise_ay", 0.0) or 0.0), dt=dt, tau=2.6, sigma=0.9
+                )
+                self._noise_az = self._ou_step(
+                    float(getattr(self, "_noise_az", 0.0) or 0.0), dt=dt, tau=2.8, sigma=0.7
+                )
+                self._noise_bx = self._ou_step(
+                    float(getattr(self, "_noise_bx", 0.0) or 0.0), dt=dt, tau=3.1, sigma=0.6
+                )
+                self._noise_by = self._ou_step(
+                    float(getattr(self, "_noise_by", 0.0) or 0.0), dt=dt, tau=3.4, sigma=0.5
+                )
+                self._noise_bz = self._ou_step(
+                    float(getattr(self, "_noise_bz", 0.0) or 0.0), dt=dt, tau=3.6, sigma=0.5
+                )
+                self._noise_ex = self._ou_step(
+                    float(getattr(self, "_noise_ex", 0.0) or 0.0), dt=dt, tau=1.4, sigma=0.06
+                )
+                self._noise_ey = self._ou_step(
+                    float(getattr(self, "_noise_ey", 0.0) or 0.0), dt=dt, tau=1.4, sigma=0.05
+                )
             except Exception:
                 pass
             angle_x += max(-3.0, min(3.0, float(getattr(self, "_noise_ax", 0.0) or 0.0)))
@@ -1883,8 +2628,8 @@ class Live2DGlWidget(QOpenGLWidget):
             except Exception:
                 lv = 0.0
             if lv > 0.02:
-                angle_y += (3.0 * min(1.0, lv)) * math.sin(tau * 0.9 * t + 0.6)
-                body_x += (1.6 * min(1.0, lv)) * math.sin(tau * 0.6 * t + 1.2)
+                angle_y += (6.6 * min(1.0, lv)) * math.sin(tau * 0.9 * t + 0.6)
+                body_x += (3.3 * min(1.0, lv)) * math.sin(tau * 0.6 * t + 1.2)
 
             # Eye micro-saccade: quick tiny glances.
             try:
@@ -1893,7 +2638,9 @@ class Live2DGlWidget(QOpenGLWidget):
                 now_f = 0.0
             if now_f:
                 try:
-                    if self._saccade_end_t <= 0.0 and now_f >= float(getattr(self, "_saccade_next_t", 0.0) or 0.0):
+                    if self._saccade_end_t <= 0.0 and now_f >= float(
+                        getattr(self, "_saccade_next_t", 0.0) or 0.0
+                    ):
                         self._saccade_start_t = now_f
                         self._saccade_end_t = now_f + random.uniform(0.22, 0.34)
                         self._saccade_to_x = random.uniform(-0.18, 0.18)
@@ -1960,26 +2707,48 @@ class Live2DGlWidget(QOpenGLWidget):
 
             # Smooth pose blending to avoid robotic movement.
             try:
-                gesture_active = float(getattr(self, "_vtuber_gesture_end_t", 0.0) or 0.0) > float(now_f)
+                gesture_active = float(getattr(self, "_vtuber_gesture_end_t", 0.0) or 0.0) > float(
+                    now_f
+                )
             except Exception:
                 gesture_active = False
             k_head = 11.5 * (1.35 if gesture_active else 1.0)
             k_body = 8.5 * (1.25 if gesture_active else 1.0)
-            k_eye = 16.0 * (1.4 if float(getattr(self, "_saccade_end_t", 0.0) or 0.0) > 0.0 else 1.0)
+            k_eye = 16.0 * (
+                1.4 if float(getattr(self, "_saccade_end_t", 0.0) or 0.0) > 0.0 else 1.0
+            )
             k_breath = 5.0
             if lv > 0.05:
                 k_head *= 1.25
                 k_body *= 1.15
 
-            self._pose_angle_x = self._smooth_to(float(getattr(self, "_pose_angle_x", 0.0) or 0.0), angle_x, k=k_head, dt=dt)
-            self._pose_angle_y = self._smooth_to(float(getattr(self, "_pose_angle_y", 0.0) or 0.0), angle_y, k=k_head, dt=dt)
-            self._pose_angle_z = self._smooth_to(float(getattr(self, "_pose_angle_z", 0.0) or 0.0), angle_z, k=k_head, dt=dt)
-            self._pose_body_x = self._smooth_to(float(getattr(self, "_pose_body_x", 0.0) or 0.0), body_x, k=k_body, dt=dt)
-            self._pose_body_y = self._smooth_to(float(getattr(self, "_pose_body_y", 0.0) or 0.0), body_y, k=k_body, dt=dt)
-            self._pose_body_z = self._smooth_to(float(getattr(self, "_pose_body_z", 0.0) or 0.0), body_z, k=k_body, dt=dt)
-            self._pose_eye_x = self._smooth_to(float(getattr(self, "_pose_eye_x", 0.0) or 0.0), eye_x, k=k_eye, dt=dt)
-            self._pose_eye_y = self._smooth_to(float(getattr(self, "_pose_eye_y", 0.0) or 0.0), eye_y, k=k_eye, dt=dt)
-            self._pose_breath = self._smooth_to(float(getattr(self, "_pose_breath", 0.5) or 0.5), breath, k=k_breath, dt=dt)
+            self._pose_angle_x = self._smooth_to(
+                float(getattr(self, "_pose_angle_x", 0.0) or 0.0), angle_x, k=k_head, dt=dt
+            )
+            self._pose_angle_y = self._smooth_to(
+                float(getattr(self, "_pose_angle_y", 0.0) or 0.0), angle_y, k=k_head, dt=dt
+            )
+            self._pose_angle_z = self._smooth_to(
+                float(getattr(self, "_pose_angle_z", 0.0) or 0.0), angle_z, k=k_head, dt=dt
+            )
+            self._pose_body_x = self._smooth_to(
+                float(getattr(self, "_pose_body_x", 0.0) or 0.0), body_x, k=k_body, dt=dt
+            )
+            self._pose_body_y = self._smooth_to(
+                float(getattr(self, "_pose_body_y", 0.0) or 0.0), body_y, k=k_body, dt=dt
+            )
+            self._pose_body_z = self._smooth_to(
+                float(getattr(self, "_pose_body_z", 0.0) or 0.0), body_z, k=k_body, dt=dt
+            )
+            self._pose_eye_x = self._smooth_to(
+                float(getattr(self, "_pose_eye_x", 0.0) or 0.0), eye_x, k=k_eye, dt=dt
+            )
+            self._pose_eye_y = self._smooth_to(
+                float(getattr(self, "_pose_eye_y", 0.0) or 0.0), eye_y, k=k_eye, dt=dt
+            )
+            self._pose_breath = self._smooth_to(
+                float(getattr(self, "_pose_breath", 0.5) or 0.5), breath, k=k_breath, dt=dt
+            )
 
             for pid, val in (
                 ("ParamAngleX", self._pose_angle_x),
@@ -2004,7 +2773,9 @@ class Live2DGlWidget(QOpenGLWidget):
                 if due:
                     self._micro_params_next_t = now_f + 0.09  # ~11Hz
                     try:
-                        brow = 0.12 * math.sin(tau * 0.07 * t + 1.1) + 0.03 * math.sin(tau * 0.19 * t)
+                        brow = 0.12 * math.sin(tau * 0.07 * t + 1.1) + 0.03 * math.sin(
+                            tau * 0.19 * t
+                        )
                         brow += 0.02 * float(getattr(self, "_noise_ay", 0.0) or 0.0)
                         brow = max(-1.0, min(1.0, float(brow)))
                         self._set_param_cached(setter, "ParamBrowLY", brow, 0.28)
@@ -2034,7 +2805,9 @@ class Live2DGlWidget(QOpenGLWidget):
             return
 
         # Schedule next blink if we're idle.
-        if self._vtuber_blink_end_t <= 0.0 and now_f >= float(getattr(self, "_vtuber_blink_next_t", 0.0) or 0.0):
+        if self._vtuber_blink_end_t <= 0.0 and now_f >= float(
+            getattr(self, "_vtuber_blink_next_t", 0.0) or 0.0
+        ):
             close_s = 0.055
             open_s = 0.095
             hold_s = float(getattr(self, "_vtuber_blink_hold_s", 0.018) or 0.018)
@@ -2074,7 +2847,11 @@ class Live2DGlWidget(QOpenGLWidget):
         # Avoid writing eye-open every frame when fully open (saves per-frame param calls).
         try:
             last = getattr(self, "_vtuber_eye_open_last", None)
-            if last is not None and self._vtuber_blink_end_t <= 0.0 and abs(float(open_v) - float(last)) < 0.01:
+            if (
+                last is not None
+                and self._vtuber_blink_end_t <= 0.0
+                and abs(float(open_v) - float(last)) < 0.01
+            ):
                 return
         except Exception:
             pass
@@ -2194,7 +2971,9 @@ class Live2DGlWidget(QOpenGLWidget):
                     cache = self._param_index_cache
                     sentinel = object()
 
-                    def _setter(pid: str, v: float, w: float = 1.0, *, _get=get_idx, _set=set_by_idx) -> None:
+                    def _setter(
+                        pid: str, v: float, w: float = 1.0, *, _get=get_idx, _set=set_by_idx
+                    ) -> None:
                         key = str(pid or "")
                         if not key:
                             raise KeyError("empty param id")
@@ -2214,7 +2993,9 @@ class Live2DGlWidget(QOpenGLWidget):
                     cache = self._param_index_cache
                     sentinel = object()
 
-                    def _setter(pid: str, v: float, w: float = 1.0, *, _get=get_idx, _set=set_by_idx) -> None:
+                    def _setter(
+                        pid: str, v: float, w: float = 1.0, *, _get=get_idx, _set=set_by_idx
+                    ) -> None:
                         key = str(pid or "")
                         if not key:
                             raise KeyError("empty param id")
@@ -2310,9 +3091,8 @@ class Live2DGlWidget(QOpenGLWidget):
         if self._paused or not self._ready:
             return
         try:
-            if self._tick_timer.isActive():
-                self._tick_timer.setInterval(self._tick_ms_boost)
             self._fps_boost_reset.start(max(200, int(duration_ms)))
+            self._apply_tick_interval()
         except Exception:
             pass
 
@@ -2320,10 +3100,170 @@ class Live2DGlWidget(QOpenGLWidget):
         if self._paused or not self._ready:
             return
         try:
-            if self._tick_timer.isActive():
-                self._tick_timer.setInterval(self._tick_ms_normal)
+            self._apply_tick_interval()
         except Exception:
             pass
+
+    def _desired_tick_interval_ms(self) -> int:
+        base = self._tick_ms_boost if self._fps_boost_reset.isActive() else self._tick_ms_normal
+        try:
+            mode = int(getattr(self, "_fps_load_mode", 0) or 0)
+        except Exception:
+            mode = 0
+        if mode >= 2:
+            return int(max(int(base), int(self._tick_ms_heavy)))
+        if mode == 1:
+            return int(max(int(base), int(self._tick_ms_medium)))
+        return int(base)
+
+    def _desired_tick_timer_type(self) -> Qt.TimerType:
+        """Choose a timer type that balances smoothness and overhead.
+
+        On Windows, PreciseTimer may use a higher-resolution timer source and can be more expensive.
+        When the UI is under heavy load and we are already reducing FPS, a coarse timer can reduce
+        scheduling overhead without harming perceived smoothness.
+        """
+
+        try:
+            interval = int(self._desired_tick_interval_ms())
+        except Exception:
+            interval = int(self._tick_ms_normal)
+        try:
+            mode = int(getattr(self, "_fps_load_mode", 0) or 0)
+        except Exception:
+            mode = 0
+
+        if interval <= 20:
+            return Qt.TimerType.PreciseTimer
+        if mode >= 2:
+            return Qt.TimerType.CoarseTimer
+        return Qt.TimerType.PreciseTimer
+
+    def _apply_tick_interval(self) -> None:
+        if self._paused or not self._ready:
+            return
+        try:
+            interval = int(self._desired_tick_interval_ms())
+        except Exception:
+            interval = int(self._tick_ms_normal)
+        try:
+            try:
+                timer_type = self._desired_tick_timer_type()
+                if getattr(self._tick_timer, "timerType", None) is not None:
+                    if self._tick_timer.timerType() != timer_type:
+                        self._tick_timer.setTimerType(timer_type)
+            except Exception:
+                pass
+            self._tick_timer.setInterval(int(interval))
+        except Exception:
+            pass
+
+    def _maybe_adapt_fps_under_load(self, now: float, dt_s: float, render_ms: float) -> None:
+        """Adaptive FPS: keep the UI responsive under load by reducing Live2D FPS temporarily.
+
+        This is intentionally conservative and uses hysteresis to avoid oscillation.
+        """
+        if self._paused or not self._ready or (not now):
+            return
+        if render_ms <= 0.0:
+            return
+
+        try:
+            self._render_ms_last = float(render_ms)
+            ema = float(getattr(self, "_render_ms_ema", 0.0) or 0.0)
+            if ema <= 0.0:
+                ema = float(render_ms)
+            else:
+                ema = 0.85 * float(ema) + 0.15 * float(render_ms)
+            self._render_ms_ema = float(ema)
+        except Exception:
+            return
+
+        try:
+            last_eval = float(getattr(self, "_fps_load_last_eval_t", 0.0) or 0.0)
+        except Exception:
+            last_eval = 0.0
+        if now - last_eval < 0.35:
+            return
+        self._fps_load_last_eval_t = float(now)
+
+        try:
+            dt_ms = max(0.0, float(dt_s) * 1000.0)
+        except Exception:
+            dt_ms = 0.0
+
+        # Suggested mode from current measurements.
+        suggested = 0
+        if float(ema) > 28.0 or dt_ms > 90.0:
+            suggested = 2
+        elif float(ema) > 20.0 or dt_ms > 60.0:
+            suggested = 1
+
+        try:
+            current = int(getattr(self, "_fps_load_mode", 0) or 0)
+        except Exception:
+            current = 0
+        try:
+            hold_until = float(getattr(self, "_fps_load_hold_until", 0.0) or 0.0)
+        except Exception:
+            hold_until = 0.0
+
+        # Escalate quickly; downshift only after hold time and good metrics.
+        if suggested > current:
+            self._fps_load_mode = int(suggested)
+            self._fps_load_hold_until = float(now + 1.25)
+            try:
+                if suggested == 2:
+                    logger.debug(
+                        "Live2D FPS: heavy mode (ema=%.1fms, dt=%.1fms)", float(ema), float(dt_ms)
+                    )
+                else:
+                    logger.debug(
+                        "Live2D FPS: medium mode (ema=%.1fms, dt=%.1fms)", float(ema), float(dt_ms)
+                    )
+            except Exception:
+                pass
+            self._apply_tick_interval()
+            return
+
+        if suggested < current:
+            if now < hold_until:
+                return
+            # Hysteresis thresholds for de-escalation.
+            if current >= 2:
+                if float(ema) < 22.0 and dt_ms < 70.0:
+                    self._fps_load_mode = int(suggested)
+                    self._fps_load_hold_until = float(now + 0.6)
+                    try:
+                        logger.debug(
+                            "Live2D FPS: leave heavy (ema=%.1fms, dt=%.1fms)",
+                            float(ema),
+                            float(dt_ms),
+                        )
+                    except Exception:
+                        pass
+                    self._apply_tick_interval()
+            elif current == 1:
+                if float(ema) < 18.0 and dt_ms < 55.0:
+                    self._fps_load_mode = int(suggested)
+                    self._fps_load_hold_until = float(now + 0.6)
+                    try:
+                        logger.debug(
+                            "Live2D FPS: leave medium (ema=%.1fms, dt=%.1fms)",
+                            float(ema),
+                            float(dt_ms),
+                        )
+                    except Exception:
+                        pass
+                    self._apply_tick_interval()
+            return
+
+        # Keep degraded mode a bit longer while still under load.
+        if current:
+            try:
+                self._fps_load_hold_until = max(float(hold_until), float(now + 0.75))
+            except Exception:
+                pass
 
     def _apply_default_view(self, ww: int, hh: int) -> None:
         """Apply a pleasant default view (scale/offset) for the current viewport."""
@@ -2389,7 +3329,583 @@ class Live2DGlWidget(QOpenGLWidget):
                 self._model.DestroyRenderer()
         except Exception:
             pass
+        try:
+            self._base_expression_id = None
+            self._base_expression_mode = ""
+            self._state_expression_id = None
+            self._state_expression_mode = ""
+            self._state_expression_expire_t = 0.0
+            self._state_expression_event = ""
+            self._model_expression_ids = []
+        except Exception:
+            pass
+        try:
+            self._expr_files_cache_dir = None
+            self._expr_files_cache_mtime = 0.0
+            self._expr_files_cache = []
+            self._expr_candidates_cache = {}
+        except Exception:
+            pass
         self._model = None
+
+    def _refresh_model_expression_ids(self) -> None:
+        """Best-effort cache of expression IDs available on the loaded model."""
+        model = self._model
+        if model is None:
+            self._model_expression_ids = []
+            return
+
+        expr_ids: list[str] = []
+        try:
+            getter = getattr(model, "GetExpressionIds", None)
+            if callable(getter):
+                raw = getter() or []
+                if isinstance(raw, (list, tuple, set)):
+                    expr_ids = [str(x) for x in raw if str(x)]
+        except Exception:
+            expr_ids = []
+
+        if not expr_ids:
+            try:
+                getter = getattr(model, "GetExpressions", None)
+                if callable(getter):
+                    raw = getter() or []
+                    if isinstance(raw, dict):
+                        expr_ids = [str(k) for k in raw.keys() if str(k)]
+                    elif isinstance(raw, (list, tuple, set)):
+                        tmp: list[str] = []
+                        for item in raw:
+                            if isinstance(item, str):
+                                tmp.append(item)
+                            elif (
+                                isinstance(item, (list, tuple))
+                                and item
+                                and isinstance(item[0], str)
+                            ):
+                                tmp.append(item[0])
+                        expr_ids = [str(x) for x in tmp if str(x)]
+            except Exception:
+                expr_ids = []
+
+        try:
+            # Deduplicate while preserving order (stable for random choice).
+            self._model_expression_ids = list(dict.fromkeys(expr_ids))
+        except Exception:
+            self._model_expression_ids = list(expr_ids)
+
+    def _refresh_expression_cache(self) -> None:
+        model_json = self._model_json
+        if model_json is None:
+            return
+        try:
+            model_dir = Path(model_json).parent
+        except Exception:
+            return
+        try:
+            now = float(time.monotonic())
+        except Exception:
+            now = 0.0
+
+        # Cache for a short TTL (filesystem reads/parsing can be expensive in the hot path).
+        try:
+            if (
+                self._expr_files_cache_dir is not None
+                and Path(self._expr_files_cache_dir) == model_dir
+                and (now - float(self._expr_files_cache_mtime or 0.0)) < 2.0
+            ):
+                return
+        except Exception:
+            pass
+
+        src_model_json = Path(model_json)
+        files: list[str] = []
+        candidates: dict[str, list[str]] = {}
+
+        try:
+            exp_paths = sorted(model_dir.glob("*.exp3.json"))
+        except Exception:
+            exp_paths = []
+        exp_name_set = set()
+        try:
+            exp_name_set = {p.name for p in exp_paths}
+        except Exception:
+            exp_name_set = set()
+
+        # Prefer explicit mapping from model3.json if present.
+        try:
+            base = json.loads(src_model_json.read_text(encoding="utf-8"))
+        except Exception:
+            base = None
+
+        refs = base.get("FileReferences") if isinstance(base, dict) else None
+        exprs = refs.get("Expressions") if isinstance(refs, dict) else None
+        if isinstance(exprs, list) and exprs:
+            base_count = len(exprs)
+            included: set[str] = set()
+            for idx, entry in enumerate(exprs, start=1):
+                if not isinstance(entry, dict):
+                    continue
+                file_ref = entry.get("File")
+                if not isinstance(file_ref, str) or not file_ref:
+                    continue
+                try:
+                    fname = Path(file_ref).name
+                except Exception:
+                    fname = str(file_ref)
+                if not fname:
+                    continue
+                if exp_name_set and fname not in exp_name_set:
+                    continue
+                name = entry.get("Name") if isinstance(entry.get("Name"), str) else None
+                cand: list[str] = []
+                if isinstance(name, str) and name.strip():
+                    cand.append(name.strip())
+                # Sanitizer fallback assigns `expr_{idx:02d}` when the name is missing or non-ASCII.
+                cand.append(f"expr_{idx:02d}")
+                candidates[fname] = cand
+                files.append(fname)
+                included.add(fname)
+
+            # Include any extra exp files not referenced in model3.json (matches sanitizer behavior).
+            extra_idx = base_count + 1
+            for p in exp_paths:
+                try:
+                    if p.name in included:
+                        continue
+                except Exception:
+                    continue
+                candidates[p.name] = [f"expr_{extra_idx:02d}"]
+                files.append(p.name)
+                extra_idx += 1
+
+        # Fallback: model3.json may omit Expressions; mimic sanitizer ordering for *.exp3.json.
+        if not files:
+            files = [p.name for p in exp_paths]
+            for idx, fname in enumerate(files, start=1):
+                candidates[fname] = [f"expr_{idx:02d}"]
+
+        try:
+            self._expr_files_cache_dir = model_dir
+            self._expr_files_cache = list(files)
+            self._expr_candidates_cache = dict(candidates)
+            self._expr_files_cache_mtime = float(now)
+        except Exception:
+            pass
 
     def _prepare_ascii_model_json(self, src_model_json: Path) -> Path:
         return _sanitize_model3_json_for_cubism(src_model_json)
+
+    def _resolve_expression_id_candidates_for_file(
+        self, src_model_json: Path, filename: str
+    ) -> list[str]:
+        filename = str(filename or "").strip()
+        if not filename:
+            return []
+
+        # Hot path: resolve from a small cache built from `model3.json`.
+        try:
+            if self._model_json is not None and Path(src_model_json) == Path(self._model_json):
+                self._refresh_expression_cache()
+                cached = self._expr_candidates_cache.get(filename)
+                if cached:
+                    return list(cached)
+                # If the model3.json has an explicit Expressions list and the file isn't referenced there,
+                # don't guess an ID (it likely won't exist on the loaded model anyway).
+                if self._expr_candidates_cache:
+                    return []
+        except Exception:
+            pass
+
+        src_model_json = Path(src_model_json)
+        model_dir = src_model_json.parent
+
+        # 1) Prefer explicit mapping from model3.json if present.
+        try:
+            base = json.loads(src_model_json.read_text(encoding="utf-8"))
+        except Exception:
+            base = None
+
+        refs = base.get("FileReferences") if isinstance(base, dict) else None
+        exprs = refs.get("Expressions") if isinstance(refs, dict) else None
+        if isinstance(exprs, list):
+            for idx, entry in enumerate(exprs, start=1):
+                if not isinstance(entry, dict):
+                    continue
+                file_ref = entry.get("File")
+                if not isinstance(file_ref, str) or not file_ref:
+                    continue
+                try:
+                    if Path(file_ref).name != filename:
+                        continue
+                except Exception:
+                    if str(file_ref) != filename:
+                        continue
+                name = entry.get("Name") if isinstance(entry.get("Name"), str) else None
+                candidates: list[str] = []
+                if isinstance(name, str) and name.strip():
+                    candidates.append(name.strip())
+                # Sanitizer fallback assigns `expr_{idx:02d}` when the name is missing or non-ASCII.
+                candidates.append(f"expr_{idx:02d}")
+                return candidates
+
+        # 2) Fallback: model3.json may omit Expressions; mimic sanitizer ordering for *.exp3.json.
+        try:
+            exp_files = sorted(model_dir.glob("*.exp3.json"))
+        except Exception:
+            exp_files = []
+        for idx, p in enumerate(exp_files, start=1):
+            try:
+                if p.name == filename:
+                    return [f"expr_{idx:02d}"]
+            except Exception:
+                continue
+        return []
+
+    def _apply_default_expression(self, src_model_json: Path) -> None:
+        model = self._model
+        if model is None:
+            return
+        expr_file = str(getattr(self, "_default_expression_file", "") or "").strip()
+        if not expr_file:
+            return
+        if not (hasattr(model, "AddExpression") or hasattr(model, "SetExpression")):
+            return
+
+        # Prefer additive base expression so transient state expressions can stack naturally.
+        try:
+            if hasattr(model, "ResetExpressions"):
+                model.ResetExpressions()
+        except Exception:
+            pass
+        try:
+            if hasattr(model, "ResetExpression"):
+                model.ResetExpression()
+        except Exception:
+            pass
+
+        candidates = self._resolve_expression_id_candidates_for_file(
+            Path(src_model_json), expr_file
+        )
+        if not candidates:
+            return
+        for exp_id in candidates:
+            try:
+                if hasattr(model, "AddExpression") and hasattr(model, "RemoveExpression"):
+                    model.AddExpression(str(exp_id))
+                    self._base_expression_mode = "add"
+                else:
+                    model.SetExpression(str(exp_id))
+                    self._base_expression_mode = "set"
+                self._base_expression_id = str(exp_id)
+                self._state_expression_id = None
+                self._state_expression_mode = ""
+                self._state_expression_expire_t = 0.0
+                self._state_expression_event = ""
+                self._boost_fps(900)
+                return
+            except Exception:
+                continue
+
+    def _list_expression_files(self) -> list[str]:
+        if self._model_json is None:
+            return []
+        try:
+            self._refresh_expression_cache()
+        except Exception:
+            pass
+        try:
+            return list(self._expr_files_cache)
+        except Exception:
+            return []
+
+    def _resolve_expression_file_for_event(self, event: str) -> str | None:
+        event = str(event or "").strip()
+        if not event:
+            return None
+        available = self._list_expression_files()
+        if not available:
+            return None
+        return _choose_expression_file_for_event(event, available)
+
+    def apply_state_event(
+        self,
+        event: str,
+        *,
+        intensity: float = 0.7,
+        hold_s: float | None = None,
+        source: str = "",
+    ) -> bool:
+        """Apply a temporary expression based on a semantic state event.
+
+        The base/persistent expression is only changed by user actions; state events are transient and will
+        revert back to the base expression after a short TTL.
+        """
+        if not self._ready or self._model is None:
+            return False
+        model = self._model
+        if self._model_json is None:
+            return False
+        if not (hasattr(model, "AddExpression") or hasattr(model, "SetExpression")):
+            return False
+
+        gesture_applied = False
+        try:
+            gk = _gesture_kind_for_event(event)
+            if gk:
+                gesture_applied = bool(
+                    self._vtuber_force_gesture(gk, intensity=float(intensity), duration_s=hold_s)
+                )
+        except Exception:
+            gesture_applied = False
+
+        file_name = self._resolve_expression_file_for_event(event)
+        if not file_name:
+            return bool(gesture_applied)
+
+        candidates = self._resolve_expression_id_candidates_for_file(
+            Path(self._model_json), file_name
+        )
+        if not candidates:
+            return bool(gesture_applied)
+
+        try:
+            now = float(time.monotonic())
+        except Exception:
+            now = 0.0
+
+        try:
+            iv = float(intensity)
+        except Exception:
+            iv = 0.7
+        iv = max(0.0, min(1.0, iv))
+        if hold_s is None:
+            # 2.8s .. 7.5s based on intensity.
+            hold_s = 2.8 + 4.7 * iv
+        try:
+            ttl = max(1.2, min(10.0, float(hold_s)))
+        except Exception:
+            ttl = 4.8
+
+        # If the previous state expired but the next tick hasn't run yet, clear it now to avoid
+        # getting "stuck" in an old SetExpression state.
+        try:
+            expire = float(getattr(self, "_state_expression_expire_t", 0.0) or 0.0)
+        except Exception:
+            expire = 0.0
+        if expire > 0.0 and now and now >= expire:
+            try:
+                self._maybe_restore_base_expression(float(now))
+            except Exception:
+                pass
+
+        # If the same state is already active, just extend TTL (avoid reapplying expression).
+        try:
+            if (
+                self._state_expression_id is not None
+                and str(self._state_expression_id) in candidates
+                and float(self._state_expression_expire_t or 0.0) > now
+            ):
+                self._state_expression_expire_t = max(
+                    float(self._state_expression_expire_t), now + ttl
+                )
+                self._state_expression_last_apply_t = float(now)
+                return True
+        except Exception:
+            pass
+
+        # Prefer additive state expressions when possible so the base expression stays stable.
+        # If a previous `SetExpression` override is still active, clear it so `AddExpression` takes effect.
+        try:
+            active_id = str(getattr(self, "_state_expression_id", "") or "").strip()
+            active_mode = str(getattr(self, "_state_expression_mode", "") or "")
+        except Exception:
+            active_id = ""
+            active_mode = ""
+
+        try:
+            base_id = str(getattr(self, "_base_expression_id", "") or "").strip()
+            base_mode = str(getattr(self, "_base_expression_mode", "") or "")
+        except Exception:
+            base_id = ""
+            base_mode = ""
+
+        can_add = hasattr(model, "AddExpression") and hasattr(model, "RemoveExpression")
+        if can_add:
+            try:
+                if active_id and active_mode == "set" and hasattr(model, "ResetExpression"):
+                    model.ResetExpression()
+            except Exception:
+                pass
+            try:
+                if active_id and active_mode == "add":
+                    if not (base_mode == "add" and base_id and active_id == base_id):
+                        model.RemoveExpression(active_id)
+            except Exception:
+                pass
+
+            for exp_id in candidates:
+                try:
+                    eid = str(exp_id)
+                except Exception:
+                    continue
+                if base_mode == "add" and base_id and eid == base_id:
+                    # Avoid turning the persistent base expression into a transient state.
+                    return True
+                try:
+                    model.AddExpression(eid)
+                    self._state_expression_id = eid
+                    self._state_expression_mode = "add"
+                    self._state_expression_expire_t = float(now + ttl)
+                    self._state_expression_event = str(event or source or "")
+                    self._state_expression_last_apply_t = float(now)
+                    self._boost_fps(1200)
+                    self.update()
+                    return True
+                except Exception:
+                    continue
+
+        # Fallback: override via SetExpression and restore base on TTL.
+        try:
+            if active_id and active_mode == "add" and hasattr(model, "RemoveExpression"):
+                if not (base_mode == "add" and base_id and active_id == base_id):
+                    model.RemoveExpression(active_id)
+        except Exception:
+            pass
+        for exp_id in candidates:
+            try:
+                model.SetExpression(str(exp_id))
+                self._state_expression_id = str(exp_id)
+                self._state_expression_mode = "set"
+                self._state_expression_expire_t = float(now + ttl)
+                self._state_expression_event = str(event or source or "")
+                self._state_expression_last_apply_t = float(now)
+                self._boost_fps(1200)
+                self.update()
+                return True
+            except Exception:
+                continue
+        return False
+
+    def request_state_event(
+        self,
+        event: str,
+        *,
+        intensity: float = 0.7,
+        hold_s: float | None = None,
+        source: str = "",
+    ) -> None:
+        """Thread-safe wrapper for applying a state event.
+
+        This emits a Qt signal so calls from worker threads are queued onto the GUI thread.
+        """
+        try:
+            hs = float(hold_s) if hold_s is not None else -1.0
+        except Exception:
+            hs = -1.0
+        try:
+            self.state_event_requested.emit(
+                str(event), float(intensity), float(hs), str(source or "")
+            )
+        except Exception:
+            pass
+
+    def _on_state_event_requested(
+        self, event: str, intensity: float, hold_s: float, source: str
+    ) -> None:
+        try:
+            hs = float(hold_s)
+        except Exception:
+            hs = -1.0
+        self.apply_state_event(
+            str(event),
+            intensity=float(intensity),
+            hold_s=None if hs < 0 else float(hs),
+            source=str(source or ""),
+        )
+
+    def _maybe_restore_base_expression(self, now: float) -> None:
+        if self._model is None:
+            return
+        if not (
+            hasattr(self._model, "RemoveExpression")
+            or hasattr(self._model, "ResetExpression")
+            or hasattr(self._model, "SetExpression")
+        ):
+            return
+        try:
+            expire = float(getattr(self, "_state_expression_expire_t", 0.0) or 0.0)
+        except Exception:
+            expire = 0.0
+        if expire <= 0.0 or now < expire:
+            return
+        if self._state_expression_id is None:
+            self._state_expression_expire_t = 0.0
+            return
+
+        state_id = str(getattr(self, "_state_expression_id", "") or "").strip()
+        mode = str(getattr(self, "_state_expression_mode", "") or "")
+        self._state_expression_id = None
+        self._state_expression_mode = ""
+        self._state_expression_expire_t = 0.0
+        self._state_expression_event = ""
+
+        try:
+            base_id = str(getattr(self, "_base_expression_id", "") or "").strip()
+            base_mode = str(getattr(self, "_base_expression_mode", "") or "")
+        except Exception:
+            base_id = ""
+            base_mode = ""
+
+        if state_id and mode == "add" and hasattr(self._model, "RemoveExpression"):
+            try:
+                if not (base_mode == "add" and base_id and state_id == base_id):
+                    self._model.RemoveExpression(state_id)
+            except Exception:
+                pass
+            try:
+                self._boost_fps(700)
+            except Exception:
+                pass
+            try:
+                self.update()
+            except Exception:
+                pass
+            return
+
+        # If our base expression is additive, clearing the SetExpression override is enough to reveal it again.
+        if base_mode == "add" and hasattr(self._model, "ResetExpression"):
+            try:
+                self._model.ResetExpression()
+            except Exception:
+                return
+            try:
+                self._boost_fps(700)
+            except Exception:
+                pass
+            try:
+                self.update()
+            except Exception:
+                pass
+            return
+
+        if not base_id:
+            try:
+                self._apply_default_expression(
+                    Path(self._model_json) if self._model_json is not None else Path()
+                )
+            except Exception:
+                return
+        else:
+            try:
+                self._model.SetExpression(base_id)
+            except Exception:
+                return
+
+        try:
+            self._boost_fps(700)
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass

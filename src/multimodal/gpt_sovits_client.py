@@ -78,10 +78,12 @@ class GPTSoVITSClient:
         # 如果read_timeout未设置或为0，使用总超时时间
         effective_read_timeout = read_timeout if read_timeout and read_timeout > 0 else timeout
         # 如果connect_timeout未设置或为0，使用较小的默认值
-        effective_connect_timeout = connect_timeout if connect_timeout and connect_timeout > 0 else min(10.0, timeout)
+        effective_connect_timeout = (
+            connect_timeout if connect_timeout and connect_timeout > 0 else min(10.0, timeout)
+        )
         # 如果write_timeout未设置或为0，使用总超时时间
         effective_write_timeout = write_timeout if write_timeout and write_timeout > 0 else timeout
-        
+
         self._timeout = httpx.Timeout(
             connect=effective_connect_timeout,
             read=effective_read_timeout,
@@ -117,11 +119,7 @@ class GPTSoVITSClient:
         logger.info(f"初始化 GPT-SoVITS 客户端: {api_url}")
 
     def _cleanup_stale_locks(self) -> None:
-        stale_ids = [
-            loop_id
-            for loop_id, (loop, _) in self._loop_locks.items()
-            if loop.is_closed()
-        ]
+        stale_ids = [loop_id for loop_id, (loop, _) in self._loop_locks.items() if loop.is_closed()]
         for loop_id in stale_ids:
             self._loop_locks.pop(loop_id, None)
 
@@ -155,13 +153,16 @@ class GPTSoVITSClient:
                 self._client = None
                 self._client_loop = None
                 return
-            
+
             # 关闭客户端（httpx 会自动清理连接池）
             await self._client.aclose()
         except RuntimeError as e:
             # 事件循环关闭导致的错误，静默处理
             error_str = str(e) or ""
-            if "Event loop is closed" not in error_str and "cannot be called from a running event loop" not in error_str:
+            if (
+                "Event loop is closed" not in error_str
+                and "cannot be called from a running event loop" not in error_str
+            ):
                 logger.debug(f"关闭客户端时遇到RuntimeError: {e}")
         except Exception as e:
             # 其他关闭错误，静默处理，减少日志噪音
@@ -244,7 +245,7 @@ class GPTSoVITSClient:
         if not text or not text.strip():
             logger.debug("TTS 合成跳过：文本为空")
             return None
-        
+
         # 去除首尾空白，但保留内部空白
         text = text.strip()
 
@@ -283,31 +284,28 @@ class GPTSoVITSClient:
         # 根据文本长度动态调整超时时间（长文本需要更长时间处理）
         text_len = len(text) if text else 0
         # 基础超时 + 每100字符增加1秒，最大不超过60秒
-        dynamic_read_timeout = min(
-            self._timeout.read + (text_len / 100.0),
-            60.0
-        )
+        dynamic_read_timeout = min(self._timeout.read + (text_len / 100.0), 60.0)
         dynamic_timeout = httpx.Timeout(
             connect=self._timeout.connect,
             read=dynamic_read_timeout,
             write=self._timeout.write,
             pool=self._timeout.pool,
         )
-        
+
         failure_reason: Optional[str] = None
         for attempt in range(self.max_retries):
             try:
                 # 每次重试前检查并获取客户端（可能已关闭需要重建）
                 client = await self._get_client()
-                
+
                 # v3.4.0: 检查客户端健康状态
                 if hasattr(client, "is_closed") and client.is_closed:
                     await self._safe_close_client()
                     client = await self._get_client()
-                
+
                 # v3.4.0: 优化连接池状态检查，避免反射访问内部属性
                 # 连接池管理由 httpx 自动处理，无需手动干预
-                
+
                 # v3.4.0: 使用动态超时，根据文本长度调整
                 response = await client.post(
                     self.api_url,
@@ -324,15 +322,15 @@ class GPTSoVITSClient:
                         if attempt == self.max_retries - 1:
                             logger.warning(
                                 "TTS 合成返回空结果（文本: %.30s，可能是文本过短或服务器处理问题）",
-                                text[:30] if text else "(空文本)"
+                                text[:30] if text else "(空文本)",
                             )
                         failure_reason = "empty-response"
                         if attempt < self.max_retries - 1:
-                            wait_time = 2 ** attempt
+                            wait_time = 2**attempt
                             await asyncio.sleep(wait_time)
                             continue
                         break
-                    
+
                     with self._stats_lock:
                         self._stats["successful_requests"] += 1
                         self._stats["last_latency_ms"] = elapsed_ms
@@ -359,7 +357,7 @@ class GPTSoVITSClient:
                 failure_reason = "timeout"
                 if attempt < self.max_retries - 1:
                     # 指数退避：1s, 2s, 4s...
-                    wait_time = 2 ** attempt
+                    wait_time = 2**attempt
                     await asyncio.sleep(wait_time)
 
             except httpx.ConnectError as e:
@@ -372,7 +370,7 @@ class GPTSoVITSClient:
                 # 连接错误时关闭客户端并重建
                 await self._safe_close_client()
                 if attempt < self.max_retries - 1:
-                    wait_time = 2 ** attempt
+                    wait_time = 2**attempt
                     await asyncio.sleep(wait_time)
 
             except httpx.ReadError as e:
@@ -391,7 +389,7 @@ class GPTSoVITSClient:
                 if attempt >= self.max_retries - 1:
                     await self._safe_close_client()
                 if attempt < self.max_retries - 1:
-                    wait_time = 2 ** attempt
+                    wait_time = 2**attempt
                     await asyncio.sleep(wait_time)
 
             except httpx.WriteError as e:
@@ -404,7 +402,7 @@ class GPTSoVITSClient:
                 failure_reason = f"write-error: {error_str}"
                 await self._safe_close_client()
                 if attempt < self.max_retries - 1:
-                    wait_time = 2 ** attempt
+                    wait_time = 2**attempt
                     await asyncio.sleep(wait_time)
 
             except httpx.PoolTimeout as e:
@@ -415,7 +413,7 @@ class GPTSoVITSClient:
                     logger.warning(f"TTS 连接池超时: {e}")
                 failure_reason = f"pool-timeout: {e}"
                 if attempt < self.max_retries - 1:
-                    wait_time = 2 ** attempt
+                    wait_time = 2**attempt
                     await asyncio.sleep(wait_time)
 
             except Exception as e:
@@ -424,15 +422,15 @@ class GPTSoVITSClient:
                     self._stats["total_retries"] += 1
                 error_type = type(e).__name__
                 error_str = str(e).strip() if e else f"{error_type}（连接异常）"
-                
+
                 # 检查是否是连接相关的错误
                 is_loop_closed = isinstance(e, RuntimeError) and "Event loop is closed" in error_str
                 is_client_closed = (
-                    "client has been closed" in error_str 
+                    "client has been closed" in error_str
                     or "Cannot send a request" in error_str
                     or "Connection closed" in error_str
                 )
-                
+
                 if is_loop_closed or is_client_closed:
                     # 连接相关错误，重建客户端
                     await self._safe_close_client()
@@ -451,7 +449,7 @@ class GPTSoVITSClient:
                         )
                     failure_reason = f"{error_type}: {error_str[:100]}"
                     if attempt < self.max_retries - 1:
-                        wait_time = 2 ** attempt
+                        wait_time = 2**attempt
                         await asyncio.sleep(wait_time)
 
         with self._stats_lock:
@@ -464,7 +462,7 @@ class GPTSoVITSClient:
             failure_reason or "未知错误",
         )
         return None
-    
+
     async def check_health(self) -> bool:
         """
         检查 GPT-SoVITS 服务是否可用
@@ -516,9 +514,7 @@ class GPTSoVITSClient:
         with self._stats_lock:
             stats = self._stats.copy()
         successful = stats.get("successful_requests", 0) or 0
-        stats["avg_latency_ms"] = (
-            stats["total_latency_ms"] / successful if successful else 0.0
-        )
+        stats["avg_latency_ms"] = stats["total_latency_ms"] / successful if successful else 0.0
         return stats
 
     def reset_stats(self) -> None:
@@ -569,4 +565,3 @@ class GPTSoVITSClient:
                 "TTS 客户端触发熔断：未来 %.1fs 内不再向 GPT-SoVITS 发起请求",
                 self._circuit_cooldown,
             )
-

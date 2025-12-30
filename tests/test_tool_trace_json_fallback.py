@@ -16,7 +16,7 @@ def test_format_tool_trace_fallback_summarizes_json_time() -> None:
         {"timezone_name": "Asia/Shanghai"},
         started_at=perf_counter(),
         output=(
-            '{\n'
+            "{\n"
             '  "timezone": "Asia/Shanghai",\n'
             '  "date": "2025-12-27",\n'
             '  "time": "22:44:00",\n'

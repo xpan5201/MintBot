@@ -26,16 +26,18 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist "config.yaml" (
-    if exist "config.yaml.example" (
-        copy "config.yaml.example" "config.yaml" >nul
-        echo [信息] 已创建 config.yaml，请编辑并填入 API Key 后再启动。
+if not exist "config.user.yaml" (
+    if exist "config.yaml" (
+        echo [信息] 检测到 legacy 配置 config.yaml（仍可兼容读取），建议迁移到 config.user.yaml。
+    ) else if exist "config.user.yaml.example" (
+        copy "config.user.yaml.example" "config.user.yaml" >nul
+        echo [信息] 已创建 config.user.yaml，请编辑并填入 API Key 后再启动。
         echo.
         pause
         popd
         exit /b 0
     ) else (
-        echo [错误] 未找到 config.yaml.example
+        echo [错误] 未找到 config.user.yaml.example
         echo.
         pause
         popd

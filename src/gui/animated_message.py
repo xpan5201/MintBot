@@ -6,19 +6,17 @@ MintChat GUI - 动画消息气泡组件
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QTextEdit, QGraphicsOpacityEffect
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QTextEdit,
+    QGraphicsOpacityEffect,
 )
-from PyQt6.QtCore import (
-    Qt, QPropertyAnimation, QEasingCurve,
-    pyqtSignal, QTimer
-)
+from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtSignal, QTimer
 from PyQt6.QtGui import QTextCursor
 
-from .material_design import (
-    MD3_COLORS, MD3_RADIUS, MD3_DURATION,
-    get_typography_style
-)
+from .material_design import MD3_COLORS, MD3_RADIUS, MD3_DURATION, get_typography_style
 
 
 class AnimatedMessageBubble(QWidget):
@@ -57,20 +55,18 @@ class AnimatedMessageBubble(QWidget):
         self.message_label = QLabel(self.message)
         self.message_label.setObjectName("messageLabel")
         self.message_label.setWordWrap(True)
-        self.message_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self.message_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.message_label.setMaximumWidth(500)
         bubble_layout.addWidget(self.message_label)
 
         # 时间戳
         from datetime import datetime
+
         timestamp = datetime.now().strftime("%H:%M")
         self.time_label = QLabel(timestamp)
         self.time_label.setObjectName("timeLabel")
         self.time_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight if self.is_user
-            else Qt.AlignmentFlag.AlignLeft
+            Qt.AlignmentFlag.AlignRight if self.is_user else Qt.AlignmentFlag.AlignLeft
         )
         bubble_layout.addWidget(self.time_label)
 
@@ -83,13 +79,14 @@ class AnimatedMessageBubble(QWidget):
     def _apply_styles(self):
         """应用样式"""
         if self.is_user:
-            bg_color = MD3_COLORS['primary_container']
-            text_color = MD3_COLORS['on_primary_container']
+            bg_color = MD3_COLORS["primary_container"]
+            text_color = MD3_COLORS["on_primary_container"]
         else:
-            bg_color = MD3_COLORS['surface_container_high']
-            text_color = MD3_COLORS['on_surface']
+            bg_color = MD3_COLORS["surface_container_high"]
+            text_color = MD3_COLORS["on_surface"]
 
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             #bubbleWidget {{
                 background-color: {bg_color};
                 border-radius: {MD3_RADIUS['large']};
@@ -106,7 +103,8 @@ class AnimatedMessageBubble(QWidget):
                 {get_typography_style('label_small')}
                 background-color: transparent;
             }}
-        """)
+        """
+        )
 
     def _setup_fade_in_animation(self):
         """设置淡入动画"""
@@ -116,7 +114,7 @@ class AnimatedMessageBubble(QWidget):
 
         # 创建动画
         self.fade_in_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_in_animation.setDuration(MD3_DURATION['medium2'])
+        self.fade_in_animation.setDuration(MD3_DURATION["medium2"])
         self.fade_in_animation.setStartValue(0.0)
         self.fade_in_animation.setEndValue(1.0)
         self.fade_in_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
@@ -162,12 +160,8 @@ class StreamingMessageBubble(QWidget):
         self.message_edit = QTextEdit()
         self.message_edit.setObjectName("messageEdit")
         self.message_edit.setReadOnly(True)
-        self.message_edit.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.message_edit.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        self.message_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.message_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.message_edit.setMaximumWidth(500)
         self.message_edit.setMinimumHeight(40)
         bubble_layout.addWidget(self.message_edit)
@@ -184,7 +178,8 @@ class StreamingMessageBubble(QWidget):
 
     def _apply_styles(self):
         """应用样式"""
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             #bubbleWidget {{
                 background-color: {MD3_COLORS['surface_container_high']};
                 border-radius: {MD3_RADIUS['large']};
@@ -202,7 +197,8 @@ class StreamingMessageBubble(QWidget):
                 {get_typography_style('label_small')}
                 background-color: transparent;
             }}
-        """)
+        """
+        )
 
     def _setup_fade_in_animation(self):
         """设置淡入动画"""
@@ -212,7 +208,7 @@ class StreamingMessageBubble(QWidget):
 
         # 创建动画
         self.fade_in_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_in_animation.setDuration(MD3_DURATION['medium2'])
+        self.fade_in_animation.setDuration(MD3_DURATION["medium2"])
         self.fade_in_animation.setStartValue(0.0)
         self.fade_in_animation.setEndValue(1.0)
         self.fade_in_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
@@ -280,7 +276,8 @@ class TypingIndicator(QWidget):
 
     def _apply_styles(self):
         """应用样式"""
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             #bubbleWidget {{
                 background-color: {MD3_COLORS['surface_container_high']};
                 border-radius: {MD3_RADIUS['large']};
@@ -290,7 +287,8 @@ class TypingIndicator(QWidget):
                 color: {MD3_COLORS['on_surface_variant']};
                 font-size: 12px;
             }}
-        """)
+        """
+        )
 
     def _setup_animation(self):
         """设置跳动动画"""

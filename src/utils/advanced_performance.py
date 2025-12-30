@@ -145,7 +145,9 @@ class AdaptiveBatchProcessor:
         with self._lock:
             alpha = 0.2
             self._avg_process_time = (
-                elapsed_s if self._avg_process_time <= 0 else (alpha * elapsed_s + (1 - alpha) * self._avg_process_time)
+                elapsed_s
+                if self._avg_process_time <= 0
+                else (alpha * elapsed_s + (1 - alpha) * self._avg_process_time)
             )
             self._metrics.count += int(processed_count)
             self._metrics.total_time += elapsed_s
@@ -270,7 +272,9 @@ class SmartPreloader:
             scores[key] = access_count * time_decay
 
         # 移除分数最低的项
-        to_remove = sorted(scores.items(), key=lambda x: x[1])[: len(self._cache) - self.max_cache_size]
+        to_remove = sorted(scores.items(), key=lambda x: x[1])[
+            : len(self._cache) - self.max_cache_size
+        ]
         for key, _ in to_remove:
             del self._cache[key]
             del self._access_count[key]
@@ -328,7 +332,9 @@ class AsyncTaskQueue:
             max_workers: 最大工作线程数
         """
         self.max_workers = max_workers
-        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="async_task")
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="async_task"
+        )
         self._pending_tasks: Set[Future[Any]] = set()
         self._lock = threading.Lock()
         self._metrics = PerformanceMetrics(operation="async_tasks")
@@ -441,4 +447,3 @@ def get_preloader() -> SmartPreloader:
 def get_task_queue() -> AsyncTaskQueue:
     """获取全局任务队列"""
     return _task_queue
-

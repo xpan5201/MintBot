@@ -25,6 +25,7 @@ logger = get_logger(__name__)
 @dataclass
 class CacheEntry:
     """缓存条目"""
+
     value: Any
     timestamp: float = field(default_factory=time.time)
     access_count: int = 0
@@ -84,7 +85,8 @@ class VectorSearchCache:
         """
         # 标准化查询（去除多余空格、转小写）
         import re
-        normalized_query = re.sub(r'\s+', ' ', query.strip().lower())
+
+        normalized_query = re.sub(r"\s+", " ", query.strip().lower())
 
         # 生成唯一键
         key_parts = [normalized_query, str(k)]
@@ -192,7 +194,8 @@ class VectorSearchCache:
         """
         current_time = time.time()
         expired_keys = [
-            key for key, entry in self._cache.items()
+            key
+            for key, entry in self._cache.items()
             if current_time - entry.timestamp > self.ttl_seconds
         ]
 
@@ -278,7 +281,8 @@ class EmbeddingCache:
         """生成缓存键"""
         # 标准化文本（去除多余空格、转小写）
         import re
-        normalized_text = re.sub(r'\s+', ' ', text.strip().lower())
+
+        normalized_text = re.sub(r"\s+", " ", text.strip().lower())
         # 使用MD5生成短键
         return hashlib.md5(normalized_text.encode()).hexdigest()
 
@@ -354,4 +358,3 @@ def get_embedding_cache() -> EmbeddingCache:
     if _embedding_cache is None:
         _embedding_cache = EmbeddingCache()
     return _embedding_cache
-

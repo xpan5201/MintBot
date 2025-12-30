@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 
 class StreamProcessor:
     """流处理器 - 实时文本流处理"""
-    
+
     # 强句子结束标点（硬边界），通常用于明显的句末停顿
     STRONG_ENDINGS = {
         "。",
@@ -70,7 +70,7 @@ class StreamProcessor:
     ):
         """
         初始化流处理器
-        
+
         Args:
             min_sentence_length: 最小句子长度（字符数）
             max_buffer_size: 最大缓冲区大小
@@ -79,11 +79,11 @@ class StreamProcessor:
         self.min_sentence_length = min_sentence_length
         self.max_buffer_size = max_buffer_size
         self.correction_callback = correction_callback
-        
+
         # 缓冲区
         self._buffer = ""
         self._sentence_queue = deque()
-        
+
         # 统计信息
         self._stats = {
             "total_chunks": 0,
@@ -91,9 +91,11 @@ class StreamProcessor:
             "total_chars": 0,
             "processing_time": 0.0,
         }
-        
-        logger.info(f"流处理器初始化: 最小句子长度={min_sentence_length}, 最大缓冲={max_buffer_size}")
-    
+
+        logger.info(
+            f"流处理器初始化: 最小句子长度={min_sentence_length}, 最大缓冲={max_buffer_size}"
+        )
+
     def process_chunk(self, chunk: str) -> Iterator[str]:
         """
         处理文本块，返回完整的句子
@@ -119,11 +121,11 @@ class StreamProcessor:
                 if self._buffer[i] in self.STRONG_ENDINGS:
                     last_boundary = i
                     break
-            
+
             if last_boundary > self.min_sentence_length:
                 # 找到边界，输出到边界为止
-                sentence = self._buffer[:last_boundary + 1].strip()
-                self._buffer = self._buffer[last_boundary + 1:].lstrip()
+                sentence = self._buffer[: last_boundary + 1].strip()
+                self._buffer = self._buffer[last_boundary + 1 :].lstrip()
                 logger.debug(
                     "缓冲区接近上限，在边界处切分，输出长度=%d，剩余=%d",
                     len(sentence),
@@ -151,7 +153,7 @@ class StreamProcessor:
                     sentence,
                 )
                 yield sentence
-            
+
             # 如果缓冲区仍然过大，继续处理
             # 注意：这里不应该递归调用 process_chunk，因为会导致重复处理
             # 应该直接继续提取句子，直到缓冲区大小合理
@@ -162,7 +164,7 @@ class StreamProcessor:
                     # 应用修正
                     if self.correction_callback:
                         sentence = self.correction_callback(sentence)
-                    
+
                     if sentence:
                         self._stats["total_sentences"] += 1
                         logger.debug(
@@ -171,7 +173,7 @@ class StreamProcessor:
                             sentence,
                         )
                         yield sentence
-                
+
                 # 如果无法再提取句子（没有合适边界），跳出循环
                 if not more_sentences:
                     break
@@ -304,7 +306,7 @@ class StreamProcessor:
     def flush(self) -> Optional[str]:
         """
         刷新缓冲区，返回剩余的文本
-        
+
         注意：flush 时会输出所有剩余内容，即使不满足最小长度要求，
         确保开头结尾的文本不会被丢失。
 
@@ -324,7 +326,7 @@ class StreamProcessor:
         # 应用修正
         if self.correction_callback:
             sentence = self.correction_callback(sentence)
-        
+
         # flush 时输出所有剩余内容，即使很短也要输出，确保不丢失文本
         if sentence:
             self._stats["total_sentences"] += 1
@@ -415,5 +417,3 @@ if __name__ == "__main__":
     # 获取统计
     stats = processor.get_stats()
     print(f"\n统计信息: {stats}")
-
-

@@ -89,8 +89,7 @@ class ContextCompressor:
 
         recent_messages = messages[-6:]
         important_messages = [
-            msg for msg in messages[:-6]
-            if self._is_important(msg.get("content", ""))
+            msg for msg in messages[:-6] if self._is_important(msg.get("content", ""))
         ]
         compressed = important_messages + recent_messages
         logger.debug(f"上下文压缩: {len(messages)} -> {len(compressed)} 条消息")

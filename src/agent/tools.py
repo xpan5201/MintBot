@@ -39,6 +39,7 @@ except Exception:  # pragma: no cover - 兼容不同 LangChain 版本
         def tool(func: Callable) -> Callable:  # type: ignore[misc]
             return func
 
+
 from src.config.settings import settings
 from src.utils.logger import get_logger
 from src.utils.exceptions import ValidationError, ResourceError
@@ -65,6 +66,10 @@ DEFAULT_TOOL_OUTPUT_MAX_CHARS = max(0, int(getattr(settings.agent, "tool_output_
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _SENSITIVE_FILENAMES = {
     "config.yaml",
+    "config.user.yaml",
+    "config.dev.yaml",
+    "config.user.yml",
+    "config.dev.yml",
     ".env",
     ".env.local",
     ".env.development",
@@ -73,7 +78,7 @@ _SENSITIVE_FILENAMES = {
 _SENSITIVE_DIRNAMES = {".git", ".hg", ".svn"}
 
 _CONFIG_CACHE: Optional[Dict[str, Any]] = None
-_CONFIG_MTIME: Optional[float] = None
+_CONFIG_CACHE_KEY: Optional[tuple[str, str, int | None, int | None]] = None
 _CONFIG_LOCK = Lock()
 _AMAP_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _AMAP_CACHE_LOCK = Lock()
@@ -161,6 +166,7 @@ def _read_url_bytes(
         except (ImportError, ModuleNotFoundError, RuntimeError) as exc:
             logger.debug("pooled http unavailable, fallback to urlopen: %s", exc)
         else:
+
             async def _fetch() -> Tuple[int, bytes]:
                 session = await ConnectionPool.get_session()
                 per_req_timeout = aiohttp.ClientTimeout(
@@ -235,34 +241,59 @@ def _truncate_tool_output(text: str, max_chars: int) -> str:
 
 
 def _load_local_config() -> Dict[str, Any]:
-    """Load config.yaml with a small in-process cache."""
-    global _CONFIG_CACHE, _CONFIG_MTIME
-    config_path = PROJECT_ROOT / "config.yaml"
-    try:
-        current_mtime = config_path.stat().st_mtime if config_path.exists() else None
-    except Exception:
-        current_mtime = None
+    """Load merged config (config.user.yaml + config.dev.yaml, legacy config.yaml) with cache."""
+    global _CONFIG_CACHE, _CONFIG_CACHE_KEY
 
-    if _CONFIG_CACHE is not None and _CONFIG_MTIME == current_mtime:
+    def _mtime_ns(path: Path | None) -> int | None:
+        if path is None:
+            return None
+        try:
+            return path.stat().st_mtime_ns
+        except FileNotFoundError:
+            return None
+
+    try:
+        from src.config.config_files import deep_merge_dict, read_yaml_file, resolve_config_paths
+
+        user_path, dev_path, _legacy_used = resolve_config_paths()
+    except Exception:
+        return {}
+
+    cache_key = (
+        str(user_path),
+        str(dev_path) if dev_path is not None else "",
+        _mtime_ns(user_path),
+        _mtime_ns(dev_path),
+    )
+
+    if _CONFIG_CACHE is not None and _CONFIG_CACHE_KEY == cache_key:
         return _CONFIG_CACHE
+
     with _CONFIG_LOCK:
-        if _CONFIG_CACHE is not None and _CONFIG_MTIME == current_mtime:
+        if _CONFIG_CACHE is not None and _CONFIG_CACHE_KEY == cache_key:
             return _CONFIG_CACHE
+
+        user_data: Dict[str, Any] = {}
+        if user_path.exists():
+            try:
+                user_data = read_yaml_file(user_path)
+            except Exception:
+                user_data = {}
+
+        dev_data: Dict[str, Any] = {}
+        if dev_path is not None:
+            try:
+                dev_data = read_yaml_file(dev_path)
+            except Exception:
+                dev_data = {}
+
         try:
-            import yaml
+            merged = deep_merge_dict(user_data, dev_data)
         except Exception:
-            _CONFIG_CACHE = {}
-            _CONFIG_MTIME = current_mtime
-            return _CONFIG_CACHE
-        try:
-            if config_path.exists():
-                with config_path.open("r", encoding="utf-8") as f:
-                    _CONFIG_CACHE = yaml.safe_load(f) or {}
-            else:
-                _CONFIG_CACHE = {}
-        except Exception:
-            _CONFIG_CACHE = {}
-        _CONFIG_MTIME = current_mtime
+            merged = {}
+
+        _CONFIG_CACHE = merged if isinstance(merged, dict) else {}
+        _CONFIG_CACHE_KEY = cache_key
         return _CONFIG_CACHE
 
 
@@ -279,7 +310,9 @@ def _get_amap_key() -> str:
     return key.strip()
 
 
-def _amap_http_call(endpoint: str, params: Dict[str, Any], *, timeout_s: float = 10.0) -> Dict[str, Any]:
+def _amap_http_call(
+    endpoint: str, params: Dict[str, Any], *, timeout_s: float = 10.0
+) -> Dict[str, Any]:
     api_key = _get_amap_key()
     if not api_key:
         raise ResourceError("高德 API Key 未配置", resource_type="amap")
@@ -322,7 +355,9 @@ def _amap_http_call(endpoint: str, params: Dict[str, Any], *, timeout_s: float =
     return data
 
 
-def _duckduckgo_search(query: str, *, count: int = 5, timeout_s: float = 8.0) -> List[Dict[str, str]]:
+def _duckduckgo_search(
+    query: str, *, count: int = 5, timeout_s: float = 8.0
+) -> List[Dict[str, str]]:
     q = (query or "").strip()
     if not q:
         return []
@@ -367,7 +402,9 @@ def _duckduckgo_search(query: str, *, count: int = 5, timeout_s: float = 8.0) ->
         link = (topic.get("FirstURL") or "").strip()
         if not text:
             return
-        results.append({"title": text.split(" - ")[0][:80] or text, "link": link, "description": text})
+        results.append(
+            {"title": text.split(" - ")[0][:80] or text, "link": link, "description": text}
+        )
 
     for item in data.get("RelatedTopics", []) or []:
         if isinstance(item, dict) and "Topics" in item:
@@ -515,7 +552,9 @@ def _format_search_results(
             continue
         title = str(item.get("title") or item.get("name") or "").strip()
         link = str(item.get("url") or item.get("link") or "").strip()
-        snippet = str(item.get("content") or item.get("description") or item.get("snippet") or "").strip()
+        snippet = str(
+            item.get("content") or item.get("description") or item.get("snippet") or ""
+        ).strip()
         if max_snippet_len and len(snippet) > max_snippet_len:
             snippet = snippet[: max_snippet_len - 1].rstrip() + "…"
         if not title:
@@ -705,8 +744,13 @@ def tool_with_retry(max_retries: int = 2, retry_delay: float = 0.5):
         max_retries: 最大重试次数
         retry_delay: 重试延迟（秒）
     """
+
     def decorator(func: Callable) -> Callable:
-        tool_name = getattr(func, "name", None) or getattr(func, "__name__", None) or func.__class__.__name__
+        tool_name = (
+            getattr(func, "name", None)
+            or getattr(func, "__name__", None)
+            or func.__class__.__name__
+        )
 
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -731,7 +775,9 @@ def tool_with_retry(max_retries: int = 2, retry_delay: float = 0.5):
 
             # 所有重试都失败，返回友好错误消息
             return f"抱歉主人，操作失败了喵~ 错误: {str(last_error)}"
+
         return wrapper
+
     return decorator
 
 
@@ -795,6 +841,7 @@ def validate_params(**validators):
     Args:
         **validators: 参数验证器字典，格式为 {param_name: validator_func}
     """
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -812,7 +859,9 @@ def validate_params(**validators):
                         return f"抱歉主人，参数验证出错了喵~ {str(e)}"
 
             return func(*args, **kwargs)
+
         return wrapper
+
     return decorator
 
 
@@ -909,7 +958,9 @@ def get_weather(city: str) -> str:
     """
     city_name = (city or "").strip()
     if not city_name:
-        return "\u62b1\u6b49\u4e3b\u4eba\uff0c\u57ce\u5e02\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u55b5~"
+        return (
+            "\u62b1\u6b49\u4e3b\u4eba\uff0c\u57ce\u5e02\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u55b5~"
+        )
 
     if not _get_amap_key():
         return "\n".join(
@@ -917,7 +968,7 @@ def get_weather(city: str) -> str:
                 "TOOL_RESULT: get_weather",
                 f"city: {city_name}",
                 "error: missing_amap_key",
-                "hint: set AMAP.api_key (config.yaml) or AMAP_API_KEY env var.",
+                "hint: set AMAP.api_key (config.user.yaml) or AMAP_API_KEY env var.",
             ]
         ).strip()
 
@@ -992,6 +1043,8 @@ def get_weather(city: str) -> str:
                 f"detail: {str(exc) or repr(exc)}",
             ]
         ).strip()
+
+
 @tool
 def set_reminder(content: str, time: str) -> str:
     """
@@ -1017,7 +1070,7 @@ def web_search(query: str, count: int = 5) -> str:
     """
     q = (query or "").strip()
     if not q:
-        return "\u62b1\u6b49\u4e3b\u4eba\uff0c\u641c\u7d22\u5173\u952e\u8bcd\u4e0d\u80fd\u4e3a\u7a7a\u55b5~"
+        return "抱歉主人，搜索关键词不能为空喵~"
 
     try:
         count = int(count)
@@ -1041,7 +1094,9 @@ def web_search(query: str, count: int = 5) -> str:
         results = tavily.get("results") or []
         answer = tavily.get("answer") if include_answer else None
         if isinstance(results, list):
-            return _format_search_results(q, results, provider="Tavily", answer=str(answer or "").strip() or None)
+            return _format_search_results(
+                q, results, provider="Tavily", answer=str(answer or "").strip() or None
+            )
 
     try:
         from src.agent.builtin_tools import bing_web_search
@@ -1085,7 +1140,7 @@ def map_search(keywords: str, city: str = "", limit: int = 5) -> str:
     """
     kw = (keywords or "").strip()
     if not kw:
-        return "\u62b1\u6b49\u4e3b\u4eba\uff0c\u5730\u70b9\u5173\u952e\u8bcd\u4e0d\u80fd\u4e3a\u7a7a\u55b5~"
+        return "抱歉主人，地点关键词不能为空喵~"
     if not _get_amap_key():
         return "\n".join(
             [
@@ -1093,7 +1148,7 @@ def map_search(keywords: str, city: str = "", limit: int = 5) -> str:
                 f"keywords: {kw}",
                 f"city: {(city or '').strip()}",
                 "error: missing_amap_key",
-                "hint: set AMAP.api_key (config.yaml) or AMAP_API_KEY env var.",
+                "hint: set AMAP.api_key (config.user.yaml) or AMAP_API_KEY env var.",
             ]
         ).strip()
     try:
@@ -1147,7 +1202,9 @@ def save_note(title: str, content: str) -> str:
     try:
         content_size = len(content.encode("utf-8"))
         if content_size > MAX_WRITE_BYTES:
-            return f"抱歉主人，笔记内容太大了（{content_size / 1024 / 1024:.2f}MB，超过10MB限制）喵~"
+            return (
+                f"抱歉主人，笔记内容太大了（{content_size / 1024 / 1024:.2f}MB，超过10MB限制）喵~"
+            )
 
         # 创建笔记目录
         notes_dir = Path(settings.data_dir) / "notes"
@@ -1236,7 +1293,9 @@ def read_file(filepath: str, base_dir: str = ".") -> str:
     - 改进错误处理
     """
     try:
-        path, err = _validate_path(filepath, must_exist=True, must_be_file=True, base_dir=Path(base_dir))
+        path, err = _validate_path(
+            filepath, must_exist=True, must_be_file=True, base_dir=Path(base_dir)
+        )
         if err:
             logger.warning(err)
             return err
@@ -1246,7 +1305,7 @@ def read_file(filepath: str, base_dir: str = ".") -> str:
             return f"主人，文件太大了（{file_size / 1024 / 1024:.2f}MB，超过1MB限制），我读不了喵~"
 
         # v2.30.14: 尝试多种编码
-        encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']
+        encodings = ["utf-8", "gbk", "gb2312", "latin-1"]
         content = None
         used_encoding = None
 
@@ -1284,8 +1343,7 @@ def read_file(filepath: str, base_dir: str = ".") -> str:
 @tool
 @tool_with_retry(max_retries=2, retry_delay=0.5)
 @validate_params(
-    filepath=lambda x: isinstance(x, str) and len(x) > 0,
-    content=lambda x: isinstance(x, str)
+    filepath=lambda x: isinstance(x, str) and len(x) > 0, content=lambda x: isinstance(x, str)
 )
 def write_file(filepath: str, content: str, base_dir: str = ".") -> str:
     """
@@ -1305,12 +1363,14 @@ def write_file(filepath: str, content: str, base_dir: str = ".") -> str:
     - 改进错误处理
     """
     try:
-        path, err = _validate_path(filepath, must_exist=False, must_be_file=True, base_dir=Path(base_dir))
+        path, err = _validate_path(
+            filepath, must_exist=False, must_be_file=True, base_dir=Path(base_dir)
+        )
         if err:
             logger.warning(err)
             return err
 
-        content_size = len(content.encode('utf-8'))
+        content_size = len(content.encode("utf-8"))
         if content_size > MAX_WRITE_BYTES:
             return f"抱歉主人，内容太大了（{content_size / 1024 / 1024:.2f}MB，超过10MB限制）喵~"
 
@@ -1345,7 +1405,9 @@ def list_files(directory: str = ".", base_dir: str = ".") -> str:
         str: 文件列表
     """
     try:
-        path, err = _validate_path(directory, must_exist=True, must_be_dir=True, base_dir=Path(base_dir))
+        path, err = _validate_path(
+            directory, must_exist=True, must_be_dir=True, base_dir=Path(base_dir)
+        )
         if err:
             logger.warning(err)
             return err
@@ -1410,7 +1472,11 @@ class ToolRegistry:
     @staticmethod
     def _get_tool_name(tool_fn: Callable) -> str:
         """安全获取工具名称，兼容 LangChain StructuredTool 等对象"""
-        return getattr(tool_fn, "name", None) or getattr(tool_fn, "__name__", None) or tool_fn.__class__.__name__
+        return (
+            getattr(tool_fn, "name", None)
+            or getattr(tool_fn, "__name__", None)
+            or tool_fn.__class__.__name__
+        )
 
     def _get_executor(self) -> ThreadPoolExecutor:
         executor = self._executor
@@ -1620,7 +1686,9 @@ class ToolRegistry:
         descriptions = [
             {
                 "name": name,
-                "description": getattr(tool_func, "description", None) or tool_func.__doc__ or "无描述",
+                "description": getattr(tool_func, "description", None)
+                or tool_func.__doc__
+                or "无描述",
             }
             for name, tool_func in items
         ]
@@ -1685,7 +1753,7 @@ class ToolRegistry:
 
             def _execute():
                 # LangChain 工具需要使用 invoke 方法
-                if hasattr(tool_func, 'invoke'):
+                if hasattr(tool_func, "invoke"):
                     return tool_func.invoke(kwargs) if kwargs else tool_func.invoke({})
                 else:
                     return tool_func(**kwargs)
@@ -1730,7 +1798,11 @@ class ToolRegistry:
 
         except ValidationError as e:
             # v3.3.4: 改进错误信息处理
-            error_msg = e.message if hasattr(e, 'message') and e.message else str(e) or repr(e) or "参数验证失败"
+            error_msg = (
+                e.message
+                if hasattr(e, "message") and e.message
+                else str(e) or repr(e) or "参数验证失败"
+            )
             full_error_msg = f"工具 '{name}' 参数验证失败: {error_msg}"
             logger.error(full_error_msg)
             with self._lock:
@@ -1740,7 +1812,11 @@ class ToolRegistry:
             return f"抱歉主人，{full_error_msg} 喵~"
         except ResourceError as e:
             # v3.3.4: 改进错误信息处理
-            error_msg = e.message if hasattr(e, 'message') and e.message else str(e) or repr(e) or "资源错误"
+            error_msg = (
+                e.message
+                if hasattr(e, "message") and e.message
+                else str(e) or repr(e) or "资源错误"
+            )
             full_error_msg = f"工具 '{name}' 资源错误: {error_msg}"
             logger.error(full_error_msg)
             with self._lock:

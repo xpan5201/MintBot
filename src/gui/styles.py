@@ -10,26 +10,21 @@ THEME_COLORS = {
     "primary": "#1890ff",  # 蓝色
     "primary_hover": "#40a9ff",
     "primary_active": "#096dd9",
-
     # 背景色
     "bg_dark": "#1e1e1e",  # 深色背景
     "bg_darker": "#141414",  # 更深的背景
     "bg_light": "#2d2d2d",  # 浅色背景
     "bg_hover": "#3d3d3d",  # 悬停背景
-
     # 文字色
     "text_primary": "#ffffff",
     "text_secondary": "#b0b0b0",
     "text_disabled": "#666666",
-
     # 边框色
     "border": "#3d3d3d",
     "border_light": "#4d4d4d",
-
     # 消息气泡
     "bubble_user": "#1890ff",  # 用户消息（蓝色）
     "bubble_ai": "#2d2d2d",  # AI消息（深灰色）
-
     # 状态色
     "success": "#52c41a",
     "warning": "#faad14",
@@ -252,12 +247,7 @@ QListWidget::item:selected {{
 
 # 组合所有样式
 COMPLETE_STYLE = (
-    MAIN_WINDOW_STYLE +
-    BUTTON_STYLE +
-    INPUT_STYLE +
-    SCROLLBAR_STYLE +
-    LABEL_STYLE +
-    LIST_STYLE
+    MAIN_WINDOW_STYLE + BUTTON_STYLE + INPUT_STYLE + SCROLLBAR_STYLE + LABEL_STYLE + LIST_STYLE
 )
 
 
@@ -271,10 +261,7 @@ def get_message_bubble_style(is_user: bool) -> str:
     Returns:
         str: CSS 样式字符串
     """
-    bg_color = (
-        THEME_COLORS['bubble_user'] if is_user
-        else THEME_COLORS['bubble_ai']
-    )
+    bg_color = THEME_COLORS["bubble_user"] if is_user else THEME_COLORS["bubble_ai"]
 
     return f"""
         background-color: {bg_color};

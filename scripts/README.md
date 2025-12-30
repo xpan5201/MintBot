@@ -23,7 +23,7 @@
 
 ## 工具脚本
 
-- `setup_config.py`：缺失时用 `config.yaml.example` 生成 `config.yaml`
+- `setup_config.py`：缺失时用 `config.user.yaml.example` 生成 `config.user.yaml`（可选使用 `config.dev.yaml.example` 生成 `config.dev.yaml`）
 - `check_install.py`：依赖自检
 - `clean.py`：清理缓存/测试产物
 

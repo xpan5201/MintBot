@@ -25,7 +25,16 @@ _EMOJI_PATTERN = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]")
 _CHINESE_WORD_PATTERN = re.compile(r"[\u4e00-\u9fff]+")
 _LAUGHTER_PATTERN = re.compile(r"(哈{2,}|呵{2,}|hh+|233+)", re.IGNORECASE)
 _LOG_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", re.MULTILINE)
-_CUTE_MARKERS = ("喵", "呜", "嘤", "qwq", "owo", "~", "\u0E05", "咩")  # "\u0E05" 是 U+0E05，部分字体会呈现“猫爪”样式
+_CUTE_MARKERS = (
+    "喵",
+    "呜",
+    "嘤",
+    "qwq",
+    "owo",
+    "~",
+    "\u0e05",
+    "咩",
+)  # "\u0E05" 是 U+0E05，部分字体会呈现“猫爪”样式
 _QUESTION_WORDS = ("吗", "呢", "什么", "怎么", "为什么", "哪里", "多少", "几点", "几号", "啥")
 _FORMAL_WORDS = ("您", "请", "谢谢", "不好意思", "麻烦")
 _CASUAL_WORDS = ("哈", "嘿", "哇", "呀", "啦", "喔")
@@ -80,9 +89,15 @@ class StyleLearner:
         self.formality_counter: Counter = Counter()
         self._message_length_sum: int = 0
 
-        self._history_max_len: int = max(10, int(getattr(settings.agent, "style_history_max_len", 100)))
-        self._word_counter_max: int = max(0, int(getattr(settings.agent, "style_word_counter_max", 100)))
-        self._topic_counter_max: int = max(0, int(getattr(settings.agent, "style_topic_counter_max", 50)))
+        self._history_max_len: int = max(
+            10, int(getattr(settings.agent, "style_history_max_len", 100))
+        )
+        self._word_counter_max: int = max(
+            0, int(getattr(settings.agent, "style_word_counter_max", 100))
+        )
+        self._topic_counter_max: int = max(
+            0, int(getattr(settings.agent, "style_topic_counter_max", 50))
+        )
         self._max_message_chars: int = max(
             50, int(getattr(settings.agent, "style_learning_max_message_chars", 800))
         )
@@ -160,7 +175,9 @@ class StyleLearner:
                 self.preferred_response_length = data.get("preferred_response_length", "medium")
                 self.preferred_formality = data.get("preferred_formality", "casual")
                 self.total_interactions = data.get("total_interactions", 0)
-                self.message_lengths = data.get("message_lengths", [])[-self._history_max_len :]  # 只保留最近N条
+                self.message_lengths = data.get("message_lengths", [])[
+                    -self._history_max_len :
+                ]  # 只保留最近N条
                 self._message_length_sum = sum(self.message_lengths)
                 if self.message_lengths:
                     self.user_avg_length = self._message_length_sum / len(self.message_lengths)
@@ -193,7 +210,9 @@ class StyleLearner:
                     due_by_time = self._persist_interval_s > 0 and (
                         (now - self._last_persist_monotonic) >= self._persist_interval_s
                     )
-                    due_by_count = (self.total_interactions % self._persist_every_n_interactions) == 0
+                    due_by_count = (
+                        self.total_interactions % self._persist_every_n_interactions
+                    ) == 0
                     if not (due_by_time or due_by_count):
                         return
 
@@ -206,23 +225,27 @@ class StyleLearner:
                     "preferred_response_length": self.preferred_response_length,
                     "preferred_formality": self.preferred_formality,
                     "total_interactions": self.total_interactions,
-                    "message_lengths": self.message_lengths[-self._history_max_len :],  # 只保存最近N条
+                    "message_lengths": self.message_lengths[
+                        -self._history_max_len :
+                    ],  # 只保存最近N条
                     "word_counter": (
                         dict(self.word_counter.most_common(self._word_counter_max))
                         if self._word_counter_max > 0
                         else {}
                     ),
-                "topic_counter": (
-                    {
-                        k: round(float(v), 4)
-                        for k, v in self.topic_counter.most_common(self._topic_counter_max)
-                    }
-                    if self._topic_counter_max > 0
-                    else {}
-                ),
-                "formality_counter": {k: round(float(v), 4) for k, v in dict(self.formality_counter).items()},
-                "last_update": datetime.now().isoformat(),
-            }
+                    "topic_counter": (
+                        {
+                            k: round(float(v), 4)
+                            for k, v in self.topic_counter.most_common(self._topic_counter_max)
+                        }
+                        if self._topic_counter_max > 0
+                        else {}
+                    ),
+                    "formality_counter": {
+                        k: round(float(v), 4) for k, v in dict(self.formality_counter).items()
+                    },
+                    "last_update": datetime.now().isoformat(),
+                }
                 _atomic_write_json(self.persist_file, data)
                 self._dirty = False
                 self._last_persist_monotonic = time.monotonic()
@@ -274,8 +297,8 @@ class StyleLearner:
             emoji_ratio = emoji_count / max(1, msg_length)
             self.user_emoji_usage = self.user_emoji_usage * 0.9 + emoji_ratio * 0.1
 
-            is_question = ("?" in text) or ("？" in text) or any(
-                word in text for word in _QUESTION_WORDS
+            is_question = (
+                ("?" in text) or ("？" in text) or any(word in text for word in _QUESTION_WORDS)
             )
             self.user_question_ratio = self.user_question_ratio * 0.95 + (
                 0.05 if is_question else 0.0
@@ -305,13 +328,17 @@ class StyleLearner:
             formality = self._classify_formality(text, emoji_count=emoji_count)
             if self._formality_decay < 1.0:
                 for key in list(self.formality_counter.keys()):
-                    self.formality_counter[key] = float(self.formality_counter[key]) * self._formality_decay
+                    self.formality_counter[key] = (
+                        float(self.formality_counter[key]) * self._formality_decay
+                    )
                     if self.formality_counter[key] <= 0.01:
                         try:
                             del self.formality_counter[key]
                         except KeyError:
                             pass
-            self.formality_counter[formality] = float(self.formality_counter.get(formality, 0.0)) + 1.0
+            self.formality_counter[formality] = (
+                float(self.formality_counter.get(formality, 0.0)) + 1.0
+            )
             if self.formality_counter:
                 self.preferred_formality = self.formality_counter.most_common(1)[0][0]
 
@@ -342,11 +369,7 @@ class StyleLearner:
             return False
 
         if len(stripped) >= 80:
-            meaningful = sum(
-                1
-                for ch in stripped
-                if ch.isalnum() or ("\u4e00" <= ch <= "\u9fff")
-            )
+            meaningful = sum(1 for ch in stripped if ch.isalnum() or ("\u4e00" <= ch <= "\u9fff"))
             if meaningful / len(stripped) < 0.35:
                 return False
 

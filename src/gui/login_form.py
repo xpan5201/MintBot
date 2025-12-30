@@ -41,13 +41,16 @@ class LoginForm(QWidget):
     def setup_ui(self):
         """设置 UI - 优化布局和间距"""
         # 设置背景样式
-        self.setStyleSheet(f"""
-            QWidget {{
+        self.setObjectName("loginForm")
+        self.setStyleSheet(
+            f"""
+            QWidget#loginForm {{
                 background: {MD3_ENHANCED_COLORS['surface_bright']};
                 border-top-right-radius: 16px;
                 border-bottom-right-radius: 16px;
             }}
-        """)
+        """
+        )
 
         # 主布局 - 优化边距和间距
         layout = QVBoxLayout(self)
@@ -56,7 +59,8 @@ class LoginForm(QWidget):
 
         # 标题区域
         title_label = QLabel("登录")
-        title_label.setStyleSheet(f"""
+        title_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface']};
                 font-size: 36px;
@@ -64,32 +68,37 @@ class LoginForm(QWidget):
                 letter-spacing: 0.5px;
                 margin-bottom: 8px;
             }}
-        """)
+        """
+        )
         layout.addWidget(title_label)
 
         # 副标题
         subtitle_label = QLabel("欢迎回来！请登录您的账户")
-        subtitle_label.setStyleSheet(f"""
+        subtitle_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface_variant']};
                 font-size: 15px;
                 line-height: 1.6;
             }}
-        """)
+        """
+        )
         layout.addWidget(subtitle_label)
 
         layout.addSpacing(32)
 
         # 用户名输入框
         username_label = QLabel("用户名")
-        username_label.setStyleSheet(f"""
+        username_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface']};
                 font-size: 14px;
                 font-weight: 600;
                 margin-bottom: 8px;
             }}
-        """)
+        """
+        )
         layout.addWidget(username_label)
 
         self.username_input = MD3TextField("请输入用户名或邮箱")
@@ -100,14 +109,16 @@ class LoginForm(QWidget):
 
         # 密码输入框
         password_label = QLabel("密码")
-        password_label.setStyleSheet(f"""
+        password_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface']};
                 font-size: 14px;
                 font-weight: 600;
                 margin-bottom: 8px;
             }}
-        """)
+        """
+        )
         layout.addWidget(password_label)
 
         self.password_input = MD3TextField("请输入密码", is_password=True)
@@ -123,7 +134,8 @@ class LoginForm(QWidget):
         self.remember_checkbox = QCheckBox("记住我")
         self.remember_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
         indicator_hover_bg = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.08)
-        self.remember_checkbox.setStyleSheet(f"""
+        self.remember_checkbox.setStyleSheet(
+            f"""
             QCheckBox {{
                 color: {MD3_ENHANCED_COLORS['on_surface_variant']};
                 font-size: 14px;
@@ -145,7 +157,8 @@ class LoginForm(QWidget):
                 border: 2px solid {MD3_ENHANCED_COLORS['primary']};
                 image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEzLjMzMzMgNC42NjY2N0w2IDEyTDIuNjY2NjcgOC42NjY2NyIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPC9zdmc+);
             }}
-        """)
+        """
+        )
         options_layout.addWidget(self.remember_checkbox)
 
         options_layout.addStretch()
@@ -171,12 +184,14 @@ class LoginForm(QWidget):
         register_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         register_hint = QLabel("还没有账户？")
-        register_hint.setStyleSheet(f"""
+        register_hint.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface_variant']};
                 font-size: 14px;
             }}
-        """)
+        """
+        )
         register_layout.addWidget(register_hint)
 
         register_btn = MD3TextButton("立即注册")
@@ -223,17 +238,27 @@ class LoginForm(QWidget):
 
                 if user and session_token:
                     # 将会话令牌添加到用户信息中
-                    user['session_token'] = session_token
-                    user['remember_me'] = remember_me
+                    user["session_token"] = session_token
+                    user["remember_me"] = remember_me
 
                     # 在顶层窗口显示 Toast
                     top_window = self.window()
-                    show_toast(top_window, f"欢迎回来，{user['username']}！", Toast.TYPE_SUCCESS, duration=3000)
+                    show_toast(
+                        top_window,
+                        f"欢迎回来，{user['username']}！",
+                        Toast.TYPE_SUCCESS,
+                        duration=3000,
+                    )
                     self.login_success.emit(user)
                 else:
                     # 用户信息或会话令牌获取失败
                     top_window = self.window()
-                    show_toast(top_window, "登录成功，但获取用户信息失败", Toast.TYPE_WARNING, duration=3000)
+                    show_toast(
+                        top_window,
+                        "登录成功，但获取用户信息失败",
+                        Toast.TYPE_WARNING,
+                        duration=3000,
+                    )
             else:
                 # 登录失败
                 # 在顶层窗口显示 Toast
@@ -247,6 +272,7 @@ class LoginForm(QWidget):
         except Exception as e:
             from src.utils.exceptions import handle_exception
             from src.utils.logger import get_logger
+
             logger = get_logger(__name__)
             handle_exception(e, logger, "登录时发生错误")
             self.login_btn.set_loading(False)

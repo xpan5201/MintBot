@@ -114,4 +114,3 @@ if __name__ == "__main__":
     print_version_info()
     logger.info(f"版本号: {get_version()}")
     logger.info(f"版本元组: {get_version_info()}")
-

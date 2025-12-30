@@ -40,9 +40,10 @@ class PADState:
 
     v2.29.13 优化: 提升初始值，让猫娘女仆更活泼开朗
     """
-    pleasure: float = 0.6    # 愉悦度 (-1.0 到 1.0) - 提升至0.6，表现开朗性格
-    arousal: float = 0.5     # 唤醒度 (-1.0 到 1.0) - 提升至0.5，表现活泼特质
-    dominance: float = 0.3   # 支配度 (-1.0 到 1.0) - 提升至0.3，表现自信可爱
+
+    pleasure: float = 0.6  # 愉悦度 (-1.0 到 1.0) - 提升至0.6，表现开朗性格
+    arousal: float = 0.5  # 唤醒度 (-1.0 到 1.0) - 提升至0.5，表现活泼特质
+    dominance: float = 0.3  # 支配度 (-1.0 到 1.0) - 提升至0.3，表现自信可爱
 
     def to_mood_value(self) -> float:
         """
@@ -202,7 +203,9 @@ class MoodSystem:
         if persist_file:
             self.persist_file = persist_file
         elif user_id is not None:
-            self.persist_file = str(Path(settings.data_dir) / "users" / str(user_id) / "memory" / "mood_state.json")
+            self.persist_file = str(
+                Path(settings.data_dir) / "users" / str(user_id) / "memory" / "mood_state.json"
+            )
         else:
             self.persist_file = str(Path(settings.data_dir) / "memory" / "mood_state.json")
 
@@ -245,7 +248,12 @@ class MoodSystem:
                     if saved_mood_value is not None:
                         desired = _clamp(float(saved_mood_value), -1.0, 1.0)
                         self.pad_state.pleasure = _clamp(
-                            (desired - 0.3 * self.pad_state.arousal - 0.1 * self.pad_state.dominance) / 0.6,
+                            (
+                                desired
+                                - 0.3 * self.pad_state.arousal
+                                - 0.1 * self.pad_state.dominance
+                            )
+                            / 0.6,
                             -1.0,
                             1.0,
                         )
@@ -264,6 +272,7 @@ class MoodSystem:
                 )
         except Exception as e:
             from src.utils.exceptions import handle_exception
+
             handle_exception(e, logger, "加载情绪状态失败")
 
     def _save_mood_state(self, *, force: bool = False) -> None:
@@ -294,6 +303,7 @@ class MoodSystem:
             _atomic_write_json(self.persist_file, data)
         except Exception as e:
             from src.utils.exceptions import handle_exception
+
             handle_exception(e, logger, "保存情绪状态失败")
 
     def persist(self, *, force: bool = False) -> None:
@@ -327,9 +337,15 @@ class MoodSystem:
 
         # 应用衰减到PAD状态（趋向基线而非趋向 0）
         baseline = PAD_BASELINE
-        self.pad_state.pleasure = baseline.pleasure + (self.pad_state.pleasure - baseline.pleasure) * decay_factor
-        self.pad_state.arousal = baseline.arousal + (self.pad_state.arousal - baseline.arousal) * decay_factor
-        self.pad_state.dominance = baseline.dominance + (self.pad_state.dominance - baseline.dominance) * decay_factor
+        self.pad_state.pleasure = (
+            baseline.pleasure + (self.pad_state.pleasure - baseline.pleasure) * decay_factor
+        )
+        self.pad_state.arousal = (
+            baseline.arousal + (self.pad_state.arousal - baseline.arousal) * decay_factor
+        )
+        self.pad_state.dominance = (
+            baseline.dominance + (self.pad_state.dominance - baseline.dominance) * decay_factor
+        )
 
         # 更新综合情绪值
         old_mood = self.mood_value
@@ -458,6 +474,7 @@ class MoodSystem:
 
             except Exception as e2:
                 from src.utils.exceptions import handle_exception
+
                 handle_exception(e2, logger, "计算情绪影响失败")
                 return 0.0
 
@@ -466,7 +483,7 @@ class MoodSystem:
         impact: float,
         is_positive: bool,
         arousal_change: float = 0.0,
-        dominance_change: float = 0.0
+        dominance_change: float = 0.0,
     ) -> None:
         """
         更新PAD三维情绪状态 (v2.28.2 新增)
@@ -583,7 +600,7 @@ class MoodSystem:
         old_pad = PADState(
             pleasure=self.pad_state.pleasure,
             arousal=self.pad_state.arousal,
-            dominance=self.pad_state.dominance
+            dominance=self.pad_state.dominance,
         )
 
         # v2.28.2: 更新PAD三维状态
@@ -599,7 +616,9 @@ class MoodSystem:
                 old_pad.arousal + (self.pad_state.arousal - old_pad.arousal) * factor, -1.0, 1.0
             )
             self.pad_state.dominance = _clamp(
-                old_pad.dominance + (self.pad_state.dominance - old_pad.dominance) * factor, -1.0, 1.0
+                old_pad.dominance + (self.pad_state.dominance - old_pad.dominance) * factor,
+                -1.0,
+                1.0,
             )
 
         # 从PAD状态计算新的综合情绪值（保持一致性）
@@ -609,16 +628,18 @@ class MoodSystem:
         self._check_emotional_rebound()
 
         # 记录历史
-        self.mood_history.append({
-            "timestamp": datetime.now().isoformat(),
-            "old_mood": old_mood,
-            "new_mood": self.mood_value,
-            "impact": calculated_impact,
-            "reason": reason,
-            "is_positive": is_positive,
-            "pad_state": self.pad_state.to_dict(),  # v2.28.2: 记录PAD状态
-            "old_pad_state": old_pad.to_dict(),  # v2.28.2
-        })
+        self.mood_history.append(
+            {
+                "timestamp": datetime.now().isoformat(),
+                "old_mood": old_mood,
+                "new_mood": self.mood_value,
+                "impact": calculated_impact,
+                "reason": reason,
+                "is_positive": is_positive,
+                "pad_state": self.pad_state.to_dict(),  # v2.28.2: 记录PAD状态
+                "old_pad_state": old_pad.to_dict(),  # v2.28.2
+            }
+        )
         self._trim_history()
 
         # 保存状态
@@ -764,11 +785,7 @@ class MoodSystem:
         mood_state = self.get_mood_state()
         modifier = self.get_mood_modifier()
 
-        return (
-            "\n【情绪】"
-            f"{mood_state}\n"
-            f"{modifier}\n"
-        )
+        return "\n【情绪】" f"{mood_state}\n" f"{modifier}\n"
 
     def get_mood_stats(self) -> Dict:
         """
@@ -796,9 +813,15 @@ class MoodSystem:
         # v2.28.2: 计算PAD平均值
         if events:
             recent_history = events[-20:]  # 最近20条
-            avg_pleasure = sum(float(h.get("pad_state", {}).get("pleasure", 0.0) or 0.0) for h in recent_history) / len(recent_history)
-            avg_arousal = sum(float(h.get("pad_state", {}).get("arousal", 0.0) or 0.0) for h in recent_history) / len(recent_history)
-            avg_dominance = sum(float(h.get("pad_state", {}).get("dominance", 0.0) or 0.0) for h in recent_history) / len(recent_history)
+            avg_pleasure = sum(
+                float(h.get("pad_state", {}).get("pleasure", 0.0) or 0.0) for h in recent_history
+            ) / len(recent_history)
+            avg_arousal = sum(
+                float(h.get("pad_state", {}).get("arousal", 0.0) or 0.0) for h in recent_history
+            ) / len(recent_history)
+            avg_dominance = sum(
+                float(h.get("pad_state", {}).get("dominance", 0.0) or 0.0) for h in recent_history
+            ) / len(recent_history)
         else:
             avg_pleasure = avg_arousal = avg_dominance = 0.0
 

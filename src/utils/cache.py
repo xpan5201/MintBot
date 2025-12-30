@@ -49,7 +49,9 @@ class ResponseCache:
             if cleaned > 0:
                 logger.info(f"初始化时清理了 {cleaned} 条过期缓存")
 
-        logger.info(f"缓存系统初始化完成，TTL: {ttl}秒，最大条目: {max_size}，自动清理: {auto_cleanup}")
+        logger.info(
+            f"缓存系统初始化完成，TTL: {ttl}秒，最大条目: {max_size}，自动清理: {auto_cleanup}"
+        )
 
     def _load_cache(self) -> None:
         """从文件加载缓存"""
@@ -102,12 +104,12 @@ class ResponseCache:
             Optional[str]: 缓存的响应，如果不存在或已过期则返回 None
         """
         # v2.28.0: 定期自动清理过期缓存（每100次查询清理一次）
-        if self.auto_cleanup and hasattr(self, '_query_count'):
+        if self.auto_cleanup and hasattr(self, "_query_count"):
             self._query_count += 1
             if self._query_count >= 100:
                 self.cleanup_expired()
                 self._query_count = 0
-        elif not hasattr(self, '_query_count'):
+        elif not hasattr(self, "_query_count"):
             self._query_count = 0
 
         key = self._generate_key(message, context)

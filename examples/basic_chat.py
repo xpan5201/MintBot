@@ -60,7 +60,9 @@ def main():
     print()
 
     # 对话循环
-    print("开始对话（输入 'quit' 或 'exit' 退出，'clear' 清空记忆，'stats' 查看统计，'emotion' 查看情感）")
+    print(
+        "开始对话（输入 'quit' 或 'exit' 退出，'clear' 清空记忆，'stats' 查看统计，'emotion' 查看情感）"
+    )
     print("-" * 60)
     print()
 

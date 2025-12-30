@@ -74,8 +74,16 @@ def test_core_memory_import_records_overwrite_preserves_ids(monkeypatch, temp_di
 
     imported = core.import_records(
         [
-            {"id": "c1", "content": "hello", "metadata": {"category": "general", "importance": 1.0}},
-            {"id": "c2", "content": "world", "metadata": {"category": "general", "importance": 0.9}},
+            {
+                "id": "c1",
+                "content": "hello",
+                "metadata": {"category": "general", "importance": 1.0},
+            },
+            {
+                "id": "c2",
+                "content": "world",
+                "metadata": {"category": "general", "importance": 0.9},
+            },
         ],
         overwrite=True,
         batch_size=10,

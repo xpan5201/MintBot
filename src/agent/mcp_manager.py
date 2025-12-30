@@ -260,7 +260,9 @@ class MCPManager:
         if not enabled_items:
             return
 
-        tasks = [self._connect_and_load_tools(name, server_cfg) for name, server_cfg in enabled_items]
+        tasks = [
+            self._connect_and_load_tools(name, server_cfg) for name, server_cfg in enabled_items
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         new_servers: Dict[str, _ServerRuntime] = {}
@@ -283,7 +285,9 @@ class MCPManager:
         if new_tools:
             logger.info("MCP 工具加载完成: servers=%d, tools=%d", len(new_servers), len(new_tools))
 
-    async def _connect_and_load_tools(self, name: str, server_cfg: Any) -> Optional[Tuple[_ServerRuntime, List[Any]]]:
+    async def _connect_and_load_tools(
+        self, name: str, server_cfg: Any
+    ) -> Optional[Tuple[_ServerRuntime, List[Any]]]:
         transport = str(getattr(server_cfg, "transport", "stdio") or "stdio").lower()
         if transport != "stdio":
             logger.warning("暂不支持 MCP transport=%s (server=%s)，已跳过", transport, name)
@@ -319,7 +323,9 @@ class MCPManager:
             session = await session_cm.__aenter__()
 
             await asyncio.wait_for(session.initialize(), timeout=self._connect_timeout_s)
-            tool_list = await asyncio.wait_for(session.list_tools(), timeout=self._connect_timeout_s)
+            tool_list = await asyncio.wait_for(
+                session.list_tools(), timeout=self._connect_timeout_s
+            )
 
             tools = getattr(tool_list, "tools", None) or []
             adapted = self._adapt_tools(server_name, tools)
@@ -346,7 +352,9 @@ class MCPManager:
 
     def _adapt_tools(self, server_name: str, tools: Sequence[Any]) -> List[Any]:
         if not HAS_STRUCTURED_TOOL or StructuredTool is None:
-            logger.warning("StructuredTool 不可用，无法注册 MCP 工具: %s", _STRUCTURED_TOOL_IMPORT_ERROR)
+            logger.warning(
+                "StructuredTool 不可用，无法注册 MCP 工具: %s", _STRUCTURED_TOOL_IMPORT_ERROR
+            )
             return []
 
         def make_invoke(raw_tool_name: str):
@@ -360,7 +368,9 @@ class MCPManager:
             try:
                 tool_name = str(getattr(tool_meta, "name", "") or "")
                 description = str(getattr(tool_meta, "description", "") or "")
-                schema = getattr(tool_meta, "inputSchema", None) or getattr(tool_meta, "input_schema", None)
+                schema = getattr(tool_meta, "inputSchema", None) or getattr(
+                    tool_meta, "input_schema", None
+                )
             except Exception:
                 continue
 

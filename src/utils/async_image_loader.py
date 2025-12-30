@@ -26,7 +26,7 @@ logger = get_logger(__name__)
 
 class AsyncImageLoader:
     """异步图片加载器"""
-    
+
     def __init__(
         self,
         max_workers: int = 4,
@@ -35,7 +35,7 @@ class AsyncImageLoader:
     ):
         """
         初始化异步图片加载器
-        
+
         Args:
             max_workers: 最大工作线程数
             cache_size: 缓存大小
@@ -45,11 +45,11 @@ class AsyncImageLoader:
         self.cache_size = cache_size
         self.thumbnail_size = thumbnail_size
         self._cache_lock = threading.Lock()
-        
+
         # 图片缓存 {path: (image, timestamp)}
         self._cache: Dict[str, Tuple[Image.Image, float]] = {}
         self._cache_order: list = []  # LRU顺序
-        
+
         # 统计信息
         self._stats = {
             "total_loads": 0,
@@ -57,21 +57,21 @@ class AsyncImageLoader:
             "cache_misses": 0,
             "total_time": 0.0,
         }
-        
+
         logger.info(f"异步图片加载器初始化: 工作线程={max_workers}, 缓存大小={cache_size}")
-    
+
     def _load_image_sync(self, image_path: Path) -> Image.Image:
         """同步加载图片（在线程池中执行）"""
         try:
             image = Image.open(image_path)
             # 转换为RGB模式（如果需要）
-            if image.mode not in ('RGB', 'RGBA'):
-                image = image.convert('RGB')
+            if image.mode not in ("RGB", "RGBA"):
+                image = image.convert("RGB")
             return image
         except Exception as e:
             logger.error(f"加载图片失败 {image_path}: {e}")
             raise
-    
+
     async def load_image(
         self,
         image_path: Path,
@@ -79,17 +79,17 @@ class AsyncImageLoader:
     ) -> Optional[Image.Image]:
         """
         异步加载图片
-        
+
         Args:
             image_path: 图片路径
             use_cache: 是否使用缓存
-        
+
         Returns:
             PIL Image对象，失败返回None
         """
         start_time = time.perf_counter()
         path_str = str(image_path)
-        
+
         # 检查缓存
         if use_cache:
             with self._cache_lock:
@@ -106,46 +106,42 @@ class AsyncImageLoader:
 
                     logger.debug(f"图片缓存命中: {image_path.name}")
                     return image
-        
+
         # 缓存未命中，异步加载
         self._stats["cache_misses"] += 1
-        
+
         try:
             loop = asyncio.get_running_loop()
-            image = await loop.run_in_executor(
-                self.executor,
-                self._load_image_sync,
-                image_path
-            )
-            
+            image = await loop.run_in_executor(self.executor, self._load_image_sync, image_path)
+
             # 添加到缓存
             if use_cache:
                 with self._cache_lock:
                     self._add_to_cache(path_str, image)
-            
+
             # 更新统计
             elapsed = time.perf_counter() - start_time
             self._stats["total_loads"] += 1
             self._stats["total_time"] += elapsed
-            
+
             logger.debug(f"图片加载完成: {image_path.name}, 耗时: {elapsed*1000:.1f}ms")
             return image
-            
+
         except Exception as e:
             logger.error(f"异步加载图片失败 {image_path}: {e}")
             return None
-    
+
     def _add_to_cache(self, path: str, image: Image.Image):
         """添加图片到缓存（LRU策略）"""
         # 如果缓存已满，移除最旧的
         if len(self._cache) >= self.cache_size:
             oldest_path = self._cache_order.pop(0)
             del self._cache[oldest_path]
-        
+
         # 添加新图片
         self._cache[path] = (image, time.time())
         self._cache_order.append(path)
-    
+
     async def load_thumbnail(
         self,
         image_path: Path,
@@ -154,23 +150,23 @@ class AsyncImageLoader:
     ) -> Optional[Image.Image]:
         """
         异步加载缩略图
-        
+
         Args:
             image_path: 图片路径
             size: 缩略图尺寸，默认使用初始化时的尺寸
             use_cache: 是否使用缓存
-        
+
         Returns:
             PIL Image对象（缩略图），失败返回None
         """
         if size is None:
             size = self.thumbnail_size
-        
+
         # 加载原图
         image = await self.load_image(image_path, use_cache=use_cache)
         if image is None:
             return None
-        
+
         # 生成缩略图
         try:
             thumbnail = image.copy()
@@ -195,10 +191,7 @@ class AsyncImageLoader:
         Returns:
             PIL Image对象列表
         """
-        tasks = [
-            self.load_image(path, use_cache=use_cache)
-            for path in image_paths
-        ]
+        tasks = [self.load_image(path, use_cache=use_cache) for path in image_paths]
         return await asyncio.gather(*tasks, return_exceptions=False)
 
     def clear_cache(self):
@@ -263,6 +256,7 @@ def get_async_image_loader(
 
 # 示例用法
 if __name__ == "__main__":
+
     async def test():
         """测试异步图片加载"""
         loader = get_async_image_loader(max_workers=4, cache_size=10)

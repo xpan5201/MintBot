@@ -4,10 +4,7 @@ TTS性能监控面板组件 - v2.45.0
 实时显示TTS系统性能指标，包括图表可视化
 """
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel,
-    QFrame, QGridLayout, QTabWidget
-)
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QGridLayout, QTabWidget
 from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QFont
 
@@ -34,13 +31,13 @@ class TTSPerformanceMonitor(QWidget):
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self._update_performance_data)
         self.update_timer.start(1000)  # 1秒更新一次
-        
+
     def setup_ui(self):
         """设置UI"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(8)
-        
+
         # 标题
         title_label = QLabel("📊 性能监控")
         title_font = QFont()
@@ -48,7 +45,7 @@ class TTSPerformanceMonitor(QWidget):
         title_font.setBold(True)
         title_label.setFont(title_font)
         layout.addWidget(title_label)
-        
+
         # 分隔线
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
@@ -58,7 +55,8 @@ class TTSPerformanceMonitor(QWidget):
 
         # v2.45.0: 使用Tab切换指标和图表
         tab_widget = QTabWidget()
-        tab_widget.setStyleSheet("""
+        tab_widget.setStyleSheet(
+            """
             QTabWidget::pane {
                 border: 1px solid rgba(255, 255, 255, 0.1);
                 background: rgba(0, 0, 0, 0.2);
@@ -76,7 +74,8 @@ class TTSPerformanceMonitor(QWidget):
                 background: rgba(255, 107, 157, 0.3);
                 color: white;
             }
-        """)
+        """
+        )
 
         # 指标Tab
         metrics_widget = QWidget()
@@ -86,53 +85,53 @@ class TTSPerformanceMonitor(QWidget):
         # v2.44.0: 性能指标网格
         metrics_grid = QGridLayout()
         metrics_grid.setSpacing(8)
-        
+
         # 第一行：请求统计
         row = 0
         metrics_grid.addWidget(self._create_label("总请求数:", bold=False), row, 0)
         self.total_requests_label = self._create_label("0", bold=True)
         metrics_grid.addWidget(self.total_requests_label, row, 1)
-        
+
         metrics_grid.addWidget(self._create_label("成功率:", bold=False), row, 2)
         self.success_rate_label = self._create_label("0%", bold=True)
         metrics_grid.addWidget(self.success_rate_label, row, 3)
-        
+
         # 第二行：缓存统计
         row += 1
         metrics_grid.addWidget(self._create_label("缓存命中:", bold=False), row, 0)
         self.cache_hits_label = self._create_label("0", bold=True)
         metrics_grid.addWidget(self.cache_hits_label, row, 1)
-        
+
         metrics_grid.addWidget(self._create_label("命中率:", bold=False), row, 2)
         self.cache_hit_rate_label = self._create_label("0%", bold=True)
         metrics_grid.addWidget(self.cache_hit_rate_label, row, 3)
-        
+
         # 第三行：错误统计
         row += 1
         metrics_grid.addWidget(self._create_label("重试次数:", bold=False), row, 0)
         self.retry_count_label = self._create_label("0", bold=True)
         metrics_grid.addWidget(self.retry_count_label, row, 1)
-        
+
         metrics_grid.addWidget(self._create_label("超时错误:", bold=False), row, 2)
         self.timeout_errors_label = self._create_label("0", bold=True)
         metrics_grid.addWidget(self.timeout_errors_label, row, 3)
-        
+
         # 第四行：网络和API错误
         row += 1
         metrics_grid.addWidget(self._create_label("网络错误:", bold=False), row, 0)
         self.network_errors_label = self._create_label("0", bold=True)
         metrics_grid.addWidget(self.network_errors_label, row, 1)
-        
+
         metrics_grid.addWidget(self._create_label("API错误:", bold=False), row, 2)
         self.api_errors_label = self._create_label("0", bold=True)
         metrics_grid.addWidget(self.api_errors_label, row, 3)
-        
+
         # 第五行：队列和缓存大小
         row += 1
         metrics_grid.addWidget(self._create_label("队列大小:", bold=False), row, 0)
         self.queue_size_label = self._create_label("0", bold=True)
         metrics_grid.addWidget(self.queue_size_label, row, 1)
-        
+
         metrics_grid.addWidget(self._create_label("缓存大小:", bold=False), row, 2)
         self.cache_size_label = self._create_label("0", bold=True)
         metrics_grid.addWidget(self.cache_size_label, row, 3)
@@ -165,14 +164,16 @@ class TTSPerformanceMonitor(QWidget):
         layout.addWidget(tab_widget)
 
         # 设置面板样式
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             TTSPerformanceMonitor {
                 background: rgba(0, 0, 0, 0.3);
                 border: 1px solid rgba(255, 255, 255, 0.1);
                 border-radius: 12px;
             }
-        """)
-    
+        """
+        )
+
     def _create_label(self, text: str, bold: bool = False) -> QLabel:
         """创建标签"""
         label = QLabel(text)
@@ -182,7 +183,7 @@ class TTSPerformanceMonitor(QWidget):
             font.setBold(True)
             label.setFont(font)
         return label
-    
+
     def _update_performance_data(self):
         """更新性能数据 (v2.45.0 - 增强图表数据)"""
         if not self.tts_manager:
@@ -260,4 +261,3 @@ class TTSPerformanceMonitor(QWidget):
         """设置TTS管理器"""
         self.tts_manager = tts_manager
         self._update_performance_data()  # 立即更新一次
-

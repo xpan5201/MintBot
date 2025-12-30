@@ -4,10 +4,7 @@ MintChat 消息气泡组件
 提供类似 QQ 的消息气泡显示
 """
 
-from PyQt6.QtWidgets import (
-    QWidget, QLabel, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QSizePolicy
-)
+from PyQt6.QtWidgets import QWidget, QLabel, QVBoxLayout, QHBoxLayout, QTextEdit, QSizePolicy
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QTextCursor
 from datetime import datetime
@@ -17,13 +14,7 @@ from .styles import THEME_COLORS
 class MessageBubble(QWidget):
     """消息气泡组件"""
 
-    def __init__(
-        self,
-        message: str,
-        is_user: bool = False,
-        timestamp: str = None,
-        parent=None
-    ):
+    def __init__(self, message: str, is_user: bool = False, timestamp: str = None, parent=None):
         """
         初始化消息气泡
 
@@ -36,9 +27,7 @@ class MessageBubble(QWidget):
         super().__init__(parent)
         self.message = message
         self.is_user = is_user
-        self.timestamp = timestamp or datetime.now().strftime(
-            "%H:%M:%S"
-        )
+        self.timestamp = timestamp or datetime.now().strftime("%H:%M:%S")
 
         self._init_ui()
 
@@ -61,43 +50,38 @@ class MessageBubble(QWidget):
         # 消息内容
         self.message_label = QLabel(self.message)
         self.message_label.setWordWrap(True)
-        self.message_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self.message_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.message_label.setMaximumWidth(500)
 
         # 设置样式
-        bg_color = (
-            THEME_COLORS['bubble_user'] if self.is_user
-            else THEME_COLORS['bubble_ai']
-        )
-        self.message_label.setStyleSheet(f"""
+        bg_color = THEME_COLORS["bubble_user"] if self.is_user else THEME_COLORS["bubble_ai"]
+        self.message_label.setStyleSheet(
+            f"""
             QLabel {{
                 background-color: {bg_color};
                 color: {THEME_COLORS['text_primary']};
                 border-radius: 8px;
                 padding: 10px 14px;
             }}
-        """)
+        """
+        )
 
         # 时间戳
         self.time_label = QLabel(self.timestamp)
-        self.time_label.setStyleSheet(f"""
+        self.time_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {THEME_COLORS['text_secondary']};
                 font-size: 11px;
             }}
-        """)
+        """
+        )
 
         # 根据是否为用户消息调整时间戳位置
         if self.is_user:
-            self.time_label.setAlignment(
-                Qt.AlignmentFlag.AlignRight
-            )
+            self.time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         else:
-            self.time_label.setAlignment(
-                Qt.AlignmentFlag.AlignLeft
-            )
+            self.time_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         # 添加到布局
         message_layout.addWidget(self.message_label)
@@ -124,12 +108,7 @@ class StreamingMessageBubble(QWidget):
 
     finished = pyqtSignal()  # 流式输出完成信号
 
-    def __init__(
-        self,
-        is_user: bool = False,
-        timestamp: str = None,
-        parent=None
-    ):
+    def __init__(self, is_user: bool = False, timestamp: str = None, parent=None):
         """
         初始化流式消息气泡
 
@@ -140,9 +119,7 @@ class StreamingMessageBubble(QWidget):
         """
         super().__init__(parent)
         self.is_user = is_user
-        self.timestamp = timestamp or datetime.now().strftime(
-            "%H:%M:%S"
-        )
+        self.timestamp = timestamp or datetime.now().strftime("%H:%M:%S")
         self.message = ""
 
         self._init_ui()
@@ -168,17 +145,12 @@ class StreamingMessageBubble(QWidget):
         self.message_edit.setReadOnly(True)
         self.message_edit.setMaximumWidth(500)
         self.message_edit.setMinimumHeight(40)
-        self.message_edit.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Minimum
-        )
+        self.message_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         # 设置样式
-        bg_color = (
-            THEME_COLORS['bubble_user'] if self.is_user
-            else THEME_COLORS['bubble_ai']
-        )
-        self.message_edit.setStyleSheet(f"""
+        bg_color = THEME_COLORS["bubble_user"] if self.is_user else THEME_COLORS["bubble_ai"]
+        self.message_edit.setStyleSheet(
+            f"""
             QTextEdit {{
                 background-color: {bg_color};
                 color: {THEME_COLORS['text_primary']};
@@ -187,34 +159,29 @@ class StreamingMessageBubble(QWidget):
                 padding: 10px 14px;
                 font-size: 14px;
             }}
-        """)
+        """
+        )
 
         # 禁用垂直滚动条（自动调整高度）
-        self.message_edit.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.message_edit.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        self.message_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.message_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         # 时间戳
         self.time_label = QLabel(self.timestamp)
-        self.time_label.setStyleSheet(f"""
+        self.time_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {THEME_COLORS['text_secondary']};
                 font-size: 11px;
             }}
-        """)
+        """
+        )
 
         # 根据是否为用户消息调整时间戳位置
         if self.is_user:
-            self.time_label.setAlignment(
-                Qt.AlignmentFlag.AlignRight
-            )
+            self.time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         else:
-            self.time_label.setAlignment(
-                Qt.AlignmentFlag.AlignLeft
-            )
+            self.time_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         # 添加到布局
         message_layout.addWidget(self.message_edit)

@@ -5,9 +5,15 @@
 """
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QListWidget, QListWidgetItem,
-    QMessageBox, QInputDialog
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QInputDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from typing import List, Dict
@@ -67,13 +73,16 @@ class ExportTemplateDialog(QDialog):
         layout.addWidget(title_label)
 
         # 说明
-        info_label = QLabel("可用占位符: {timestamp}, {text_preview}, {ref_audio}, {emotion}, {index}")
+        info_label = QLabel(
+            "可用占位符: {timestamp}, {text_preview}, {ref_audio}, {emotion}, {index}"
+        )
         info_label.setStyleSheet("color: #666; font-size: 12px;")
         layout.addWidget(info_label)
 
         # 模板列表
         self.template_list = QListWidget()
-        self.template_list.setStyleSheet("""
+        self.template_list.setStyleSheet(
+            """
             QListWidget {
                 border: 2px solid rgba(255, 107, 157, 0.3);
                 border-radius: 8px;
@@ -94,7 +103,8 @@ class ExportTemplateDialog(QDialog):
             QListWidget::item:hover {
                 background: rgba(255, 107, 157, 0.1);
             }
-        """)
+        """
+        )
         self._load_template_list()
         layout.addWidget(self.template_list)
 
@@ -130,7 +140,8 @@ class ExportTemplateDialog(QDialog):
         # 确定按钮
         ok_btn = QPushButton("确定")
         ok_btn.setFixedSize(80, 32)
-        ok_btn.setStyleSheet("""
+        ok_btn.setStyleSheet(
+            """
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FF6B9D, stop:1 #C06C84);
                 color: white;
@@ -141,7 +152,8 @@ class ExportTemplateDialog(QDialog):
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #C06C84, stop:1 #FF6B9D);
             }
-        """)
+        """
+        )
         ok_btn.clicked.connect(self._on_ok)
         button_layout.addWidget(ok_btn)
 
@@ -168,7 +180,9 @@ class ExportTemplateDialog(QDialog):
         config_file = self._get_config_file()
         try:
             config_file.parent.mkdir(parents=True, exist_ok=True)
-            payload: Dict[str, List[str]] = {"templates": [str(t) for t in self.templates if str(t).strip()]}
+            payload: Dict[str, List[str]] = {
+                "templates": [str(t) for t in self.templates if str(t).strip()]
+            }
             with open(config_file, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -189,7 +203,7 @@ class ExportTemplateDialog(QDialog):
             self,
             "添加模板",
             "请输入模板（可用占位符: {timestamp}, {text_preview}, {ref_audio}, {emotion}, {index}）:",
-            text="tts_{timestamp}_{text_preview}"
+            text="tts_{timestamp}_{text_preview}",
         )
 
         if ok and template:
@@ -218,7 +232,7 @@ class ExportTemplateDialog(QDialog):
             self,
             "确认删除",
             f"确定要删除模板 '{template}' 吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:

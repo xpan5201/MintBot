@@ -135,12 +135,16 @@ class ToolTraceMiddleware(AgentMiddleware):
         try:
             response = handler(request)
         except Exception as exc:
-            self._record_result(recorder=recorder, request=request, started_at=started_at, response=None, exc=exc)
+            self._record_result(
+                recorder=recorder, request=request, started_at=started_at, response=None, exc=exc
+            )
             raise
 
         if isinstance(response, ToolMessage):
             self._truncate_tool_message(response)
-        self._record_result(recorder=recorder, request=request, started_at=started_at, response=response)
+        self._record_result(
+            recorder=recorder, request=request, started_at=started_at, response=response
+        )
         return response
 
     async def awrap_tool_call(
@@ -158,10 +162,14 @@ class ToolTraceMiddleware(AgentMiddleware):
         try:
             response = await handler(request)
         except Exception as exc:
-            self._record_result(recorder=recorder, request=request, started_at=started_at, response=None, exc=exc)
+            self._record_result(
+                recorder=recorder, request=request, started_at=started_at, response=None, exc=exc
+            )
             raise
 
         if isinstance(response, ToolMessage):
             self._truncate_tool_message(response)
-        self._record_result(recorder=recorder, request=request, started_at=started_at, response=response)
+        self._record_result(
+            recorder=recorder, request=request, started_at=started_at, response=response
+        )
         return response

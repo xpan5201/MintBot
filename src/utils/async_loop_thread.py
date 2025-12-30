@@ -75,7 +75,12 @@ class AsyncLoopThread:
 
             loop = self._loop
             thread = self._thread
-            if loop is not None and thread is not None and thread.is_alive() and not loop.is_closed():
+            if (
+                loop is not None
+                and thread is not None
+                and thread.is_alive()
+                and not loop.is_closed()
+            ):
                 return loop
 
             self._ready.clear()

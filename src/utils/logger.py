@@ -19,6 +19,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import IO
 from typing import Any, Dict, List, Optional
 
 try:
@@ -35,7 +36,18 @@ DEFAULT_LOG_FILE = os.getenv("MINTCHAT_LOG_FILE", "mintchat.log")
 DEFAULT_JSON_FILE = os.getenv("MINTCHAT_JSON_LOG_FILE", "mintchat.jsonl")
 DEFAULT_ROTATION = os.getenv("MINTCHAT_LOG_ROTATION", "50 MB")
 DEFAULT_RETENTION = os.getenv("MINTCHAT_LOG_RETENTION", "14 days")
+
+# Keep original stdio references so we can safely wrap stdout/stderr without
+# causing recursive logging (loguru console sink should always write to the
+# original stream).
+_ORIG_STDOUT: IO[str] = sys.stdout
+_ORIG_STDERR: IO[str] = sys.stderr
 DEFAULT_QUIET_LIBS = [
+    # Silence root/third-party INFO logs by default (ModelScope/FunASR is very noisy on init).
+    "root",
+    "modelscope",
+    "funasr",
+    "transformers",
     "httpx",
     "asyncio",
     "urllib3",
@@ -62,6 +74,19 @@ DEFAULT_DROP_KEYWORDS = [
     "send_request_body.started",
     "插入消息:",
     "已显示",
+    # ModelScope/FunASR model download noise (mostly path-heavy INFO logs)
+    "download models from model hub",
+    "downloading model from https://www.modelscope.cn",
+    "loading pretrained params from",
+    "ckpt:",
+    "loading ckpt:",
+    "load_pretrained_model:",
+    "all keys matched successfully",
+    "trust_remote_code:",
+    "funasr version:",
+    "scope_map:",
+    "excludes:",
+    "modelscope\\hub\\models",
 ]
 ENV_DROP = os.getenv("MINTCHAT_LOG_DROP_KEYWORDS")
 if ENV_DROP:
@@ -86,6 +111,12 @@ def _configure_warning_filters() -> None:
         "ignore",
         message=r".*Couldn't find ffmpeg or avconv.*",
         category=RuntimeWarning,
+    )
+    # FunASR (paraformer_streaming): torch.cuda.amp.autocast deprecation is harmless noise.
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*torch\.cuda\.amp\.autocast\(.*\).*deprecated\..*",
+        category=FutureWarning,
     )
 
 
@@ -160,7 +191,11 @@ class _LegacyLoggerAdapter:
             try:
                 min_level = getattr(getattr(self._logger, "_core", None), "min_level", None)
                 level_no = self._logger.level(level_name).no
-                if isinstance(min_level, int) and isinstance(level_no, int) and level_no < min_level:
+                if (
+                    isinstance(min_level, int)
+                    and isinstance(level_no, int)
+                    and level_no < min_level
+                ):
                     return
             except Exception:
                 pass
@@ -249,6 +284,7 @@ class _LegacyLoggerAdapter:
     # 兼容标准 logging 接口（用于外部 isEnabledFor 调用）
     def isEnabledFor(self, level: Any) -> bool:  # pragma: no cover - 兼容性辅助
         """返回指定级别是否开启，兼容标准 logging API。"""
+
         def _normalize_level_name(value: Any) -> str:
             if isinstance(value, str):
                 return value.upper()
@@ -273,10 +309,16 @@ class _LegacyLoggerAdapter:
         if hasattr(self._logger, "isEnabledFor"):
             try:
                 if isinstance(level, str):
-                    return bool(self._logger.isEnabledFor(getattr(logging, level.upper(), logging.INFO)))
+                    return bool(
+                        self._logger.isEnabledFor(getattr(logging, level.upper(), logging.INFO))
+                    )
                 if isinstance(level, int):
                     return bool(self._logger.isEnabledFor(level))
-                return bool(self._logger.isEnabledFor(getattr(logging, _normalize_level_name(level), logging.INFO)))
+                return bool(
+                    self._logger.isEnabledFor(
+                        getattr(logging, _normalize_level_name(level), logging.INFO)
+                    )
+                )
             except Exception:
                 pass
 
@@ -337,7 +379,9 @@ class _InterceptHandler(logging.Handler):
             message = str(msg) if msg is not None else ""
 
         target = _loguru_base or loguru_logger
-        target.bind(logger_name=record.name).opt(depth=depth, exception=record.exc_info).log(level, message)
+        target.bind(logger_name=record.name).opt(depth=depth, exception=record.exc_info).log(
+            level, message
+        )
 
 
 class _ContextInjectFilter(logging.Filter):
@@ -451,6 +495,104 @@ def _ensure_utf8_stdio() -> None:
                 pass
 
 
+class _FilteringTextStream:
+    """A minimal text stream wrapper that drops noisy lines by keyword.
+
+    This is used to suppress third-party *print* noise (e.g. ModelScope download
+    messages) which bypasses our logging pipeline and therefore cannot be
+    filtered by loguru sinks.
+    """
+
+    __slots__ = ("_stream", "_drop_keywords", "_buffer")
+
+    def __init__(self, stream: IO[str], drop_keywords: List[str]) -> None:
+        self._stream = stream
+        self._drop_keywords = list(drop_keywords or [])
+        self._buffer = ""
+
+    def write(self, s: str) -> int:  # pragma: no cover - exercised indirectly via GUI
+        try:
+            text = str(s)
+        except Exception:
+            text = ""
+        if not text:
+            return 0
+
+        self._buffer += text
+        written = 0
+
+        while True:
+            if "\n" not in self._buffer and "\r" not in self._buffer:
+                break
+
+            # Handle both newline and carriage-return style progress outputs.
+            n_idx = self._buffer.find("\n")
+            r_idx = self._buffer.find("\r")
+            idx_candidates = [i for i in (n_idx, r_idx) if i >= 0]
+            if not idx_candidates:
+                break
+            idx = min(idx_candidates)
+            line = self._buffer[: idx + 1]
+            self._buffer = self._buffer[idx + 1 :]
+
+            stripped = line.strip()
+            if stripped and _should_drop(stripped, self._drop_keywords):
+                continue
+            try:
+                written += int(self._stream.write(line))
+            except Exception:
+                # Best-effort: don't break the app on logging issues.
+                pass
+        return int(written)
+
+    def flush(self) -> None:  # pragma: no cover - trivial
+        try:
+            if self._buffer:
+                stripped = self._buffer.strip()
+                if stripped and not _should_drop(stripped, self._drop_keywords):
+                    try:
+                        self._stream.write(self._buffer)
+                    except Exception:
+                        pass
+                self._buffer = ""
+        finally:
+            try:
+                self._stream.flush()
+            except Exception:
+                pass
+
+    def isatty(self) -> bool:  # pragma: no cover - passthrough
+        try:
+            return bool(self._stream.isatty())
+        except Exception:
+            return False
+
+    def fileno(self) -> int:  # pragma: no cover - passthrough
+        try:
+            return int(self._stream.fileno())
+        except Exception:
+            return -1
+
+    @property
+    def encoding(self) -> str:  # pragma: no cover - passthrough
+        return getattr(self._stream, "encoding", "utf-8")
+
+
+def _install_stdio_drop_filter(drop_keywords: List[str]) -> None:
+    if not _env_flag("MINTCHAT_LOG_FILTER_STDIO", True):
+        return
+    try:
+        if not isinstance(sys.stdout, _FilteringTextStream):
+            sys.stdout = _FilteringTextStream(_ORIG_STDOUT, drop_keywords)  # type: ignore[assignment]
+    except Exception:
+        pass
+    try:
+        if not isinstance(sys.stderr, _FilteringTextStream):
+            sys.stderr = _FilteringTextStream(_ORIG_STDERR, drop_keywords)  # type: ignore[assignment]
+    except Exception:
+        pass
+
+
 def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _LegacyLoggerAdapter:
     """
     初始化/重置日志系统，可重复调用以应用新配置
@@ -474,7 +616,7 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
             _loguru_base = loguru_logger.bind(app="MintChat", **cfg.extra).patch(_inject_context)
 
         _loguru_base.add(
-            sys.stderr,
+            _ORIG_STDERR,
             level=cfg.normalized_level(),
             format=(
                 "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
@@ -487,7 +629,9 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
             enqueue=cfg.enqueue,
             backtrace=cfg.backtrace,
             diagnose=cfg.diagnose,
-            filter=lambda record, kws=drop_keywords: not _should_drop(record.get("message", ""), kws),
+            filter=lambda record, kws=drop_keywords: not _should_drop(
+                record.get("message", ""), kws
+            ),
         )
 
         _loguru_base.add(
@@ -503,7 +647,9 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
             enqueue=cfg.enqueue,
             backtrace=cfg.backtrace,
             diagnose=cfg.diagnose,
-            filter=lambda record, kws=drop_keywords: not _should_drop(record.get("message", ""), kws),
+            filter=lambda record, kws=drop_keywords: not _should_drop(
+                record.get("message", ""), kws
+            ),
         )
 
         if cfg.enable_json:
@@ -515,7 +661,9 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
                 encoding="utf-8",
                 enqueue=cfg.enqueue,
                 serialize=True,
-                filter=lambda record, kws=drop_keywords: not _should_drop(record.get("message", ""), kws),
+                filter=lambda record, kws=drop_keywords: not _should_drop(
+                    record.get("message", ""), kws
+                ),
             )
 
         logging.basicConfig(
@@ -528,6 +676,7 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
             _configure_warning_filters()
 
         set_library_log_levels({name: cfg.quiet_level for name in cfg.quiet_libs})
+        _install_stdio_drop_filter(drop_keywords)
         return _LegacyLoggerAdapter(_loguru_base.bind(logger_name="mintchat"))
 
     numeric_level = getattr(logging, cfg.normalized_level(), logging.INFO)
@@ -536,7 +685,7 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
         level=numeric_level,
         format="%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s %(context_str)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[logging.StreamHandler(sys.stderr)],
+        handlers=[logging.StreamHandler(_ORIG_STDERR)],
         force=True,
     )
 
@@ -553,6 +702,7 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
             datefmt="%Y-%m-%d %H:%M:%S",
         )
     )
+
     class _DropFilter(logging.Filter):
         def filter(self, record: logging.LogRecord) -> bool:
             return not _should_drop(getattr(record, "msg", ""), drop_keywords)
@@ -563,21 +713,34 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
     file_handler.addFilter(drop_filter)
     logging.getLogger().addHandler(file_handler)
     set_library_log_levels({name: cfg.quiet_level for name in cfg.quiet_libs})
+    _install_stdio_drop_filter(drop_keywords)
     return _LegacyLoggerAdapter(logging.getLogger("mintchat"))
 
 
 def apply_settings(settings: Any) -> None:
     """根据 Settings 实例动态刷新日志配置"""
     try:
+        # 默认使用内置 quiet/drop 规则；用户配置为空列表时不要覆盖为“关闭过滤”。如果需要完全关闭，
+        # 请用环境变量（例如：MINTCHAT_LOG_FILTER_STDIO=0）或显式提高 log_level。
+        quiet_libs = getattr(settings, "log_quiet_libs", None)
+        if not isinstance(quiet_libs, list) or not quiet_libs:
+            quiet_libs = DEFAULT_QUIET_LIBS
+
+        user_drop_keywords = getattr(settings, "log_drop_keywords", None)
+        if isinstance(user_drop_keywords, list) and user_drop_keywords:
+            drop_keywords = list(DEFAULT_DROP_KEYWORDS) + list(user_drop_keywords)
+        else:
+            drop_keywords = DEFAULT_DROP_KEYWORDS
+
         setup_logger(
             level=getattr(settings, "log_level", DEFAULT_LEVEL),
             log_dir=Path(getattr(settings, "log_dir", DEFAULT_LOG_DIR)),
             rotation=getattr(settings, "log_rotation", DEFAULT_ROTATION),
             retention=getattr(settings, "log_retention", DEFAULT_RETENTION),
             enable_json=getattr(settings, "log_json", True),
-            quiet_libs=getattr(settings, "log_quiet_libs", DEFAULT_QUIET_LIBS),
+            quiet_libs=quiet_libs,
             quiet_level=getattr(settings, "log_quiet_level", DEFAULT_QUIET_LEVEL),
-            drop_keywords=getattr(settings, "log_drop_keywords", DEFAULT_DROP_KEYWORDS),
+            drop_keywords=drop_keywords,
         )
     except Exception as exc:
         logging.warning(f"应用日志配置失败，使用默认日志: {exc}")
@@ -588,9 +751,7 @@ def set_log_level(level: str) -> None:
     setup_logger(level=level)
 
 
-def set_library_log_levels(
-    level_map: Dict[str, str], default_level: Optional[str] = None
-) -> None:
+def set_library_log_levels(level_map: Dict[str, str], default_level: Optional[str] = None) -> None:
     """
     批量设置第三方库日志级别，减少噪声
 

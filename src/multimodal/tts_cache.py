@@ -240,14 +240,14 @@ class PersistentTTSAudioCache:
 
             try:
                 # 先写入临时文件，然后原子性重命名，避免写入过程中文件损坏
-                temp_file = file_path.with_suffix('.tmp')
+                temp_file = file_path.with_suffix(".tmp")
                 temp_file.write_bytes(payload)
                 temp_file.replace(file_path)
             except (OSError, IOError) as exc:
                 logger.warning("写入 TTS 磁盘缓存失败: %s", exc)
                 # 清理可能残留的临时文件
                 try:
-                    temp_file = file_path.with_suffix('.tmp')
+                    temp_file = file_path.with_suffix(".tmp")
                     if temp_file.exists():
                         temp_file.unlink(missing_ok=True)
                 except Exception:
@@ -306,19 +306,14 @@ class PersistentTTSAudioCache:
         if len(self._entries) > self.max_entries:
             self._cull(len(self._entries) - self.max_entries + 1)
 
-        if (
-            self.max_disk_usage_bytes is not None
-            and self._disk_usage > self.max_disk_usage_bytes
-        ):
+        if self.max_disk_usage_bytes is not None and self._disk_usage > self.max_disk_usage_bytes:
             excess_bytes = self._disk_usage - self.max_disk_usage_bytes
             self._cull_bytes(excess_bytes)
 
     def _cull(self, remove_count: int) -> None:
         if remove_count <= 0:
             return
-        sorted_entries = sorted(
-            self._entries.values(), key=lambda item: item.timestamp
-        )
+        sorted_entries = sorted(self._entries.values(), key=lambda item: item.timestamp)
         for entry in sorted_entries[:remove_count]:
             file_path = self.audio_dir / entry.filename
             self._remove_entry(file_path, entry)
@@ -329,9 +324,7 @@ class PersistentTTSAudioCache:
     def _cull_bytes(self, excess_bytes: int) -> None:
         if excess_bytes <= 0:
             return
-        sorted_entries = sorted(
-            self._entries.values(), key=lambda item: item.timestamp
-        )
+        sorted_entries = sorted(self._entries.values(), key=lambda item: item.timestamp)
         removed = 0
         for entry in sorted_entries:
             if removed >= excess_bytes:
@@ -363,4 +356,3 @@ class PersistentTTSAudioCache:
 
 
 __all__ = ["PersistentTTSAudioCache", "CacheEntry"]
-

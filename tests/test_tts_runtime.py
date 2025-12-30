@@ -35,4 +35,3 @@ def test_run_in_tts_runtime_is_safe_when_called_inside_runtime_thread() -> None:
         assert runtime.run(_inner(), timeout=2.0) == "mintchat-tts"
     finally:
         shutdown_tts_runtime(timeout_s=1.0)
-

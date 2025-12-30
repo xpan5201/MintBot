@@ -14,7 +14,10 @@ def test_style_learner_persist_path_is_user_isolated(tmp_path, monkeypatch):
     assert Path(global_learner.persist_file) == tmp_path / "memory" / "style_profile.json"
 
     user_learner = StyleLearner(user_id=123)
-    assert Path(user_learner.persist_file) == tmp_path / "users" / "123" / "memory" / "style_profile.json"
+    assert (
+        Path(user_learner.persist_file)
+        == tmp_path / "users" / "123" / "memory" / "style_profile.json"
+    )
 
 
 def test_style_learner_skips_noisy_messages(tmp_path, monkeypatch):
@@ -22,7 +25,9 @@ def test_style_learner_skips_noisy_messages(tmp_path, monkeypatch):
     learner = StyleLearner(persist_file=str(tmp_path / "style_profile.json"))
 
     learner.learn_from_message("```python\nprint('hello')\n```")
-    learner.learn_from_message("2025-12-23 13:06:33.332 | WARNING  | root | callHandlers:1737 | test\nmore\nlines\nhere")
+    learner.learn_from_message(
+        "2025-12-23 13:06:33.332 | WARNING  | root | callHandlers:1737 | test\nmore\nlines\nhere"
+    )
     assert learner.total_interactions == 0
 
     learner.learn_from_message("你好呀")
@@ -93,4 +98,3 @@ def test_style_learner_formality_classification(tmp_path, monkeypatch, message, 
     learner = StyleLearner(persist_file=str(tmp_path / "style_profile.json"))
     learner.learn_from_message(message)
     assert learner.preferred_formality == expected
-

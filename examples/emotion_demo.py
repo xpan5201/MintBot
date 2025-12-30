@@ -128,10 +128,7 @@ def test_emotion_conversation():
 
             # 显示情感变化
             emotion = agent.emotion_engine.current_emotion
-            print(
-                f"[情感变化] {emotion.emotion_type.value} "
-                f"(强度: {emotion.intensity:.2f})"
-            )
+            print(f"[情感变化] {emotion.emotion_type.value} " f"(强度: {emotion.intensity:.2f})")
 
         # 显示场景结束后的情感状态
         print_emotion_state(agent)

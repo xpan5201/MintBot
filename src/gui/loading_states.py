@@ -12,7 +12,8 @@ from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QPainterPath
 
 from .material_design_light import MD3_LIGHT_COLORS, MD3_DURATION
 from .material_design_enhanced import (
-    MD3_ENHANCED_DURATION, MD3_ENHANCED_EASING,
+    MD3_ENHANCED_DURATION,
+    MD3_ENHANCED_EASING,
 )
 
 
@@ -54,8 +55,8 @@ class SkeletonLoader(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # 基础颜色
-        base_color = QColor(MD3_LIGHT_COLORS['surface_container'])
-        highlight_color = QColor(MD3_LIGHT_COLORS['surface_container_high'])
+        base_color = QColor(MD3_LIGHT_COLORS["surface_container"])
+        highlight_color = QColor(MD3_LIGHT_COLORS["surface_container_high"])
 
         # 绘制背景
         painter.setBrush(base_color)
@@ -75,7 +76,7 @@ class SkeletonLoader(QWidget):
             self._shimmer_position * self.width() - 100,
             0,
             self._shimmer_position * self.width() + 100,
-            0
+            0,
         )
         gradient.setColorAt(0.0, base_color)
         gradient.setColorAt(0.5, highlight_color)
@@ -99,7 +100,7 @@ class PulsingDot(QWidget):
         self.setFixedSize(size, size)
 
         self.dot_size = size
-        self.dot_color = color or MD3_LIGHT_COLORS['primary']
+        self.dot_color = color or MD3_LIGHT_COLORS["primary"]
 
         # 动画参数
         self._opacity = 1.0
@@ -126,7 +127,7 @@ class PulsingDot(QWidget):
 
     def stop_animation(self):
         """停止动画"""
-        if hasattr(self, 'pulse_animation'):
+        if hasattr(self, "pulse_animation"):
             self.pulse_animation.stop()
 
     def paintEvent(self, event):
@@ -213,11 +214,16 @@ class CircularProgress(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
 
         # 绘制背景圆
-        painter.setBrush(QColor(MD3_LIGHT_COLORS['surface_container']))
-        painter.drawEllipse(-self.progress_size // 2, -self.progress_size // 2, self.progress_size, self.progress_size)
+        painter.setBrush(QColor(MD3_LIGHT_COLORS["surface_container"]))
+        painter.drawEllipse(
+            -self.progress_size // 2,
+            -self.progress_size // 2,
+            self.progress_size,
+            self.progress_size,
+        )
 
         # 绘制进度弧
-        painter.setBrush(QColor(MD3_LIGHT_COLORS['primary']))
+        painter.setBrush(QColor(MD3_LIGHT_COLORS["primary"]))
         path = QPainterPath()
         path.moveTo(0, 0)
         path.arcTo(
@@ -226,14 +232,14 @@ class CircularProgress(QWidget):
             self.progress_size,
             self.progress_size,
             90,  # 起始角度
-            270  # 扫描角度（3/4 圆）
+            270,  # 扫描角度（3/4 圆）
         )
         path.closeSubpath()
-        painter.fillPath(path, QColor(MD3_LIGHT_COLORS['primary']))
+        painter.fillPath(path, QColor(MD3_LIGHT_COLORS["primary"]))
 
         # 绘制中心白色圆
         inner_size = self.progress_size - 6
-        painter.setBrush(QColor(MD3_LIGHT_COLORS['surface']))
+        painter.setBrush(QColor(MD3_LIGHT_COLORS["surface"]))
         painter.drawEllipse(-inner_size // 2, -inner_size // 2, inner_size, inner_size)
 
     def stop(self):
@@ -244,7 +250,13 @@ class CircularProgress(QWidget):
 class EmptyState(QWidget):
     """空状态组件 - 用于无消息时显示"""
 
-    def __init__(self, icon: str = "chat", title: str = "开始对话", subtitle: str = "发送消息开始与 AI 助手对话", parent=None):
+    def __init__(
+        self,
+        icon: str = "chat",
+        title: str = "开始对话",
+        subtitle: str = "发送消息开始与 AI 助手对话",
+        parent=None,
+    ):
         super().__init__(parent)
 
         self.icon_name = icon
@@ -262,6 +274,7 @@ class EmptyState(QWidget):
 
         # 图标（使用 Material Icons）
         from .material_icons import MaterialIcon
+
         icon = MaterialIcon(self.icon_name, 64)
         icon.setStyleSheet(f"color: {MD3_LIGHT_COLORS['on_surface_variant']};")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -269,26 +282,30 @@ class EmptyState(QWidget):
 
         # 标题
         title = QLabel(self.title_text)
-        title.setStyleSheet(f"""
+        title.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface']};
                 font-size: 20px;
                 font-weight: 500;
                 background: transparent;
             }}
-        """)
+        """
+        )
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
         # 副标题
         subtitle = QLabel(self.subtitle_text)
-        subtitle.setStyleSheet(f"""
+        subtitle.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
                 font-size: 14px;
                 background: transparent;
             }}
-        """)
+        """
+        )
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)

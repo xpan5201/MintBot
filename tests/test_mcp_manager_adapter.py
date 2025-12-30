@@ -51,4 +51,3 @@ def test_mcp_adapt_tools_binds_tool_name_per_function(monkeypatch):
     ]
 
     manager.close()
-

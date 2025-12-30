@@ -51,12 +51,24 @@ v2.19.0 优化内容：
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit, QGraphicsOpacityEffect,
-    QGraphicsDropShadowEffect, QSizePolicy
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPlainTextEdit,
+    QGraphicsOpacityEffect,
+    QGraphicsDropShadowEffect,
+    QSizePolicy,
 )
 from PyQt6.QtCore import (
-    Qt, QPropertyAnimation, QEasingCurve, QTimer,
-    QParallelAnimationGroup, QPoint, pyqtProperty, QSize
+    Qt,
+    QPropertyAnimation,
+    QEasingCurve,
+    QTimer,
+    QParallelAnimationGroup,
+    QPoint,
+    pyqtProperty,
+    QSize,
 )
 from PyQt6.QtGui import (
     QColor,
@@ -76,9 +88,12 @@ import time
 import os
 
 from .material_design_enhanced import (
-    MD3_ENHANCED_COLORS, MD3_ENHANCED_SPACING,
-    MD3_ENHANCED_RADIUS, MD3_ENHANCED_DURATION, MD3_ENHANCED_EASING,
-    get_typography_css
+    MD3_ENHANCED_COLORS,
+    MD3_ENHANCED_SPACING,
+    MD3_ENHANCED_RADIUS,
+    MD3_ENHANCED_DURATION,
+    MD3_ENHANCED_EASING,
+    get_typography_css,
 )
 from .theme_manager import is_anime_theme
 
@@ -334,7 +349,9 @@ def _create_avatar_label(avatar_text: str, size: int, is_user: bool) -> QLabel:
 class LightMessageBubble(QWidget):
     """浅色主题消息气泡 - v2.22.0 增强版（支持自定义头像）"""
 
-    def __init__(self, message: str, is_user: bool = True, parent=None, *, enable_shadow: bool = True):
+    def __init__(
+        self, message: str, is_user: bool = True, parent=None, *, enable_shadow: bool = True
+    ):
         super().__init__(parent)
         self.message = message
         self.is_user = is_user
@@ -361,6 +378,7 @@ class LightMessageBubble(QWidget):
 
         # v2.22.0 获取自定义头像
         from src.auth.user_session import user_session
+
         if self.is_user:
             avatar_text = user_session.get_user_avatar() if user_session.is_logged_in() else "👤"
         else:
@@ -391,13 +409,11 @@ class LightMessageBubble(QWidget):
         # 设置尺寸策略：优先使用内容宽度
         self.message_label.setSizePolicy(
             QSizePolicy.Policy.Preferred,  # 水平方向优先使用内容宽度
-            QSizePolicy.Policy.Minimum     # 垂直方向最小化
+            QSizePolicy.Policy.Minimum,  # 垂直方向最小化
         )
 
         # 允许文本选择
-        self.message_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self.message_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         # v2.48.5 优化：气泡内文本统一左对齐，气泡本身通过布局控制位置
         # 这样可以避免文本对齐不一致的问题
@@ -563,6 +579,7 @@ class LightMessageBubble(QWidget):
         self._scale = value
         # v2.48.5: 使用 QTransform 实现缩放（替代不支持的 CSS transform）
         from PyQt6.QtGui import QTransform
+
         transform = QTransform()
         transform.scale(value, value)
         # 注意：QWidget 不直接支持 setTransform，这里仅更新内部状态
@@ -572,11 +589,11 @@ class LightMessageBubble(QWidget):
     def cleanup(self):
         """清理资源 - v2.19.2 新增：停止动画，释放资源"""
         # 停止所有动画
-        if hasattr(self, 'animation_group') and self.animation_group:
+        if hasattr(self, "animation_group") and self.animation_group:
             self.animation_group.stop()
-        if hasattr(self, 'fade_in') and self.fade_in:
+        if hasattr(self, "fade_in") and self.fade_in:
             self.fade_in.stop()
-        if hasattr(self, 'slide_in') and self.slide_in:
+        if hasattr(self, "slide_in") and self.slide_in:
             self.slide_in.stop()
 
         # 移除图形效果
@@ -629,6 +646,7 @@ class LightStreamingMessageBubble(QWidget):
 
         # v2.22.0 添加AI头像（流式消息始终是AI消息）
         from src.auth.user_session import user_session
+
         ai_avatar = user_session.get_ai_avatar() if user_session.is_logged_in() else "🐱"
 
         avatar_label = _create_avatar_label(ai_avatar, 40, False)
@@ -647,16 +665,18 @@ class LightStreamingMessageBubble(QWidget):
         # v2.21.4 优化：设置尺寸策略，优先使用内容宽度
         self.bubble_container.setSizePolicy(
             QSizePolicy.Policy.Preferred,  # 水平方向优先使用内容宽度
-            QSizePolicy.Policy.Minimum     # 垂直方向最小化
+            QSizePolicy.Policy.Minimum,  # 垂直方向最小化
         )
 
-        self.bubble_container.setStyleSheet(f"""
+        self.bubble_container.setStyleSheet(
+            f"""
             QWidget {{
                 background: {MD3_ENHANCED_COLORS['surface_container_high']};
                 border-radius: 20px;
                 border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
             }}
-        """)
+        """
+        )
 
         # v2.49.0 性能优化：流式过程中频繁更新文本/高度，阴影会显著拖慢帧率；
         # 因此默认延后到 finish() 再一次性加阴影（保持视觉一致同时提升流式 FPS）。
@@ -676,7 +696,9 @@ class LightStreamingMessageBubble(QWidget):
         except Exception:
             pass
         try:
-            self.message_text.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+            self.message_text.setSizePolicy(
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+            )
         except Exception:
             pass
         # 修复：确保按控件宽度自动换行，否则会出现文本被裁切、气泡无法随内容增高的问题
@@ -724,7 +746,8 @@ class LightStreamingMessageBubble(QWidget):
         self.message_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.message_text.setFrameStyle(0)  # 移除边框
         # QPlainTextEdit 使用透明背景，让容器的背景显示出来
-        self.message_text.setStyleSheet(f"""
+        self.message_text.setStyleSheet(
+            f"""
             QPlainTextEdit {{
                 background: transparent;
                 color: {MD3_ENHANCED_COLORS['on_surface']};
@@ -733,11 +756,12 @@ class LightStreamingMessageBubble(QWidget):
                 {get_typography_css('body_large')}
                 line-height: 1.5;
             }}
-        """)
+        """
+        )
 
         # v2.48.8 修复：设置占位符文本，确保文档高度正常
         # 使用零宽空格，不可见但能撑起高度
-        self.message_text.setPlainText("\u200B")
+        self.message_text.setPlainText("\u200b")
 
         # v2.49.0 性能优化：用 documentSizeChanged 事件驱动高度更新（替代频繁动画/轮询）
         self._setup_document_size_tracking()
@@ -752,13 +776,15 @@ class LightStreamingMessageBubble(QWidget):
         # 时间戳
         time_str = datetime.now().strftime("%H:%M")
         self.time_label = QLabel(time_str)
-        self.time_label.setStyleSheet(f"""
+        self.time_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface_variant']};
                 {get_typography_css('label_small')}
                 background: transparent;
             }}
-        """)
+        """
+        )
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         bubble_layout.addWidget(self.time_label)
@@ -969,7 +995,7 @@ class LightStreamingMessageBubble(QWidget):
             text: 要追加的文本内容
         """
         # v2.48.8 修复：首次追加时清除占位符
-        if not hasattr(self, '_first_append_done'):
+        if not hasattr(self, "_first_append_done"):
             self._first_append_done = True
             self.message_text.clear()
 
@@ -987,10 +1013,7 @@ class LightStreamingMessageBubble(QWidget):
             # 双保险：若 wrap 配置被重置，重新应用
             try:
                 if hasattr(self.message_text, "lineWrapMode"):
-                    if (
-                        self.message_text.lineWrapMode()
-                        != QPlainTextEdit.LineWrapMode.WidgetWidth
-                    ):
+                    if self.message_text.lineWrapMode() != QPlainTextEdit.LineWrapMode.WidgetWidth:
                         self.message_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
             except Exception:
                 pass
@@ -1115,7 +1138,9 @@ class LightStreamingMessageBubble(QWidget):
 
         now = time.monotonic()
         interval_ms = STREAMING_HEIGHT_UPDATE_INTERVAL_MS
-        elapsed_ms = (now - self._last_height_update_ts) * 1000.0 if self._last_height_update_ts else 9999.0
+        elapsed_ms = (
+            (now - self._last_height_update_ts) * 1000.0 if self._last_height_update_ts else 9999.0
+        )
         wait_ms = max(0, int(interval_ms - elapsed_ms))
         timer.start(wait_ms)
 
@@ -1238,7 +1263,8 @@ class LightTypingIndicator(QWidget):
         # 气泡容器
         bubble = QWidget()
         bubble.setFixedSize(70, 44)
-        bubble.setStyleSheet(f"""
+        bubble.setStyleSheet(
+            f"""
             QWidget {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:0, y2:1,
@@ -1248,7 +1274,8 @@ class LightTypingIndicator(QWidget):
                 border-radius: 18px;
                 border: 2px solid {MD3_ENHANCED_COLORS['outline_variant']};
             }}
-        """)
+        """
+        )
 
         # 添加柔和阴影
         shadow = QGraphicsDropShadowEffect(bubble)
@@ -1266,13 +1293,15 @@ class LightTypingIndicator(QWidget):
         self.dots = []
         for i in range(3):
             dot = QLabel("●")
-            dot.setStyleSheet(f"""
+            dot.setStyleSheet(
+                f"""
                 QLabel {{
                     color: {MD3_ENHANCED_COLORS['on_surface_variant']};
                     font-size: 14px;
                     background: transparent;
                 }}
-            """)
+            """
+            )
             dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
             dots_layout.addWidget(dot)
             self.dots.append(dot)
@@ -1300,7 +1329,7 @@ class LightTypingIndicator(QWidget):
             animation = QPropertyAnimation(dot.graphicsEffect(), b"opacity")
             animation.setDuration(MD3_ENHANCED_DURATION["slow"])  # 500ms 一个周期
             animation.setStartValue(0.2)  # 最小透明度 20%
-            animation.setEndValue(1.0)    # 最大透明度 100%
+            animation.setEndValue(1.0)  # 最大透明度 100%
             animation.setEasingCurve(QEasingCurve.Type.InOutSine)  # 正弦缓动，流畅自然
             animation.setLoopCount(-1)  # 无限循环
 
@@ -1383,6 +1412,7 @@ class LightImageMessageBubble(QWidget):
 
         # v2.22.0 获取自定义头像
         from src.auth.user_session import user_session
+
         if self.is_user:
             avatar_text = user_session.get_user_avatar() if user_session.is_logged_in() else "👤"
         else:

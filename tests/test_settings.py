@@ -96,11 +96,11 @@ class TestLLMConfig:
         """测试 LLM 配置字段"""
         settings = Settings.from_yaml(str(sample_config_yaml))
 
-        assert hasattr(settings.llm, 'key')
-        assert hasattr(settings.llm, 'api')
-        assert hasattr(settings.llm, 'model')
-        assert hasattr(settings.llm, 'temperature')
-        assert hasattr(settings.llm, 'max_tokens')
+        assert hasattr(settings.llm, "key")
+        assert hasattr(settings.llm, "api")
+        assert hasattr(settings.llm, "model")
+        assert hasattr(settings.llm, "temperature")
+        assert hasattr(settings.llm, "max_tokens")
 
     def test_llm_config_types(self, sample_config_yaml):
         """测试 LLM 配置类型"""
@@ -121,9 +121,9 @@ class TestAgentConfig:
         """测试 Agent 配置字段"""
         settings = Settings.from_yaml(str(sample_config_yaml))
 
-        assert hasattr(settings.agent, 'enable_streaming')
-        assert hasattr(settings.agent, 'max_history_length')
-        assert hasattr(settings.agent, 'enable_tools')
+        assert hasattr(settings.agent, "enable_streaming")
+        assert hasattr(settings.agent, "max_history_length")
+        assert hasattr(settings.agent, "enable_tools")
 
     def test_agent_config_types(self, sample_config_yaml):
         """测试 Agent 配置类型"""

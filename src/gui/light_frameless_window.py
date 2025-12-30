@@ -7,7 +7,12 @@
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGraphicsDropShadowEffect
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QGraphicsDropShadowEffect,
 )
 from PyQt6.QtCore import (
     Qt,
@@ -260,13 +265,15 @@ class LightTitleBar(QWidget):
         layout.addWidget(right_spacer)
 
         # 设置背景 - 使用淡薄荷绿
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             LightTitleBar {{
                 background: {MD3_LIGHT_COLORS['primary_container']};
                 border-top-left-radius: {MD3_RADIUS['large']};
                 border-top-right-radius: {MD3_RADIUS['large']};
             }}
-        """)
+        """
+        )
 
 
 class LightFramelessWindow(QWidget):
@@ -276,10 +283,7 @@ class LightFramelessWindow(QWidget):
         super().__init__(parent)
 
         # 设置窗口标志
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowSystemMenuHint
-        )
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowSystemMenuHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         # 窗口拖动相关
@@ -323,11 +327,13 @@ class LightFramelessWindow(QWidget):
 
         # 内容区域
         self.content_widget = QWidget()
-        self.content_widget.setStyleSheet("""
+        self.content_widget.setStyleSheet(
+            """
             QWidget {{
                 background: transparent;
             }}
-        """)
+        """
+        )
         container_layout.addWidget(self.content_widget)
 
         main_layout.addWidget(self.container)
@@ -401,7 +407,9 @@ class LightFramelessWindow(QWidget):
             # 检查是否在标题栏区域
             if self.title_bar.geometry().contains(event.pos()):
                 self.dragging = True
-                self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                self.drag_position = (
+                    event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                )
             else:
                 # 检查是否在边缘（用于调整大小）
                 direction = self.get_resize_direction(event.pos())

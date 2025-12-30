@@ -29,26 +29,26 @@ class ChatWindowOptimizer:
         """初始化聊天窗口优化器"""
         self.scroll_area = scroll_area
         self._auto_scroll_predicate = auto_scroll_predicate
-        
+
         # 批量渲染器
         self.batch_renderer = BatchRenderer(interval_ms=16, parent=scroll_area)
-        
+
         # 内存管理器
         self.memory_manager = None
         if enable_memory_management:
             self.memory_manager = MemoryManager(max_messages=max_messages)
-        
+
         # 性能监控器
         self.performance_monitor = PerformanceMonitor()
-        
+
         if enable_gpu:
             GPUAccelerator.enable_for_scroll_area(scroll_area)
             logger.info("已为聊天窗口启用GPU加速")
-        
+
         # 滚动优化
         self.scroll_pending = False
         self._force_scroll_next = False
-        
+
         # 性能统计
         self.stats = {
             "total_messages": 0,
@@ -76,7 +76,7 @@ class ChatWindowOptimizer:
             self.stats["batched_scrolls"] += 1
         finally:
             self.scroll_pending = False
-        
+
     def add_message_optimized(
         self,
         message: str,
@@ -113,7 +113,7 @@ class ChatWindowOptimizer:
         self.schedule_scroll()
 
         return bubble
-    
+
     def schedule_scroll(self, force: bool = False) -> None:
         """调度滚动（批量优化）
 
@@ -140,27 +140,27 @@ class ChatWindowOptimizer:
 
         # 批量滚动（16ms 延迟，60fps）
         self.batch_renderer.schedule_update(self._flush_scheduled_scroll)
-    
+
     def get_stats(self) -> dict:
         """获取性能统计"""
         perf_stats = self.performance_monitor.get_stats()
-        
+
         return {
             **self.stats,
             "fps": perf_stats["fps"],
             "avg_frame_time_ms": perf_stats["avg_frame_time_ms"],
             "scroll_batch_ratio": (
                 f"{self.stats['batched_scrolls'] / self.stats['scroll_calls'] * 100:.1f}%"
-                if self.stats['scroll_calls'] > 0
+                if self.stats["scroll_calls"] > 0
                 else "0%"
             ),
         }
-    
+
     def optimize_existing_window(self, window):
         """优化现有聊天窗口"""
         logger.info("开始优化现有聊天窗口")
 
-        if hasattr(window, 'scroll_area'):
+        if hasattr(window, "scroll_area"):
             GPUAccelerator.enable_for_scroll_area(window.scroll_area)
             logger.info("已启用GPU加速")
 

@@ -6,11 +6,24 @@
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QTableWidget, QTableWidgetItem, QComboBox, QLineEdit,
-    QTextEdit, QDialog, QDialogButtonBox, QHeaderView,
-    QMessageBox, QFileDialog, QFormLayout,
-    QScrollArea, QProgressDialog
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QTableWidget,
+    QTableWidgetItem,
+    QComboBox,
+    QLineEdit,
+    QTextEdit,
+    QDialog,
+    QDialogButtonBox,
+    QHeaderView,
+    QMessageBox,
+    QFileDialog,
+    QFormLayout,
+    QScrollArea,
+    QProgressDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QFont
@@ -68,12 +81,14 @@ class LoreDetailDialog(QDialog):
         # 滚动区域
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("""
+        scroll.setStyleSheet(
+            """
             QScrollArea {{
                 border: none;
                 background: transparent;
             }}
-        """)
+        """
+        )
 
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
@@ -99,14 +114,16 @@ class LoreDetailDialog(QDialog):
 
             value = QLabel(str(value_text))
             value.setWordWrap(True)
-            value.setStyleSheet(f"""
+            value.setStyleSheet(
+                f"""
                 QLabel {{
                     background: {MD3_LIGHT_COLORS['surface_container']};
                     border-radius: 8px;
                     padding: 8px;
                     color: {MD3_LIGHT_COLORS['on_surface']};
                 }}
-            """)
+            """
+            )
 
             item_layout.addWidget(label)
             item_layout.addWidget(value)
@@ -122,7 +139,8 @@ class LoreDetailDialog(QDialog):
         content_text.setPlainText(self.lore.get("content", ""))
         content_text.setReadOnly(True)
         content_text.setMinimumHeight(200)
-        content_text.setStyleSheet(f"""
+        content_text.setStyleSheet(
+            f"""
             QTextEdit {{
                 background: {MD3_LIGHT_COLORS['surface_container']};
                 border-radius: 8px;
@@ -131,7 +149,8 @@ class LoreDetailDialog(QDialog):
                 font-size: 13px;
                 line-height: 1.6;
             }}
-        """)
+        """
+        )
         content_layout.addWidget(content_text)
 
         scroll.setWidget(content_widget)
@@ -140,7 +159,8 @@ class LoreDetailDialog(QDialog):
         # 按钮
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         button_box.accepted.connect(self.accept)
-        button_box.setStyleSheet(f"""
+        button_box.setStyleSheet(
+            f"""
             QPushButton {{
                 background: {MD3_LIGHT_COLORS['primary']};
                 color: {MD3_LIGHT_COLORS['on_primary']};
@@ -152,7 +172,8 @@ class LoreDetailDialog(QDialog):
             QPushButton:hover {{
                 background: {MD3_LIGHT_COLORS['primary_light']};
             }}
-        """)
+        """
+        )
         layout.addWidget(button_box)
 
 
@@ -195,13 +216,15 @@ class LoreEditDialog(QDialog):
 
         # 类别选择
         self.category_combo = QComboBox()
-        self.category_combo.addItems([
-            "general (通用)",
-            "character (角色)",
-            "location (地点)",
-            "item (物品)",
-            "event (事件)",
-        ])
+        self.category_combo.addItems(
+            [
+                "general (通用)",
+                "character (角色)",
+                "location (地点)",
+                "item (物品)",
+                "event (事件)",
+            ]
+        )
         if not self.is_add_mode:
             category = self.lore.get("category", "general")
             index = ["general", "character", "location", "item", "event"].index(category)
@@ -221,14 +244,16 @@ class LoreEditDialog(QDialog):
         # 来源（仅显示，不可编辑）
         if not self.is_add_mode:
             source_label = QLabel(self.lore.get("source", "manual"))
-            source_label.setStyleSheet(f"""
+            source_label.setStyleSheet(
+                f"""
                 QLabel {{
                     background: {MD3_LIGHT_COLORS['surface_container']};
                     border-radius: 8px;
                     padding: 8px;
                     color: {MD3_LIGHT_COLORS['on_surface_variant']};
                 }}
-            """)
+            """
+            )
             form_layout.addRow("📍 来源:", source_label)
 
         layout.addLayout(form_layout)
@@ -243,7 +268,8 @@ class LoreEditDialog(QDialog):
         if not self.is_add_mode:
             self.content_input.setPlainText(self.lore.get("content", ""))
         self.content_input.setMinimumHeight(250)
-        self.content_input.setStyleSheet(f"""
+        self.content_input.setStyleSheet(
+            f"""
             QTextEdit {{
                 background: {MD3_LIGHT_COLORS['surface_container']};
                 border: 2px solid {MD3_LIGHT_COLORS['outline']};
@@ -256,7 +282,8 @@ class LoreEditDialog(QDialog):
             QTextEdit:focus {{
                 border-color: {MD3_LIGHT_COLORS['primary']};
             }}
-        """)
+        """
+        )
         layout.addWidget(self.content_input)
 
         # 按钮
@@ -265,7 +292,8 @@ class LoreEditDialog(QDialog):
 
         cancel_btn = QPushButton("取消")
         cancel_btn.clicked.connect(self.reject)
-        cancel_btn.setStyleSheet(f"""
+        cancel_btn.setStyleSheet(
+            f"""
             QPushButton {{
                 background: {MD3_LIGHT_COLORS['surface_container']};
                 color: {MD3_LIGHT_COLORS['on_surface']};
@@ -278,12 +306,14 @@ class LoreEditDialog(QDialog):
             QPushButton:hover {{
                 background: {MD3_LIGHT_COLORS['surface_container_high']};
             }}
-        """)
+        """
+        )
         button_layout.addWidget(cancel_btn)
 
         save_btn = QPushButton("保存")
         save_btn.clicked.connect(self.accept)
-        save_btn.setStyleSheet(f"""
+        save_btn.setStyleSheet(
+            f"""
             QPushButton {{
                 background: {MD3_LIGHT_COLORS['primary']};
                 color: {MD3_LIGHT_COLORS['on_primary']};
@@ -296,7 +326,8 @@ class LoreEditDialog(QDialog):
             QPushButton:hover {{
                 background: {MD3_LIGHT_COLORS['primary_light']};
             }}
-        """)
+        """
+        )
         button_layout.addWidget(save_btn)
 
         layout.addLayout(button_layout)
@@ -446,9 +477,7 @@ class LoreBookManagerWidget(QWidget):
         # 类别筛选
         filter_layout.addWidget(QLabel("类别:"))
         self.category_filter = QComboBox()
-        self.category_filter.addItems([
-            "全部", "character", "location", "item", "event", "general"
-        ])
+        self.category_filter.addItems(["全部", "character", "location", "item", "event", "general"])
         self.category_filter.currentTextChanged.connect(self._on_filter_changed)
         self._style_combobox(self.category_filter)
         filter_layout.addWidget(self.category_filter)
@@ -456,9 +485,7 @@ class LoreBookManagerWidget(QWidget):
         # 来源筛选
         filter_layout.addWidget(QLabel("来源:"))
         self.source_filter = QComboBox()
-        self.source_filter.addItems([
-            "全部", "manual", "conversation", "file", "mcp", "import"
-        ])
+        self.source_filter.addItems(["全部", "manual", "conversation", "file", "mcp", "import"])
         self.source_filter.currentTextChanged.connect(self._on_filter_changed)
         self._style_combobox(self.source_filter)
         filter_layout.addWidget(self.source_filter)
@@ -500,9 +527,9 @@ class LoreBookManagerWidget(QWidget):
         """创建知识列表表格"""
         table = QTableWidget()
         table.setColumnCount(7)
-        table.setHorizontalHeaderLabels([
-            "标题", "类别", "关键词", "来源", "创建时间", "更新次数", "操作"
-        ])
+        table.setHorizontalHeaderLabels(
+            ["标题", "类别", "关键词", "来源", "创建时间", "更新次数", "操作"]
+        )
 
         # 设置列宽
         header = table.horizontalHeader()
@@ -515,7 +542,8 @@ class LoreBookManagerWidget(QWidget):
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # 操作
 
         # 样式
-        table.setStyleSheet(f"""
+        table.setStyleSheet(
+            f"""
             QTableWidget {{
                 background: {MD3_LIGHT_COLORS['surface']};
                 border: 1px solid {MD3_LIGHT_COLORS['outline']};
@@ -536,7 +564,8 @@ class LoreBookManagerWidget(QWidget):
                 border: none;
                 font-weight: bold;
             }}
-        """)
+        """
+        )
 
         # 双击查看详情
         table.cellDoubleClicked.connect(self.show_lore_detail)
@@ -571,24 +600,21 @@ class LoreBookManagerWidget(QWidget):
         # 类别筛选
         category = self.category_filter.currentText()
         if category != "全部":
-            filtered_lores = [
-                lore for lore in filtered_lores
-                if lore.get("category") == category
-            ]
+            filtered_lores = [lore for lore in filtered_lores if lore.get("category") == category]
 
         # 来源筛选
         source = self.source_filter.currentText()
         if source != "全部":
             filtered_lores = [
-                lore for lore in filtered_lores
-                if lore.get("source", "manual").startswith(source)
+                lore for lore in filtered_lores if lore.get("source", "manual").startswith(source)
             ]
 
         # 搜索筛选
         search_text = self.search_input.text().lower()
         if search_text:
             filtered_lores = [
-                lore for lore in filtered_lores
+                lore
+                for lore in filtered_lores
                 if search_text in lore.get("title", "").lower()
                 or search_text in lore.get("content", "").lower()
                 or search_text in " ".join(lore.get("keywords", [])).lower()
@@ -656,7 +682,9 @@ class LoreBookManagerWidget(QWidget):
             edit_btn = QPushButton("✏️")
             edit_btn.setToolTip("编辑")
             edit_btn.setMaximumWidth(40)
-            edit_btn.clicked.connect(lambda checked, lore_item=lore: self._on_edit_clicked(lore_item))
+            edit_btn.clicked.connect(
+                lambda checked, lore_item=lore: self._on_edit_clicked(lore_item)
+            )
             action_layout.addWidget(edit_btn)
 
             self.lore_table.setCellWidget(row, 6, action_widget)
@@ -779,7 +807,7 @@ class LoreBookManagerWidget(QWidget):
             self,
             "确认删除",
             f"确定要删除选中的 {len(selected_rows)} 条知识吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
         if reply != QMessageBox.StandardButton.Yes:
@@ -814,7 +842,7 @@ class LoreBookManagerWidget(QWidget):
             self,
             "确认清空",
             "⚠️ 确定要清空所有知识吗？此操作不可恢复！",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
         if reply != QMessageBox.StandardButton.Yes:
@@ -828,12 +856,7 @@ class LoreBookManagerWidget(QWidget):
 
     def _on_import_clicked(self):
         """导入知识库"""
-        filepath, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择导入文件",
-            "",
-            "JSON Files (*.json)"
-        )
+        filepath, _ = QFileDialog.getOpenFileName(self, "选择导入文件", "", "JSON Files (*.json)")
 
         if not filepath:
             return
@@ -852,7 +875,7 @@ class LoreBookManagerWidget(QWidget):
             self,
             "选择导出文件",
             f"lore_book_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-            "JSON Files (*.json)"
+            "JSON Files (*.json)",
         )
 
         if not filepath:
@@ -877,7 +900,7 @@ class LoreBookManagerWidget(QWidget):
             self,
             "选择学习文件",
             "",
-            "Text Files (*.txt *.md);;PDF Files (*.pdf);;Word Files (*.docx);;All Files (*.*)"
+            "Text Files (*.txt *.md);;PDF Files (*.pdf);;Word Files (*.docx);;All Files (*.*)",
         )
 
         if not filepath:
@@ -945,27 +968,28 @@ class LoreBookManagerWidget(QWidget):
     def _style_button(self, button: QPushButton, style_type: str = "primary"):
         """设置按钮样式"""
         if style_type == "primary":
-            bg_color = MD3_LIGHT_COLORS['primary']
-            text_color = MD3_LIGHT_COLORS['on_primary']
-            hover_color = MD3_LIGHT_COLORS['primary_light']
+            bg_color = MD3_LIGHT_COLORS["primary"]
+            text_color = MD3_LIGHT_COLORS["on_primary"]
+            hover_color = MD3_LIGHT_COLORS["primary_light"]
         elif style_type == "secondary":
-            bg_color = MD3_LIGHT_COLORS['secondary']
-            text_color = MD3_LIGHT_COLORS['on_secondary']
-            hover_color = MD3_LIGHT_COLORS['secondary_light']
+            bg_color = MD3_LIGHT_COLORS["secondary"]
+            text_color = MD3_LIGHT_COLORS["on_secondary"]
+            hover_color = MD3_LIGHT_COLORS["secondary_light"]
         elif style_type == "tertiary":
-            bg_color = MD3_LIGHT_COLORS['tertiary']
-            text_color = MD3_LIGHT_COLORS['on_tertiary']
-            hover_color = MD3_LIGHT_COLORS['tertiary_light']
+            bg_color = MD3_LIGHT_COLORS["tertiary"]
+            text_color = MD3_LIGHT_COLORS["on_tertiary"]
+            hover_color = MD3_LIGHT_COLORS["tertiary_light"]
         elif style_type == "error":
-            bg_color = MD3_LIGHT_COLORS['error']
-            text_color = MD3_LIGHT_COLORS['on_error']
-            hover_color = MD3_LIGHT_COLORS['error_light']
+            bg_color = MD3_LIGHT_COLORS["error"]
+            text_color = MD3_LIGHT_COLORS["on_error"]
+            hover_color = MD3_LIGHT_COLORS["error_light"]
         else:
-            bg_color = MD3_LIGHT_COLORS['surface_container']
-            text_color = MD3_LIGHT_COLORS['on_surface']
-            hover_color = MD3_LIGHT_COLORS['surface_container_high']
+            bg_color = MD3_LIGHT_COLORS["surface_container"]
+            text_color = MD3_LIGHT_COLORS["on_surface"]
+            hover_color = MD3_LIGHT_COLORS["surface_container_high"]
 
-        button.setStyleSheet(f"""
+        button.setStyleSheet(
+            f"""
             QPushButton {{
                 background: {bg_color};
                 color: {text_color};
@@ -980,11 +1004,13 @@ class LoreBookManagerWidget(QWidget):
             QPushButton:pressed {{
                 background: {bg_color};
             }}
-        """)
+        """
+        )
 
     def _style_combobox(self, combobox: QComboBox):
         """设置下拉框样式"""
-        combobox.setStyleSheet(f"""
+        combobox.setStyleSheet(
+            f"""
             QComboBox {{
                 background: {MD3_LIGHT_COLORS['surface_container']};
                 border: 1px solid {MD3_LIGHT_COLORS['outline']};
@@ -998,11 +1024,13 @@ class LoreBookManagerWidget(QWidget):
             QComboBox::drop-down {{
                 border: none;
             }}
-        """)
+        """
+        )
 
     def _style_lineedit(self, lineedit: QLineEdit):
         """设置输入框样式"""
-        lineedit.setStyleSheet(f"""
+        lineedit.setStyleSheet(
+            f"""
             QLineEdit {{
                 background: {MD3_LIGHT_COLORS['surface_container']};
                 border: 1px solid {MD3_LIGHT_COLORS['outline']};
@@ -1013,4 +1041,5 @@ class LoreBookManagerWidget(QWidget):
             QLineEdit:focus {{
                 border-color: {MD3_LIGHT_COLORS['primary']};
             }}
-        """)
+        """
+        )

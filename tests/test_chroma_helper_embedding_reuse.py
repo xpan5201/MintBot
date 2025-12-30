@@ -45,4 +45,3 @@ def test_openai_embedding_function_is_cached_and_base_url_logic(monkeypatch):
 
     emb3 = chroma_helper._get_openai_embedding_function("model-x", "https://gw.example/v1", "key")
     assert emb3.kwargs["base_url"] == "https://gw.example/v1"
-

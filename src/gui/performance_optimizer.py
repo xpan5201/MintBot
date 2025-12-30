@@ -34,54 +34,56 @@ class VirtualScrollArea(QScrollArea):
 
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
         self.viewport().setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
-        
+
     def add_message(self, widget: QWidget, height: int):
         """添加消息到虚拟列表"""
         y_position = self._total_height
         self._total_height += height
 
-        self.messages.append({
-            "widget": widget,
-            "height": height,
-            "y_position": y_position,
-            "visible": False,
-        })
+        self.messages.append(
+            {
+                "widget": widget,
+                "height": height,
+                "y_position": y_position,
+                "visible": False,
+            }
+        )
 
         self.stats["total_messages"] += 1
 
         self._update_visible_messages()
-        
+
     def _on_scroll(self, value: int):
         """滚动事件处理"""
         self._update_visible_messages()
-        
+
     def _update_visible_messages(self):
         """更新可见消息列表"""
         start_time = time.perf_counter()
-        
+
         viewport_rect = self.viewport().rect()
         scroll_y = self.verticalScrollBar().value()
-        
+
         # 计算可见范围
         visible_top = scroll_y
         visible_bottom = scroll_y + viewport_rect.height()
-        
+
         # 找到可见消息
         new_visible_start = None
         new_visible_end = None
-        
+
         for i, msg in enumerate(self.messages):
             msg_top = msg["y_position"]
             msg_bottom = msg_top + msg["height"]
-            
+
             # 检查是否在可见范围内
             is_visible = msg_bottom >= visible_top and msg_top <= visible_bottom
-            
+
             if is_visible:
                 if new_visible_start is None:
                     new_visible_start = i
                 new_visible_end = i + 1
-                
+
                 # 显示消息
                 if not msg["visible"]:
                     msg["widget"].show()
@@ -92,20 +94,20 @@ class VirtualScrollArea(QScrollArea):
                     msg["widget"].hide()
                     msg["visible"] = False
                     self.stats["recycled_messages"] += 1
-        
+
         # 更新可见范围
         if new_visible_start is not None:
             self.visible_start = new_visible_start
             self.visible_end = new_visible_end
             self.stats["visible_messages"] = new_visible_end - new_visible_start
-        
+
         # 性能统计
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         self.stats["render_time_ms"] = elapsed_ms
-        
+
         if elapsed_ms > 16:  # 超过 60fps
             logger.warning("虚拟滚动渲染耗时: %.2fms（超过 16ms）", elapsed_ms)
-        
+
     def get_stats(self) -> Dict:
         """获取性能统计"""
         return self.stats.copy()
@@ -113,16 +115,16 @@ class VirtualScrollArea(QScrollArea):
 
 class MessagePool:
     """消息池 - 复用消息气泡组件
-    
+
     性能优化：
     - 避免频繁创建/销毁组件
     - 减少内存分配
     - 提升渲染性能
     """
-    
+
     def __init__(self, factory: Callable, pool_size: int = 20):
         """初始化消息池
-        
+
         Args:
             factory: 消息组件工厂函数
             pool_size: 池大小
@@ -131,17 +133,17 @@ class MessagePool:
         self.pool_size = pool_size
         self.pool: List[QWidget] = []
         self.active: List[QWidget] = []
-        
+
     def acquire(self) -> QWidget:
         """获取消息组件"""
         if self.pool:
             widget = self.pool.pop()
         else:
             widget = self.factory()
-        
+
         self.active.append(widget)
         return widget
-        
+
     def release(self, widget: QWidget):
         """释放消息组件"""
         if widget in self.active:

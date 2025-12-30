@@ -72,7 +72,9 @@ class BatchImageRecognitionThread(QThread):
                         logger.error("识别图片 %s 失败: %s", image_path, exc)
                         completed += 1
                         try:
-                            self.progress.emit(completed, total, {"image_path": image_path, "error": str(exc)})
+                            self.progress.emit(
+                                completed, total, {"image_path": image_path, "error": str(exc)}
+                            )
                         except Exception:
                             pass
 

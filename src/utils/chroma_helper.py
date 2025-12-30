@@ -20,6 +20,7 @@ from typing import Optional
 
 try:
     from langchain_chroma import Chroma
+
     _CHROMA_IMPORT_ERROR: Optional[BaseException] = None
     _CHROMA_IMPORT_ERROR_FALLBACK: Optional[BaseException] = None
 except Exception as exc:  # pragma: no cover - 环境依赖差异
@@ -41,6 +42,7 @@ except Exception as exc:  # pragma: no cover - 环境依赖差异
 
 try:
     from langchain_openai import OpenAIEmbeddings
+
     _OPENAI_EMBEDDINGS_IMPORT_ERROR: Optional[BaseException] = None
     _OPENAI_EMBEDDINGS_IMPORT_ERROR_FALLBACK: Optional[BaseException] = None
 except Exception as exc:  # pragma: no cover - 环境依赖差异
@@ -180,7 +182,9 @@ def create_chroma_vectorstore(
 
         # 确定嵌入模型参数
         model = str(embedding_model or settings.embedding_model or "").strip()
-        api_base = str(embedding_api_base or settings.embedding_api_base or settings.llm.api or "").strip()
+        api_base = str(
+            embedding_api_base or settings.embedding_api_base or settings.llm.api or ""
+        ).strip()
         key = str(api_key or settings.llm.key or "").strip()
 
         # 选择 embedding 方案
@@ -219,7 +223,9 @@ def create_chroma_vectorstore(
             client_settings=chroma_settings,
         )
 
-        embedding_type = "本地" if use_local_embedding and SENTENCE_TRANSFORMERS_AVAILABLE else "API"
+        embedding_type = (
+            "本地" if use_local_embedding and SENTENCE_TRANSFORMERS_AVAILABLE else "API"
+        )
         logger.info(
             "ChromaDB向量存储初始化成功: %s (路径: %s, 模型: %s, 类型: %s)",
             collection_name,

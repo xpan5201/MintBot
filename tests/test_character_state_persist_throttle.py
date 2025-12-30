@@ -28,4 +28,3 @@ def test_character_state_persist_throttle(tmp_path, monkeypatch) -> None:
 
     assert third != first
     json.loads(third)
-

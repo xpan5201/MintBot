@@ -53,3 +53,24 @@ def test_stream_tool_trace_scrubber_strips_route_tag_list_when_leaked() -> None:
     assert "local_search" not in output
     assert "map_guide" not in output
     assert "hello" in output
+
+
+def test_stream_tool_trace_scrubber_drops_incomplete_tool_payload_on_flush() -> None:
+    scrubber = StreamToolTraceScrubber()
+    chunks = ['{"tools":["calculator"']
+    output = "".join(scrubber.process(chunk) for chunk in chunks) + scrubber.flush()
+    assert output == ""
+
+
+def test_stream_tool_trace_scrubber_drops_partial_toolselectionresponse_on_flush() -> None:
+    scrubber = StreamToolTraceScrubber()
+    chunks = ["ToolSelec"]
+    output = "".join(scrubber.process(chunk) for chunk in chunks) + scrubber.flush()
+    assert output == ""
+
+
+def test_stream_tool_trace_scrubber_drops_partial_tool_result_prefix_on_flush() -> None:
+    scrubber = StreamToolTraceScrubber()
+    chunks = ["TOOL_RE"]
+    output = "".join(scrubber.process(chunk) for chunk in chunks) + scrubber.flush()
+    assert output == ""

@@ -330,10 +330,12 @@ class MemoryDeduplicator:
 
         # 记录合并信息
         merged_metadata["merged_from"] = merged_metadata.get("merged_from", [])
-        merged_metadata["merged_from"].append({
-            "content": other_memory.get("content", ""),
-            "timestamp": datetime.now().isoformat(),
-        })
+        merged_metadata["merged_from"].append(
+            {
+                "content": other_memory.get("content", ""),
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
 
         return {
             "content": base_memory.get("content", ""),
@@ -484,14 +486,10 @@ class CharacterConsistencyScorer:
     ):
         """初始化角色一致性评分器"""
         resolved_character_name = str(
-            character_name
-            or getattr(getattr(settings, "agent", object()), "char", "")
-            or ""
+            character_name or getattr(getattr(settings, "agent", object()), "char", "") or ""
         ).strip()
         resolved_user_name = str(
-            user_name
-            or getattr(getattr(settings, "agent", object()), "user", "")
-            or ""
+            user_name or getattr(getattr(settings, "agent", object()), "user", "") or ""
         ).strip()
 
         self.character_name = resolved_character_name
@@ -514,16 +512,26 @@ class CharacterConsistencyScorer:
         # 猫娘女仆角色关键词
         self.character_keywords = {
             # 高度相关 (1.0)
-            "主人": 0.9, "喵": 1.0, "nya": 1.0,
-            "服侍": 1.0, "照顾": 0.9, "陪伴": 0.85,
-
+            "主人": 0.9,
+            "喵": 1.0,
+            "nya": 1.0,
+            "服侍": 1.0,
+            "照顾": 0.9,
+            "陪伴": 0.85,
             # 中度相关 (0.7)
-            "温柔": 0.8, "可爱": 0.8, "乖巧": 0.8,
-            "撒娇": 0.7, "亲昵": 0.7, "依赖": 0.7,
-
+            "温柔": 0.8,
+            "可爱": 0.8,
+            "乖巧": 0.8,
+            "撒娇": 0.7,
+            "亲昵": 0.7,
+            "依赖": 0.7,
             # 情感相关 (0.6)
-            "喜欢": 0.6, "爱": 0.6, "想念": 0.6,
-            "开心": 0.6, "高兴": 0.6, "快乐": 0.6,
+            "喜欢": 0.6,
+            "爱": 0.6,
+            "想念": 0.6,
+            "开心": 0.6,
+            "高兴": 0.6,
+            "快乐": 0.6,
         }
 
         if self.user_name:
@@ -572,14 +580,10 @@ class CharacterConsistencyScorer:
             relationship_keywords.append(self.character_name)
 
         self._ascii_relationship_keywords = tuple(
-            keyword.casefold()
-            for keyword in relationship_keywords
-            if keyword and keyword.isascii()
+            keyword.casefold() for keyword in relationship_keywords if keyword and keyword.isascii()
         )
         self._non_ascii_relationship_keywords = tuple(
-            keyword
-            for keyword in relationship_keywords
-            if keyword and not keyword.isascii()
+            keyword for keyword in relationship_keywords if keyword and not keyword.isascii()
         )
 
         logger.info("角色一致性评分器初始化完成")
@@ -814,7 +818,9 @@ class CharacterConsistencyScorer:
         # 更新重要性（考虑角色一致性）
         original_importance = metadata.get("importance", 0.5)
         # 仅在一致性显著高于中性基线时提升，避免“所有内容都被抬高”
-        character_boost = max(float(metadata["character_consistency"]) - 0.5, 0.0) * 0.4  # 最多提升20%
+        character_boost = (
+            max(float(metadata["character_consistency"]) - 0.5, 0.0) * 0.4
+        )  # 最多提升20%
         metadata["importance"] = min(original_importance + character_boost, 1.0)
 
         memory["metadata"] = metadata

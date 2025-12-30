@@ -30,6 +30,7 @@ logger = get_logger(__name__)
 try:
     import redis
     from redis import Redis
+
     HAS_REDIS = True
 except ImportError:
     HAS_REDIS = False
@@ -39,14 +40,14 @@ except ImportError:
 class MultiLevelCache:
     """
     多级缓存系统 - 内存 + Redis
-    
+
     功能：
     1. L1 缓存：内存缓存（快速访问）
     2. L2 缓存：Redis 缓存（持久化）
     3. 自动过期管理
     4. 缓存预热
     """
-    
+
     def __init__(
         self,
         redis_host: str = "localhost",
@@ -62,7 +63,7 @@ class MultiLevelCache:
     ):
         """
         初始化多级缓存
-        
+
         Args:
             redis_host: Redis 主机地址
             redis_port: Redis 端口
@@ -79,10 +80,10 @@ class MultiLevelCache:
         self.max_memory_items = max(0, int(max_memory_items))
         self.redis_enabled = enable_redis and HAS_REDIS
         self._state_lock = Lock()
-        
+
         # L1 缓存：内存缓存
         self._memory_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-        
+
         # L2 缓存：Redis 缓存
         self.redis_client: Optional[Redis] = None
         self._redis_disabled_reason: Optional[str] = None
@@ -111,7 +112,7 @@ class MultiLevelCache:
                 self._redis_disabled_reason = f"{type(e).__name__}: {e}"
                 logger.warning(
                     "Redis 连接失败，将只使用内存缓存。"
-                    " 请确认 Redis 已启动并可访问，或在 config.yaml 的 agent.redis_enabled 设为 false。"
+                    " 请确认 Redis 已启动并可访问，或在 config.user.yaml 的 Agent.redis_enabled 设为 false。"
                     f" 原因: {self._redis_disabled_reason}"
                 )
         elif not HAS_REDIS:
@@ -120,7 +121,7 @@ class MultiLevelCache:
         else:
             self._redis_disabled_reason = "配置禁用"
             logger.debug("配置禁用了 Redis，将仅使用内存缓存")
-        
+
         # 统计信息
         self.stats = {
             "l1_hits": 0,
@@ -157,24 +158,24 @@ class MultiLevelCache:
 
         if should_log:
             logger.warning("Redis %s 失败，已自动禁用 Redis 缓存: %s", action, reason)
-    
+
     def _make_key(self, key: str, prefix: str = "mintchat") -> str:
         """生成缓存键"""
         return f"{prefix}:{key}"
-    
+
     def get(self, key: str, prefix: str = "mintchat") -> Optional[Any]:
         """
         获取缓存值
-        
+
         Args:
             key: 缓存键
             prefix: 键前缀
-        
+
         Returns:
             Optional[Any]: 缓存值，不存在返回 None
         """
         cache_key = self._make_key(key, prefix)
-        
+
         # L1 缓存：内存缓存
         if self.max_memory_items > 0:
             with self._state_lock:
@@ -189,7 +190,7 @@ class MultiLevelCache:
                         return value
                     # 过期，删除
                     self._memory_cache.pop(cache_key, None)
-        
+
         # L2 缓存：Redis 缓存
         with self._state_lock:
             redis_client = self.redis_client
@@ -202,7 +203,9 @@ class MultiLevelCache:
                         value = json.loads(value_json)
                     except Exception as decode_exc:
                         # 单条缓存值损坏/格式不兼容：删除该 key，不应导致禁用 Redis
-                        logger.warning("Redis 缓存值解析失败，已删除 key=%s: %s", cache_key, decode_exc)
+                        logger.warning(
+                            "Redis 缓存值解析失败，已删除 key=%s: %s", cache_key, decode_exc
+                        )
                         try:
                             redis_client.delete(cache_key)
                         except Exception:
@@ -218,12 +221,12 @@ class MultiLevelCache:
                         return value
             except Exception as e:
                 self._disable_redis(f"{type(e).__name__}: {e}", action="读取")
-        
+
         # 缓存未命中
         with self._state_lock:
             self.stats["misses"] += 1
         return None
-    
+
     def set(
         self,
         key: str,
@@ -233,23 +236,23 @@ class MultiLevelCache:
     ) -> bool:
         """
         设置缓存值
-        
+
         Args:
             key: 缓存键
             value: 缓存值
             ttl: 过期时间（秒），None 使用默认值
             prefix: 键前缀
-        
+
         Returns:
             bool: 是否成功
         """
         cache_key = self._make_key(key, prefix)
         ttl_seconds = self.default_ttl if ttl is None else max(0, int(ttl))
-        
+
         # L1 缓存：内存缓存
         if self.max_memory_items > 0:
             self._set_memory_cache(cache_key, value, ttl_seconds)
-        
+
         # L2 缓存：Redis 缓存
         with self._state_lock:
             redis_client = self.redis_client
@@ -270,7 +273,7 @@ class MultiLevelCache:
                     redis_client.setex(cache_key, ttl_seconds, value_json)
             except Exception as e:
                 self._disable_redis(f"{type(e).__name__}: {e}", action="写入")
-        
+
         with self._state_lock:
             self.stats["sets"] += 1
         return True
@@ -398,9 +401,7 @@ class MultiLevelCache:
 
         total_requests = stats["l1_hits"] + stats["l2_hits"] + stats["misses"]
         hit_rate = (
-            (stats["l1_hits"] + stats["l2_hits"]) / total_requests
-            if total_requests > 0
-            else 0
+            (stats["l1_hits"] + stats["l2_hits"]) / total_requests if total_requests > 0 else 0
         )
 
         return {
@@ -535,7 +536,9 @@ class AsyncProcessor:
         if not_done:
             for fut in not_done:
                 fut.cancel()
-            logger.warning("异步任务超时: %.2fs（取消 %d 个任务）", float(timeout or 0.0), len(not_done))
+            logger.warning(
+                "异步任务超时: %.2fs（取消 %d 个任务）", float(timeout or 0.0), len(not_done)
+            )
 
         return results
 
@@ -688,6 +691,7 @@ def cache_result(
         key_func: 生成缓存键的函数
         cache_instance: 缓存实例
     """
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -699,9 +703,7 @@ def cache_result(
                 key_parts = [func.__name__]
                 key_parts.extend(str(arg) for arg in args)
                 key_parts.extend(f"{k}={v}" for k, v in sorted(kwargs.items()))
-                cache_key = hashlib.md5(
-                    ":".join(key_parts).encode()
-                ).hexdigest()
+                cache_key = hashlib.md5(":".join(key_parts).encode()).hexdigest()
 
             # 尝试从缓存获取
             if cache_instance:
@@ -719,4 +721,5 @@ def cache_result(
             return result
 
         return wrapper
+
     return decorator

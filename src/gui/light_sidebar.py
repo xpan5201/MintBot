@@ -13,21 +13,33 @@ v2.18.0 优化内容：
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QLabel,
-    QListWidget, QListWidgetItem, QHBoxLayout, QGraphicsOpacityEffect, QLineEdit,
+    QWidget,
+    QVBoxLayout,
+    QPushButton,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QHBoxLayout,
+    QGraphicsOpacityEffect,
+    QLineEdit,
 )
 from PyQt6.QtCore import (
-    Qt, pyqtSignal, QPropertyAnimation, QEasingCurve,
-    QPoint, QTimer, pyqtProperty
+    Qt,
+    pyqtSignal,
+    QPropertyAnimation,
+    QEasingCurve,
+    QPoint,
+    QTimer,
+    pyqtProperty,
 )
 from PyQt6.QtGui import QPainter, QColor, QBrush, QMouseEvent, QFont
 
-from .material_design_light import (
-    MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION, MD3_STATE_LAYERS
-)
+from .material_design_light import MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION, MD3_STATE_LAYERS
 from .material_design_enhanced import (
-    MD3_ENHANCED_COLORS, MD3_ENHANCED_RADIUS,
-    MD3_ENHANCED_DURATION, MD3_ENHANCED_EASING,
+    MD3_ENHANCED_COLORS,
+    MD3_ENHANCED_RADIUS,
+    MD3_ENHANCED_DURATION,
+    MD3_ENHANCED_EASING,
 )
 from .material_icons import MaterialIconButton, MATERIAL_ICONS
 from .theme_manager import is_anime_theme
@@ -88,7 +100,8 @@ class IconButton(QPushButton):
 
     def setup_style(self):
         """设置样式 - v2.31.0: 优化渐变和动画效果"""
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             QPushButton {{
                 background: transparent;
                 border: none;
@@ -119,7 +132,8 @@ class IconButton(QPushButton):
                     stop:1 {_SIDEBAR_PRESSED_1}
                 );
             }}
-        """)
+        """
+        )
         self.setText(self.icon_text)
         self.setCheckable(True)
 
@@ -201,7 +215,9 @@ class IconButton(QPushButton):
         super().paintEvent(event)
 
         # 性能优化：如果没有需要绘制的效果，直接返回
-        if (self.hover_opacity <= 0 or self.isChecked()) and (not self.ripple_active or self.ripple_opacity <= 0):
+        if (self.hover_opacity <= 0 or self.isChecked()) and (
+            not self.ripple_active or self.ripple_opacity <= 0
+        ):
             return
 
         painter = QPainter(self)
@@ -209,7 +225,9 @@ class IconButton(QPushButton):
 
         # 绘制悬停状态
         if self.hover_opacity > 0 and not self.isChecked():
-            base = QColor(MD3_ENHANCED_COLORS["primary"]) if ANIME_THEME_ENABLED else QColor(0, 0, 0)
+            base = (
+                QColor(MD3_ENHANCED_COLORS["primary"]) if ANIME_THEME_ENABLED else QColor(0, 0, 0)
+            )
             base.setAlpha(int(self.hover_opacity * 255))
             hover_color = base
             painter.setBrush(QBrush(hover_color))
@@ -218,16 +236,14 @@ class IconButton(QPushButton):
 
         # 绘制涟漪效果
         if self.ripple_active and self.ripple_opacity > 0:
-            base = QColor(MD3_ENHANCED_COLORS["primary"]) if ANIME_THEME_ENABLED else QColor(0, 0, 0)
+            base = (
+                QColor(MD3_ENHANCED_COLORS["primary"]) if ANIME_THEME_ENABLED else QColor(0, 0, 0)
+            )
             base.setAlpha(int(self.ripple_opacity * 255))
             ripple_color = base
             painter.setBrush(QBrush(ripple_color))
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(
-                self.ripple_center,
-                self.ripple_radius,
-                self.ripple_radius
-            )
+            painter.drawEllipse(self.ripple_center, self.ripple_radius, self.ripple_radius)
 
         painter.end()  # 显式结束绘制，释放资源
 
@@ -296,7 +312,8 @@ class LightIconSidebar(QWidget):
         layout.addWidget(self.logout_btn)
 
         # 设置背景 - v2.31.0: 优化渐变背景，更加精致
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             LightIconSidebar {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:0, y2:1,
@@ -307,7 +324,8 @@ class LightIconSidebar(QWidget):
                 );
                 border-right: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
             }}
-        """)
+        """
+        )
 
     def on_chat_clicked(self):
         """聊天按钮点击"""
@@ -355,7 +373,9 @@ class LightIconSidebar(QWidget):
 class SessionItem(QWidget):
     """会话列表项 - 增强版"""
 
-    def __init__(self, avatar: str, name: str, message: str, time: str, unread: int = 0, parent=None):
+    def __init__(
+        self, avatar: str, name: str, message: str, time: str, unread: int = 0, parent=None
+    ):
         super().__init__(parent)
 
         # 悬停状态
@@ -433,7 +453,8 @@ class SessionItem(QWidget):
         avatar_label = QLabel(avatar)
         avatar_label.setFixedSize(52, 52)
         avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        avatar_label.setStyleSheet(f"""
+        avatar_label.setStyleSheet(
+            f"""
             QLabel {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:1,
@@ -444,7 +465,8 @@ class SessionItem(QWidget):
                 font-size: 26px;
                 color: {MD3_LIGHT_COLORS['on_primary']};
             }}
-        """)
+        """
+        )
         layout.addWidget(avatar_label)
 
         # 信息区域
@@ -456,26 +478,30 @@ class SessionItem(QWidget):
         name_time_layout.setSpacing(8)
 
         name_label = QLabel(name)
-        name_label.setStyleSheet(f"""
+        name_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface']};
                 font-size: 14px;
                 font-weight: 500;
                 background: transparent;
             }}
-        """)
+        """
+        )
         name_time_layout.addWidget(name_label)
 
         name_time_layout.addStretch()
 
         time_label = QLabel(time)
-        time_label.setStyleSheet(f"""
+        time_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
                 font-size: 12px;
                 background: transparent;
             }}
-        """)
+        """
+        )
         name_time_layout.addWidget(time_label)
 
         info_layout.addLayout(name_time_layout)
@@ -485,13 +511,15 @@ class SessionItem(QWidget):
         message_unread_layout.setSpacing(8)
 
         message_label = QLabel(message)
-        message_label.setStyleSheet(f"""
+        message_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
                 font-size: 13px;
                 background: transparent;
             }}
-        """)
+        """
+        )
         message_label.setMaximumWidth(200)
         message_label.setWordWrap(False)
         message_unread_layout.addWidget(message_label)
@@ -502,7 +530,8 @@ class SessionItem(QWidget):
             unread_label = QLabel(str(unread))
             unread_label.setFixedSize(22, 22)
             unread_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            unread_label.setStyleSheet(f"""
+            unread_label.setStyleSheet(
+                f"""
                 QLabel {{
                     background: {MD3_LIGHT_COLORS['error']};
                     color: {MD3_LIGHT_COLORS['on_error']};
@@ -510,7 +539,8 @@ class SessionItem(QWidget):
                     font-size: 11px;
                     font-weight: 600;
                 }}
-            """)
+            """
+            )
             message_unread_layout.addWidget(unread_label)
 
         info_layout.addLayout(message_unread_layout)
@@ -518,7 +548,8 @@ class SessionItem(QWidget):
         layout.addLayout(info_layout)
 
         # 设置背景 - 更大的圆角
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             SessionItem {{
                 background: transparent;
                 border-radius: {MD3_RADIUS['large']};
@@ -527,7 +558,8 @@ class SessionItem(QWidget):
             SessionItem:hover {{
                 background: {MD3_LIGHT_COLORS['surface_container_high']};
             }}
-        """)
+        """
+        )
 
 
 class LightSessionList(QWidget):
@@ -574,18 +606,21 @@ class LightSessionList(QWidget):
         search_icon_font = QFont("Material Symbols Outlined")
         search_icon_font.setPixelSize(20)
         search_icon.setFont(search_icon_font)
-        search_icon.setStyleSheet(f"""
+        search_icon.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
                 background: transparent;
             }}
-        """)
+        """
+        )
         search_container_layout.addWidget(search_icon)
 
         # 搜索输入框
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("搜索")
-        self.search_input.setStyleSheet(f"""
+        self.search_input.setStyleSheet(
+            f"""
             QLineEdit {{
                 background: transparent;
                 border: none;
@@ -596,16 +631,19 @@ class LightSessionList(QWidget):
             QLineEdit::placeholder {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
             }}
-        """)
+        """
+        )
         search_container_layout.addWidget(self.search_input)
 
-        search_container.setStyleSheet(f"""
+        search_container.setStyleSheet(
+            f"""
             QWidget {{
                 background: {MD3_LIGHT_COLORS['surface_container']};
                 border-radius: {MD3_RADIUS['full']};
                 padding: 8px 0px;
             }}
-        """)
+        """
+        )
         search_layout.addWidget(search_container)
 
         # 添加按钮 - 使用 Material Design 图标
@@ -617,7 +655,8 @@ class LightSessionList(QWidget):
 
         # 会话列表
         self.session_list = QListWidget()
-        self.session_list.setStyleSheet(f"""
+        self.session_list.setStyleSheet(
+            f"""
             QListWidget {{
                 background: transparent;
                 border: none;
@@ -634,18 +673,21 @@ class LightSessionList(QWidget):
                 background: {MD3_LIGHT_COLORS['primary_container']};
                 border-radius: {MD3_RADIUS['large']};
             }}
-        """)
+        """
+        )
         layout.addWidget(self.session_list)
 
         # 添加示例会话
         self.add_demo_sessions()
 
         # 设置背景 - 使用淡薄荷绿
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             LightSessionList {{
                 background: {MD3_LIGHT_COLORS['gradient_soft_mint']};
             }}
-        """)
+        """
+        )
 
     def show(self):
         """显示 - 带淡入动画"""

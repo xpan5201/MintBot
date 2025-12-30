@@ -420,7 +420,7 @@ class UserSession:
 
         user_id = self.get_user_id()
         if user_id is None:
-            return '👤'
+            return "👤"
 
         avatars = self._get_auth_db().get_user_avatars(user_id)
 
@@ -429,9 +429,9 @@ class UserSession:
                 if self.current_user:
                     self.current_user["user_avatar"] = avatars["user_avatar"]
                     self.current_user["ai_avatar"] = avatars["ai_avatar"]
-            return avatars['user_avatar']
+            return avatars["user_avatar"]
 
-        return '👤'
+        return "👤"
 
     def get_ai_avatar(self) -> str:
         """获取AI助手头像
@@ -445,7 +445,7 @@ class UserSession:
 
         user_id = self.get_user_id()
         if user_id is None:
-            return '🐱'
+            return "🐱"
 
         avatars = self._get_auth_db().get_user_avatars(user_id)
 
@@ -454,9 +454,9 @@ class UserSession:
                 if self.current_user:
                     self.current_user["user_avatar"] = avatars["user_avatar"]
                     self.current_user["ai_avatar"] = avatars["ai_avatar"]
-            return avatars['ai_avatar']
+            return avatars["ai_avatar"]
 
-        return '🐱'
+        return "🐱"
 
 
 # 创建全局单例实例

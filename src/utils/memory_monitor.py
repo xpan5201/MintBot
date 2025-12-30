@@ -21,18 +21,19 @@ logger = get_logger(__name__)
 @dataclass
 class MemoryStats:
     """内存统计信息"""
+
     timestamp: datetime = field(default_factory=datetime.now)
     total_mb: float = 0.0
     available_mb: float = 0.0
     used_mb: float = 0.0
     percent: float = 0.0
     process_mb: float = 0.0  # 当前进程占用
-    
+
     @property
     def is_high(self) -> bool:
         """是否内存占用过高（>80%）"""
         return self.percent > 80.0
-    
+
     @property
     def is_critical(self) -> bool:
         """是否内存占用严重（>90%）"""
@@ -41,21 +42,21 @@ class MemoryStats:
 
 class MemoryMonitor:
     """内存监控器 - 单例模式"""
-    
+
     _instance = None
     _lock = threading.Lock()
-    
+
     def __new__(cls):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
         return cls._instance
-    
+
     def __init__(self):
-        if hasattr(self, '_initialized'):
+        if hasattr(self, "_initialized"):
             return
-        
+
         self._initialized = True
         self._cleanup_callbacks: List[Callable[[], None]] = []
         self._monitoring = False
@@ -65,19 +66,19 @@ class MemoryMonitor:
         self._critical_memory_threshold = 90.0  # 严重内存阈值（%）
         self._stats_history: List[MemoryStats] = []
         self._max_history = 100  # 最多保留100条历史记录
-        
+
         logger.info("内存监控器初始化完成")
-    
+
     def get_current_stats(self) -> MemoryStats:
         """获取当前内存统计"""
         try:
             # 系统内存
             mem = psutil.virtual_memory()
-            
+
             # 当前进程内存
             process = psutil.Process()
             process_mem = process.memory_info().rss / 1024 / 1024  # MB
-            
+
             stats = MemoryStats(
                 total_mb=mem.total / 1024 / 1024,
                 available_mb=mem.available / 1024 / 1024,
@@ -85,40 +86,40 @@ class MemoryMonitor:
                 percent=mem.percent,
                 process_mb=process_mem,
             )
-            
+
             return stats
         except Exception as e:
             logger.error(f"获取内存统计失败: {e}")
             return MemoryStats()
-    
+
     def register_cleanup_callback(self, callback: Callable[[], None]) -> None:
         """
         注册清理回调
-        
+
         当内存占用过高时，会调用所有注册的清理回调
-        
+
         Args:
             callback: 清理回调函数
         """
         with self._lock:
             self._cleanup_callbacks.append(callback)
             logger.info(f"已注册内存清理回调（共 {len(self._cleanup_callbacks)} 个）")
-    
+
     def trigger_cleanup(self, reason: str = "手动触发") -> int:
         """
         触发内存清理
-        
+
         Args:
             reason: 触发原因
-            
+
         Returns:
             执行的清理回调数量
         """
         logger.info(f"触发内存清理: {reason}")
-        
+
         with self._lock:
             callbacks = self._cleanup_callbacks.copy()
-        
+
         count = 0
         for callback in callbacks:
             try:
@@ -126,10 +127,10 @@ class MemoryMonitor:
                 count += 1
             except Exception as e:
                 logger.error(f"执行清理回调失败: {e}")
-        
+
         logger.info(f"内存清理完成，执行了 {count}/{len(callbacks)} 个回调")
         return count
-    
+
     def start_monitoring(
         self,
         check_interval: float = 30.0,
@@ -138,7 +139,7 @@ class MemoryMonitor:
     ) -> None:
         """
         启动内存监控
-        
+
         Args:
             check_interval: 检查间隔（秒）
             high_threshold: 高内存阈值（%）
@@ -147,19 +148,17 @@ class MemoryMonitor:
         if self._monitoring:
             logger.warning("内存监控已在运行")
             return
-        
+
         self._check_interval = check_interval
         self._high_memory_threshold = high_threshold
         self._critical_memory_threshold = critical_threshold
         self._monitoring = True
-        
+
         self._monitor_thread = threading.Thread(
-            target=self._monitor_loop,
-            daemon=True,
-            name="MemoryMonitor"
+            target=self._monitor_loop, daemon=True, name="MemoryMonitor"
         )
         self._monitor_thread.start()
-        
+
         logger.info(
             f"内存监控已启动 "
             f"(间隔={check_interval}s, 高阈值={high_threshold}%, 严重阈值={critical_threshold}%)"
@@ -301,5 +300,3 @@ def setup_memory_monitoring(
     )
 
     return monitor
-
-

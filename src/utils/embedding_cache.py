@@ -163,7 +163,9 @@ class EmbeddingCache:
                     with self._lock:
                         self.memory_cache[cache_key] = (embedding, timestamp)
                         self.memory_cache.move_to_end(cache_key)
-                        self.cache_index.setdefault(cache_key, {"timestamp": timestamp_str, "model": model})
+                        self.cache_index.setdefault(
+                            cache_key, {"timestamp": timestamp_str, "model": model}
+                        )
                         self.cache_hits += 1
                     return embedding
 

@@ -12,48 +12,40 @@ MD3_COLORS = {
     "on_primary": "#381E72",
     "primary_container": "#4F378B",
     "on_primary_container": "#EADDFF",
-
     # 次要色 (Secondary) - 淡紫色系
     "secondary": "#CCC2DC",
     "on_secondary": "#332D41",
     "secondary_container": "#4A4458",
     "on_secondary_container": "#E8DEF8",
-
     # 第三色 (Tertiary) - 粉色系
     "tertiary": "#EFB8C8",
     "on_tertiary": "#492532",
     "tertiary_container": "#633B48",
     "on_tertiary_container": "#FFD8E4",
-
     # 背景色 (Surface)
     "surface": "#1C1B1F",
     "on_surface": "#E6E1E5",
     "surface_variant": "#49454F",
     "on_surface_variant": "#CAC4D0",
-
     # 容器色 (Surface Containers)
     "surface_container_lowest": "#0F0D13",
     "surface_container_low": "#1D1B20",
     "surface_container": "#211F26",
     "surface_container_high": "#2B2930",
     "surface_container_highest": "#36343B",
-
     # 轮廓色 (Outline)
     "outline": "#938F99",
     "outline_variant": "#49454F",
-
     # 错误色 (Error)
     "error": "#F2B8B5",
     "on_error": "#601410",
     "error_container": "#8C1D18",
     "on_error_container": "#F9DEDC",
-
     # 背景和阴影
     "background": "#1C1B1F",
     "on_background": "#E6E1E5",
     "shadow": "#000000",
     "scrim": "#000000",
-
     # 反色 (Inverse)
     "inverse_surface": "#E6E1E5",
     "inverse_on_surface": "#313033",
@@ -152,22 +144,22 @@ MD3_RADIUS = {
 
 # Material Design 3 动画时长
 MD3_DURATION = {
-    "short1": 50,   # 50ms
+    "short1": 50,  # 50ms
     "short2": 100,  # 100ms
     "short3": 150,  # 150ms
     "short4": 200,  # 200ms
-    "medium1": 250, # 250ms
-    "medium2": 300, # 300ms
-    "medium3": 350, # 350ms
-    "medium4": 400, # 400ms
-    "long1": 450,   # 450ms
-    "long2": 500,   # 500ms
-    "long3": 550,   # 550ms
-    "long4": 600,   # 600ms
+    "medium1": 250,  # 250ms
+    "medium2": 300,  # 300ms
+    "medium3": 350,  # 350ms
+    "medium4": 400,  # 400ms
+    "long1": 450,  # 450ms
+    "long2": 500,  # 500ms
+    "long3": 550,  # 550ms
+    "long4": 600,  # 600ms
     "extra_long1": 700,  # 700ms
     "extra_long2": 800,  # 800ms
     "extra_long3": 900,  # 900ms
-    "extra_long4": 1000, # 1000ms
+    "extra_long4": 1000,  # 1000ms
 }
 
 
@@ -177,12 +169,10 @@ MD3_EASING = {
     "standard": "cubic-bezier(0.2, 0.0, 0, 1.0)",
     "standard_accelerate": "cubic-bezier(0.3, 0.0, 1, 1)",
     "standard_decelerate": "cubic-bezier(0, 0.0, 0, 1)",
-
     # 强调缓动
     "emphasized": "cubic-bezier(0.2, 0.0, 0, 1.0)",
     "emphasized_accelerate": "cubic-bezier(0.3, 0.0, 0.8, 0.15)",
     "emphasized_decelerate": "cubic-bezier(0.05, 0.7, 0.1, 1.0)",
-
     # 线性
     "linear": "linear",
 }
@@ -194,22 +184,18 @@ MD3_TYPOGRAPHY = {
     "display_large": {"size": "57px", "weight": "400", "line_height": "64px"},
     "display_medium": {"size": "45px", "weight": "400", "line_height": "52px"},
     "display_small": {"size": "36px", "weight": "400", "line_height": "44px"},
-
     # Headline
     "headline_large": {"size": "32px", "weight": "400", "line_height": "40px"},
     "headline_medium": {"size": "28px", "weight": "400", "line_height": "36px"},
     "headline_small": {"size": "24px", "weight": "400", "line_height": "32px"},
-
     # Title
     "title_large": {"size": "22px", "weight": "400", "line_height": "28px"},
     "title_medium": {"size": "16px", "weight": "500", "line_height": "24px"},
     "title_small": {"size": "14px", "weight": "500", "line_height": "20px"},
-
     # Body
     "body_large": {"size": "16px", "weight": "400", "line_height": "24px"},
     "body_medium": {"size": "14px", "weight": "400", "line_height": "20px"},
     "body_small": {"size": "12px", "weight": "400", "line_height": "16px"},
-
     # Label
     "label_large": {"size": "14px", "weight": "500", "line_height": "20px"},
     "label_medium": {"size": "12px", "weight": "500", "line_height": "16px"},
@@ -268,7 +254,6 @@ THEME_COLORS = {
     "error": MD3_COLORS["error"],
     "background": MD3_COLORS["background"],
     "on_background": MD3_COLORS["on_background"],
-
     # 兼容旧代码
     "bg_dark": MD3_COLORS["surface"],
     "bg_darker": MD3_COLORS["surface_container_lowest"],

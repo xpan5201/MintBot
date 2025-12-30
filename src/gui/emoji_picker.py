@@ -525,7 +525,7 @@ class CustomStickerButton(QPushButton):
                     color: {MD3_ENHANCED_COLORS['error']};
                 }}
             """
-                )
+            )
 
     def update_frame(self):
         """更新动画帧"""
@@ -899,9 +899,7 @@ class EmojiPicker(QWidget):
                 )
         except Exception:
             pass
-        self.search_results_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        self.search_results_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.search_results_area.setStyleSheet(
             f"""
             QScrollArea {{
@@ -1077,9 +1075,7 @@ class EmojiPicker(QWidget):
         except Exception:
             pass
 
-    def create_emoji_grid(
-        self, emojis: list
-    ) -> QScrollArea:
+    def create_emoji_grid(self, emojis: list) -> QScrollArea:
         """创建表情网格
 
         Args:
@@ -1868,7 +1864,9 @@ class EmojiPicker(QWidget):
             caption_ready = pyqtSignal(str, str)  # sticker_id, caption
             caption_error = pyqtSignal(str, str)  # sticker_id, error
 
-            def __init__(self, *, user_id: int, sticker_id: str, sticker_path: str, fallback_name: str):
+            def __init__(
+                self, *, user_id: int, sticker_id: str, sticker_path: str, fallback_name: str
+            ):
                 super().__init__()
                 self._user_id = user_id
                 self._sticker_id = sticker_id
@@ -1895,7 +1893,9 @@ class EmojiPicker(QWidget):
 
                     vision_llm = get_vision_llm()
                     if vision_llm is None:
-                        logger.info("VISION_LLM 未启用，跳过表情包 caption 生成: %s", self._sticker_id)
+                        logger.info(
+                            "VISION_LLM 未启用，跳过表情包 caption 生成: %s", self._sticker_id
+                        )
                         return
 
                     processor = get_vision_processor_instance()
@@ -1918,7 +1918,9 @@ class EmojiPicker(QWidget):
 
                     image_data = None
                     try:
-                        image_data = processor.prepare_image_for_llm(self._sticker_path, max_size=sticker_max_size)
+                        image_data = processor.prepare_image_for_llm(
+                            self._sticker_path, max_size=sticker_max_size
+                        )
                     except Exception:
                         image_data = None
 

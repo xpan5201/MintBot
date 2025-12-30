@@ -11,10 +11,7 @@ TTS队列列表组件 - v2.39.0
 - Material Design 3样式
 """
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QFrame
-)
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint
 from PyQt6.QtGui import QFont, QDrag, QCursor, QMouseEvent
 from typing import List, Dict, Optional
@@ -42,31 +39,32 @@ class TTSQueueItem(QWidget):
         self._is_dragging = False
 
         self.setup_ui()
-    
+
     def setup_ui(self):
         """设置UI"""
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(8)
-        
+
         # 状态图标
         status_icon = self._get_status_icon()
         status_label = QLabel(status_icon)
         status_label.setFixedWidth(20)
         layout.addWidget(status_label)
-        
+
         # 文本
         text_label = QLabel(self.text[:50] + "..." if len(self.text) > 50 else self.text)
         text_label.setWordWrap(False)
         text_label.setStyleSheet("color: white; font-size: 9pt;")
         layout.addWidget(text_label, 1)
-        
+
         # 删除按钮
         delete_btn = QPushButton("🗑")
         delete_btn.setFixedSize(24, 24)
         delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         delete_btn.clicked.connect(lambda: self.delete_clicked.emit(self.index))
-        delete_btn.setStyleSheet("""
+        delete_btn.setStyleSheet(
+            """
             QPushButton {
                 background: rgba(255, 107, 157, 0.2);
                 border: 1px solid rgba(255, 107, 157, 0.3);
@@ -77,11 +75,13 @@ class TTSQueueItem(QWidget):
             QPushButton:hover {
                 background: rgba(255, 107, 157, 0.3);
             }
-        """)
+        """
+        )
         layout.addWidget(delete_btn)
-        
+
         # 设置样式
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             TTSQueueItem {
                 background: rgba(0, 0, 0, 0.2);
                 border: 1px solid rgba(255, 255, 255, 0.1);
@@ -91,8 +91,9 @@ class TTSQueueItem(QWidget):
                 background: rgba(0, 0, 0, 0.3);
                 border: 1px solid rgba(255, 255, 255, 0.2);
             }
-        """)
-    
+        """
+        )
+
     def _get_status_icon(self) -> str:
         """获取状态图标"""
         icons = {
@@ -102,7 +103,7 @@ class TTSQueueItem(QWidget):
             "error": "❌",  # 错误
         }
         return icons.get(self.status, "⏳")
-    
+
     def update_status(self, status: str):
         """更新状态"""
         self.status = status
@@ -177,13 +178,13 @@ class TTSQueueList(QWidget):
         self.setAcceptDrops(True)
 
         self.setup_ui()
-    
+
     def setup_ui(self):
         """设置UI"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(8)
-        
+
         # 标题
         title_label = QLabel("📋 TTS队列")
         title_font = QFont()
@@ -191,35 +192,37 @@ class TTSQueueList(QWidget):
         title_font.setBold(True)
         title_label.setFont(title_font)
         layout.addWidget(title_label)
-        
+
         # 分隔线
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setFrameShadow(QFrame.Shadow.Sunken)
         separator.setStyleSheet("background: rgba(255, 255, 255, 0.1);")
         layout.addWidget(separator)
-        
+
         # 列表容器
         self.list_layout = QVBoxLayout()
         self.list_layout.setSpacing(4)
         layout.addLayout(self.list_layout)
-        
+
         # 空状态提示
         self.empty_label = QLabel("队列为空")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 9pt;")
         layout.addWidget(self.empty_label)
-        
+
         layout.addStretch()
-        
+
         # 设置面板样式
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             TTSQueueList {
                 background: rgba(0, 0, 0, 0.3);
                 border: 1px solid rgba(255, 255, 255, 0.1);
                 border-radius: 12px;
             }
-        """)
+        """
+        )
 
     def add_item(self, text: str, status: str = "pending"):
         """
@@ -334,7 +337,7 @@ class TTSQueueList(QWidget):
             return
 
         # 计算目标索引
-        drop_pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
+        drop_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         target_index = self._get_drop_index(drop_pos)
 
         if target_index is None or source_index == target_index:

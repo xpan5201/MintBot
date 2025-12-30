@@ -29,6 +29,7 @@ env/
 # IDE
 .vscode/
 .idea/
+.serena/
 *.swp
 *.swo
 *~
@@ -39,7 +40,12 @@ env/
 .env.local
 
 # Configuration (keep example)
-config.yaml
+config.user.yaml
+config.dev.yaml
+config.user.yml
+config.dev.yml
+
+
 
 # Data and logs
 data/

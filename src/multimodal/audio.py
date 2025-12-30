@@ -263,6 +263,7 @@ class AudioProcessor:
                 # 降级策略：使用 soundfile（仅支持 wav）
                 if output_format.lower() == "wav":
                     import soundfile as sf
+
                     data, samplerate = sf.read(str(input_path))
                     sf.write(str(output_path), data, samplerate)
                     logger.info(f"音频转换为 WAV: {input_path} -> {output_path}")

@@ -36,17 +36,10 @@ def sample_config_dict():
             "api": "https://api.test.com/v1",
             "model": "test-model",
             "temperature": 0.7,
-            "max_tokens": 2000
+            "max_tokens": 2000,
         },
-        "Agent": {
-            "enable_streaming": True,
-            "max_history_length": 20,
-            "enable_tools": True
-        },
-        "MCP": {
-            "enable": False,
-            "servers": []
-        }
+        "Agent": {"enable_streaming": True, "max_history_length": 20, "enable_tools": True},
+        "MCP": {"enable": False, "servers": []},
     }
 
 
@@ -55,7 +48,7 @@ def sample_config_yaml(temp_dir, sample_config_dict):
     """创建示例配置 YAML 文件 fixture"""
     import yaml
 
-    config_path = temp_dir / "config.yaml"
+    config_path = temp_dir / "config.user.yaml"
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(sample_config_dict, f)
 
@@ -68,7 +61,7 @@ def sample_image_path(temp_dir):
     from PIL import Image
 
     # 创建一个简单的测试图片
-    img = Image.new('RGB', (100, 100), color='red')
+    img = Image.new("RGB", (100, 100), color="red")
     img_path = temp_dir / "test_image.jpg"
     img.save(img_path)
 
@@ -97,12 +90,6 @@ def reset_environment():
 # pytest 配置
 def pytest_configure(config):
     """pytest 配置钩子"""
-    config.addinivalue_line(
-        "markers", "slow: 标记慢速测试"
-    )
-    config.addinivalue_line(
-        "markers", "integration: 标记集成测试"
-    )
-    config.addinivalue_line(
-        "markers", "unit: 标记单元测试"
-    )
+    config.addinivalue_line("markers", "slow: 标记慢速测试")
+    config.addinivalue_line("markers", "integration: 标记集成测试")
+    config.addinivalue_line("markers", "unit: 标记单元测试")

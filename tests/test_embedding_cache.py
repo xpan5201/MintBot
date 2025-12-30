@@ -20,4 +20,3 @@ def test_embedding_cache_disk_fallback_without_index(temp_dir):
     # 新实例：即使 index.json 尚未落盘，也应能通过 .pkl 文件命中
     cache2 = EmbeddingCache(cache_dir=str(cache_dir), max_cache_size=10, cache_ttl_days=30)
     assert cache2.get("persist-me", "test-model") == embedding
-

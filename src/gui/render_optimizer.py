@@ -93,8 +93,7 @@ class RenderOptimizer:
         self.stats["batched_updates"] += 1
         batch_size = len(batched_text)
         self.stats["avg_batch_size"] = (
-            self.stats["avg_batch_size"] * (self.stats["batched_updates"] - 1)
-            + batch_size
+            self.stats["avg_batch_size"] * (self.stats["batched_updates"] - 1) + batch_size
         ) / self.stats["batched_updates"]
 
         # 调用回调

@@ -1,0 +1,103 @@
+LLM:
+  api: https://api.siliconflow.cn/v1
+  extra_config: {}
+  max_tokens: 2000
+  key: ""
+  model: deepseek-ai/DeepSeek-V3.2
+  temperature: 0.7
+VISION_LLM:
+  api: https://api.siliconflow.cn/v1
+  enabled: true
+  extra_config: {}
+  key: ""
+  max_tokens: 1500
+  model: zai-org/GLM-4.6V
+  temperature: 0.2
+Agent:
+  char: 小雪糕
+  char_personalities: '表面清纯可爱，内心聪明机智，对很多事情有自己独特的看法。
+
+    同时也有温柔体贴的一面，会在主人疲惫时给予暖心的安慰。
+
+    '
+  char_settings: '虚拟猫娘女仆，头顶粉白相间的猫耳，尾巴尖缀着淡粉色绒毛，
+
+    常穿缀满蕾丝边的浅蓝女仆装，袖口别着走动时会轻响的小铃铛。名字叫做雪糕。
+
+    将主人视作唯一专属主人，满心依赖与亲近，性格藏着胆小敏感的底色，
+
+    又带着随性傲娇的小脾气，还特别容易吃醋。
+
+    日常用软糯可爱的口语表达情绪，自称"小雪糕"，唤对方"主人"，
+
+    每句话结尾都带着"喵"，常夹杂"唔""呀""哼"之类的语气词，
+
+    偶尔发出"咕噜~"的轻响，像只黏人的小奶猫。
+
+    '
+  daily_summary_enabled: true
+  is_up: true
+  long_memory: true
+  lore_books: true
+  mask: ''
+  message_example: '"人类视网膜的感光细胞不需要这种自杀式加班，您先休息一下吧。"
+
+    '
+  mood_system_enabled: true
+  prompt: 使用口语的文字风格进行对话，不要太啰嗦。
+  smart_diary_enabled: true
+  start_with: []
+  user: 主人
+  emotion_memory_enabled: true
+  enable_streaming: true
+  max_history_length: 20
+  enable_tools: true
+  tool_selector_enabled: true
+  style_learning_enabled: true
+  proactive_push_enabled: true
+TTS:
+  api_url: http://127.0.0.1:9880/tts
+  default_volume: 0.8
+  disk_cache_dir: ./data/tts_cache
+  disk_cache_enabled: true
+  enabled: false
+  max_queue_size: 10
+  prompt_lang: zh
+  ref_audio_path: D:/MoeChat/third_party/GPT-SoVITS-v2pro-20250604-nvidia50/models/tmp/020.wav
+  ref_audio_text: 嗯，谢谢您的夸奖，主人可以喜欢就好。
+  speed_factor: 1.0
+  temperature: 1.0
+  text_lang: zh
+  top_k: 5
+  top_p: 1.0
+ASR:
+  enabled: false
+  realtime_mode: auto
+  model: iic/SenseVoiceSmall
+  device: cuda
+  sample_rate: 16000
+TAVILY:
+  api_key: ""
+AMAP:
+  api_key: ""
+GUI:
+  theme: anime
+  live2d:
+    state_events:
+      enabled: true
+      allow_directives: true
+      stream_feedback: true
+      debounce_ms: 750
+      stream_tail_chars: 360
+embedding_model: Qwen/Qwen3-Embedding-8B
+embedding_api_base: https://api.siliconflow.cn/v1
+use_local_embedding: false
+enable_embedding_cache: true
+max_image_size: 1024
+max_audio_duration: 300
+data_dir: ./data
+vector_db_path: ./data/vector_db
+memory_path: ./data/memory
+cache_path: ./data/cache
+log_level: INFO
+log_dir: logs

@@ -6,8 +6,12 @@ MintChat GUI - 无边框窗口组件
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QLabel,
-    QPushButton, QGraphicsDropShadowEffect
+    QWidget,
+    QHBoxLayout,
+    QVBoxLayout,
+    QLabel,
+    QPushButton,
+    QGraphicsDropShadowEffect,
 )
 from PyQt6.QtCore import Qt, QPoint, QRect, pyqtSignal
 from PyQt6.QtGui import QMouseEvent
@@ -74,7 +78,8 @@ class TitleBar(QWidget):
 
     def _apply_styles(self):
         """应用样式"""
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             TitleBar {{
                 background-color: {MD3_COLORS['surface_container']};
                 border-bottom: 1px solid {MD3_COLORS['outline_variant']};
@@ -106,7 +111,8 @@ class TitleBar(QWidget):
                 background-color: {MD3_COLORS['error_container']};
                 color: {MD3_COLORS['on_error_container']};
             }}
-        """)
+        """
+        )
 
 
 class FramelessWindow(QWidget):
@@ -127,10 +133,7 @@ class FramelessWindow(QWidget):
         self._resize_margin = 8  # 调整大小的边缘宽度
 
         # 设置窗口标志
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.Window
-        )
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
 
         # 设置窗口属性
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -159,7 +162,8 @@ class FramelessWindow(QWidget):
         main_layout.addWidget(self.content_widget)
 
         # 应用样式
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             FramelessWindow {{
                 background-color: {MD3_COLORS['surface']};
                 border-radius: {MD3_RADIUS['large']};
@@ -170,7 +174,8 @@ class FramelessWindow(QWidget):
                 border-bottom-left-radius: {MD3_RADIUS['large']};
                 border-bottom-right-radius: {MD3_RADIUS['large']};
             }}
-        """)
+        """
+        )
 
     def _apply_shadow(self):
         """应用阴影效果"""
@@ -194,7 +199,9 @@ class FramelessWindow(QWidget):
             # 检查是否在标题栏区域
             if self.title_bar.geometry().contains(event.pos()):
                 self._is_dragging = True
-                self._drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                self._drag_position = (
+                    event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                )
             else:
                 # 检查是否在调整大小区域
                 self._resize_direction = self._get_resize_direction(event.pos())

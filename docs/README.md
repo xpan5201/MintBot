@@ -16,6 +16,6 @@
 
 ```bash
 uv sync --locked --no-install-project
-cp config.yaml.example config.yaml
+cp config.user.yaml.example config.user.yaml
 ./.venv/bin/python MintChat.py
 ```

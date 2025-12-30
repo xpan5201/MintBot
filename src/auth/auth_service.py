@@ -41,7 +41,7 @@ class AuthService:
         if len(username) > 20:
             return False, "用户名最多 20 个字符"
 
-        if not re.match(r'^[a-zA-Z0-9_\u4e00-\u9fa5]+$', username):
+        if not re.match(r"^[a-zA-Z0-9_\u4e00-\u9fa5]+$", username):
             return False, "用户名只能包含字母、数字、下划线和中文"
 
         return True, ""
@@ -58,7 +58,7 @@ class AuthService:
         if not email:
             return False, "邮箱不能为空"
 
-        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        email_pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
         if not re.match(email_pattern, email):
             return False, "邮箱格式不正确"
 
@@ -83,16 +83,17 @@ class AuthService:
             return False, "密码最多 50 个字符"
 
         # 检查密码强度（至少包含字母和数字）
-        has_letter = bool(re.search(r'[a-zA-Z]', password))
-        has_digit = bool(re.search(r'\d', password))
+        has_letter = bool(re.search(r"[a-zA-Z]", password))
+        has_digit = bool(re.search(r"\d", password))
 
         if not (has_letter and has_digit):
             return False, "密码必须包含字母和数字"
 
         return True, ""
 
-    def register(self, username: str, email: str, password: str,
-                  confirm_password: str) -> Tuple[bool, str]:
+    def register(
+        self, username: str, email: str, password: str, confirm_password: str
+    ) -> Tuple[bool, str]:
         """注册新用户
 
         Args:
@@ -131,8 +132,7 @@ class AuthService:
 
         return True, "注册成功！"
 
-    def login(self, username: str, password: str,
-               remember_me: bool = False) -> Tuple[bool, str]:
+    def login(self, username: str, password: str, remember_me: bool = False) -> Tuple[bool, str]:
         """用户登录
 
         Args:
@@ -157,7 +157,7 @@ class AuthService:
 
         # 创建会话
         expires_in_days = 30 if remember_me else 1
-        session_token = self.db.create_session(user['id'], expires_in_days)
+        session_token = self.db.create_session(user["id"], expires_in_days)
 
         # 保存当前用户和会话
         self.current_user = user
@@ -173,8 +173,9 @@ class AuthService:
         self.current_user = None
         self.current_session = None
 
-    def change_password(self, old_password: str, new_password: str,
-                       confirm_password: str) -> Tuple[bool, str]:
+    def change_password(
+        self, old_password: str, new_password: str, confirm_password: str
+    ) -> Tuple[bool, str]:
         """修改密码
 
         Args:
@@ -205,11 +206,7 @@ class AuthService:
             return False, "新密码不能与旧密码相同"
 
         # 修改密码
-        success = self.db.change_password(
-            self.current_user['id'],
-            old_password,
-            new_password
-        )
+        success = self.db.change_password(self.current_user["id"], old_password, new_password)
 
         if not success:
             return False, "旧密码错误"

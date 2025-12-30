@@ -91,4 +91,3 @@ def check_optional_dependencies() -> DependencyStatus:
         "python_executable": sys.executable,
         "in_project_venv": _is_project_venv(project_root),
     }
-

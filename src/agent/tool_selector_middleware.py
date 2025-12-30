@@ -51,14 +51,28 @@ except Exception:  # pragma: no cover - 允许在缺少 LangChain 依赖时导�
 
 logger = get_logger(__name__)
 
-DEFAULT_SYSTEM_PROMPT = "Your goal is to select the most relevant tools for answering the user's query."
+DEFAULT_SYSTEM_PROMPT = (
+    "Your goal is to select the most relevant tools for answering the user's query."
+)
 
 _CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "time": ("时间", "几点", "日期", "today", "date", "time", "now"),
     "weather": ("天气", "气温", "温度", "下雨", "降雨", "forecast", "weather"),
     "map": ("地图", "导航", "路线", "怎么走", "附近", "地址", "map", "route", "nearby"),
     "search": ("搜索", "查一下", "查找", "搜一下", "资料", "news", "search", "google", "bing"),
-    "file": ("文件", "目录", "路径", "读取", "打开", "保存到", "file", "path", "directory", "read", "write"),
+    "file": (
+        "文件",
+        "目录",
+        "路径",
+        "读取",
+        "打开",
+        "保存到",
+        "file",
+        "path",
+        "directory",
+        "read",
+        "write",
+    ),
     "note": ("笔记", "备忘", "记录一下", "note", "memo"),
     "reminder": ("提醒", "闹钟", "定时", "remind", "alarm", "schedule"),
     "calc": ("计算", "算一下", "calculator", "calc", "math"),
@@ -324,7 +338,9 @@ class MintChatToolSelectorMiddleware(AgentMiddleware):
 
     def _ensure_executor(self) -> ThreadPoolExecutor:
         if self._executor is None:
-            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mintchat-tool-select")
+            self._executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="mintchat-tool-select"
+            )
         return self._executor
 
     def close(self) -> None:
@@ -390,7 +406,9 @@ class MintChatToolSelectorMiddleware(AgentMiddleware):
             pass
         return scores
 
-    def _heuristic_select_tool_names(self, user_text: str, tool_names: list[str]) -> tuple[list[str], int]:
+    def _heuristic_select_tool_names(
+        self, user_text: str, tool_names: list[str]
+    ) -> tuple[list[str], int]:
         """
         启发式预筛选：基于用户文本快速缩小候选工具集合，减少工具 schema 体积与额外 LLM 调用次数。
 
@@ -617,7 +635,11 @@ class MintChatToolSelectorMiddleware(AgentMiddleware):
 
         # 对同一条用户消息的多次 model call（工具链循环/重试）复用筛选结果
         try:
-            user_key = str(getattr(selection_request.last_user_message, "content", "") or "").strip().lower()
+            user_key = (
+                str(getattr(selection_request.last_user_message, "content", "") or "")
+                .strip()
+                .lower()
+            )
             cache_key = (user_key[:500], tuple(selection_request.valid_tool_names))
             cached = self._cache_get(cache_key)
         except Exception:
@@ -715,7 +737,11 @@ class MintChatToolSelectorMiddleware(AgentMiddleware):
             return await handler(request)
 
         try:
-            user_key = str(getattr(selection_request.last_user_message, "content", "") or "").strip().lower()
+            user_key = (
+                str(getattr(selection_request.last_user_message, "content", "") or "")
+                .strip()
+                .lower()
+            )
             cache_key = (user_key[:500], tuple(selection_request.valid_tool_names))
             cached = self._cache_get(cache_key)
         except Exception:
@@ -745,7 +771,9 @@ class MintChatToolSelectorMiddleware(AgentMiddleware):
                 selection_request.last_user_message,
             ]
             if self.timeout_s > 0:
-                result = await asyncio.wait_for(structured_model.ainvoke(messages), timeout=self.timeout_s)
+                result = await asyncio.wait_for(
+                    structured_model.ainvoke(messages), timeout=self.timeout_s
+                )
             else:
                 result = await structured_model.ainvoke(messages)
         except asyncio.TimeoutError:

@@ -277,4 +277,3 @@ async def _run_paragraph_split() -> None:
 
 def test_ttsmanager_paragraph_split() -> None:
     asyncio.run(_run_paragraph_split())
-

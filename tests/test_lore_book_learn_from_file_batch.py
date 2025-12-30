@@ -36,7 +36,10 @@ def test_lorebook_learn_from_file_batches_vectorstore_add():
     lore_book._lock = Lock()
 
     lore_book._read_file_content = lambda filepath, file_type=None: "a\n\nb\n\nc"
-    lore_book._split_content_into_chunks = lambda content, chunk_size, overlap=100: ["chunk1", "chunk2"]
+    lore_book._split_content_into_chunks = lambda content, chunk_size, overlap=100: [
+        "chunk1",
+        "chunk2",
+    ]
     lore_book._extract_title_from_chunk = lambda chunk, idx: f"title{idx}"
     lore_book._extract_category_from_content = lambda chunk: "general"
     lore_book._extract_keywords_from_content = lambda chunk: ["k1"]

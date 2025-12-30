@@ -2,7 +2,7 @@
 应用配置类
 
 使用 Pydantic 进行配置管理，支持从 YAML 配置文件加载。
-基于 config.yaml 的统一配置方案。
+基于 config.user.yaml + config.dev.yaml 的统一配置方案（兼容 config.yaml）。
 """
 
 from pathlib import Path
@@ -17,7 +17,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.utils.logger import logger
+from src.utils.logger import logger  # noqa: E402
+from src.config.config_files import (  # noqa: E402
+    DEFAULT_DEV_CONFIG_EXAMPLE_PATH,
+    DEFAULT_DEV_CONFIG_PATH,
+    DEFAULT_USER_CONFIG_EXAMPLE_PATH,
+    DEFAULT_USER_CONFIG_PATH,
+    LEGACY_CONFIG_PATH,
+    deep_merge_dict,
+    read_yaml_file,
+    resolve_config_paths,
+    to_project_path,
+)
 
 # ==================== LLM 配置模型 ====================
 
@@ -206,16 +217,6 @@ class TTSConfig(BaseModel):
         description="GPT-SoVITS 文本切分方法（cut0/cut1/cut2/cut3/cut4/cut5），默认不切分（cut0），由前端控制分句",
     )
 
-    batch_size: int = Field(
-        default=1,
-        description="批处理大小",
-    )
-
-    seed: int = Field(
-        default=-1,
-        description="随机种子（-1 表示随机）",
-    )
-
     max_queue_size: int = Field(
         default=10,
         description="音频队列最大长度",
@@ -333,11 +334,6 @@ class TTSConfig(BaseModel):
         description="熔断后冷却时间（秒）",
     )
 
-    ex_config: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="额外配置（可选）",
-    )
-
 
 # ==================== ASR 配置模型 ====================
 
@@ -437,6 +433,53 @@ class ASRConfig(BaseModel):
         gt=0.5,
         le=20.0,
         description="实时转写窗口长度（秒）：每次识别取最近 N 秒音频（降低延迟与抖动）",
+    )
+
+    # ==================== Realtime Streaming ASR (Low Latency) ====================
+
+    realtime_mode: str = Field(
+        default="auto",
+        description=(
+            "实时语音输入模式：auto=优先流式（更低延迟）；window=滑窗（兼容旧逻辑）；"
+            "streaming=仅流式；dual=流式 partial + 最终模型二次识别（更高准确度）"
+        ),
+    )
+
+    streaming_model: str = Field(
+        default="paraformer-zh-streaming",
+        description="流式 ASR 模型（FunASR），用于低延迟 partial 更新（默认：paraformer-zh-streaming）",
+    )
+
+    streaming_hub: Optional[str] = Field(
+        default=None,
+        description="流式模型仓库来源（hf=HuggingFace, ms=ModelScope）；为空则自动推断",
+    )
+
+    streaming_chunk_size: list[int] = Field(
+        default_factory=lambda: [0, 8, 4],
+        description=(
+            "流式 chunk_size：[0, chunk, lookahead]，单位 60ms；例如 [0,8,4]=480ms 粒度 + "
+            "240ms lookahead"
+        ),
+    )
+
+    streaming_encoder_chunk_look_back: int = Field(
+        default=4,
+        ge=0,
+        le=20,
+        description="流式：encoder self-attention 回看 chunk 数",
+    )
+
+    streaming_decoder_chunk_look_back: int = Field(
+        default=1,
+        ge=0,
+        le=20,
+        description="流式：decoder cross-attention 回看 encoder chunk 数",
+    )
+
+    dual_emit_streaming_final: bool = Field(
+        default=True,
+        description="dual 模式：先用流式结果立即写入输入框，再用最终模型覆盖（体感更快）",
     )
 
     silence_skip_partial: bool = Field(
@@ -824,16 +867,6 @@ class AgentConfig(BaseModel):
         description="是否从对话中自动学习知识",
     )
 
-    auto_learn_from_file: bool = Field(
-        default=True,
-        description="是否从文件中自动学习知识",
-    )
-
-    auto_learn_from_mcp: bool = Field(
-        default=True,
-        description="是否从MCP中自动学习知识",
-    )
-
     # TTS 预取优化
     tts_auto_prefetch: bool = Field(
         default=True,
@@ -849,13 +882,6 @@ class AgentConfig(BaseModel):
     use_llm_for_knowledge_extraction: bool = Field(
         default=False,
         description="是否使用 LLM 辅助知识提取（更智能但更慢，需要消耗 API）",
-    )
-
-    knowledge_deduplication_threshold: float = Field(
-        default=0.85,
-        ge=0.0,
-        le=1.0,
-        description="知识去重相似度阈值（相似度 >= 此值认为重复）",
     )
 
     # 主动知识推送（ProactiveKnowledgePusher）
@@ -1057,12 +1083,6 @@ class AgentConfig(BaseModel):
         description="情绪影响函数配置",
     )
 
-    # 上下文配置
-    context_length: int = Field(
-        default=40,
-        ge=0,
-        description="上下文长度，0 表示保存所有上下文",
-    )
     context_auto_compress_ratio: float = Field(
         default=0.75,
         ge=0.1,
@@ -1336,41 +1356,16 @@ class Settings(BaseModel):
         description="是否额外输出 JSON 行格式日志，便于分析与上报",
     )
     log_quiet_libs: list[str] = Field(
-        default_factory=lambda: [
-            "httpx",
-            "asyncio",
-            "urllib3",
-            "charset_normalizer",
-            "multipart.multipart",
-            "httpcore",
-            "openai",
-            "chromadb",
-            "posthog",
-            "langchain",
-            "src.agent.hybrid_retriever",
-            "src.agent.knowledge_quality",
-            "src.agent.knowledge_graph",
-            "src.agent.performance_optimizer",
-        ],
-        description="需要降低噪声的三方 logger 名称列表",
+        default_factory=list,
+        description="需要降低噪声的三方 logger 名称列表（空列表表示使用内置默认）",
     )
     log_quiet_level: str = Field(
         default="WARNING",
         description="对 log_quiet_libs 应用的日志级别",
     )
     log_drop_keywords: list[str] = Field(
-        default_factory=lambda: [
-            "Request options:",
-            "Sending HTTP Request:",
-            "HTTP Response:",
-            "receive_response_body.started",
-            "receive_response_headers.started",
-            "send_request_headers.started",
-            "send_request_body.started",
-            "插入消息:",
-            "已显示",
-        ],
-        description="包含任意关键词的日志将被丢弃（不输出）",
+        default_factory=list,
+        description="附加丢弃关键词列表（空列表表示仅使用内置默认）",
     )
 
     # 数据路径配置
@@ -1488,7 +1483,7 @@ class Settings(BaseModel):
     @property
     def short_term_memory_k(self) -> int:
         """兼容旧版：短期记忆数量"""
-        return self.agent.context_length if self.agent.context_length > 0 else 10
+        return max(1, int(getattr(self.agent, "max_history_length", 10) or 10))
 
     @property
     def long_term_memory_enabled(self) -> bool:
@@ -1513,7 +1508,7 @@ class Settings(BaseModel):
             ValueError: 如果未配置 API Key
         """
         if not self.llm.key:
-            raise ValueError("LLM API Key 未配置，请在 config.yaml 中设置 LLM.key")
+            raise ValueError("LLM API Key 未配置，请在 config.user.yaml 中设置 LLM.key")
         return self.llm.key
 
     def ensure_directories(self) -> None:
@@ -1531,9 +1526,13 @@ class Settings(BaseModel):
             path.mkdir(parents=True, exist_ok=True)
 
     @classmethod
-    def from_yaml(cls, config_path: str = "config.yaml") -> "Settings":
+    def from_yaml(cls, config_path: str = DEFAULT_USER_CONFIG_PATH) -> "Settings":
         """
-        从 YAML 文件加载配置
+        从 YAML 文件加载配置（单文件）。
+
+        说明：
+        - 默认读取 `config.user.yaml`（普通用户配置）。
+        - 可选叠加 `config.dev.yaml`（开发者配置）的逻辑在 `load_settings()` 中实现。
 
         Args:
             config_path: 配置文件路径
@@ -1545,159 +1544,151 @@ class Settings(BaseModel):
             FileNotFoundError: 如果配置文件不存在
             ValueError: 如果配置文件格式错误
         """
-        config_file = Path(config_path)
+        config_file = to_project_path(config_path)
 
         if not config_file.exists():
             raise FileNotFoundError(
-                f"配置文件不存在: {config_path}\n"
-                f"请复制 config.yaml.example 为 config.yaml 并填写配置"
+                f"配置文件不存在: {config_file}\n"
+                f"首次运行请复制 {DEFAULT_USER_CONFIG_EXAMPLE_PATH} 为 {DEFAULT_USER_CONFIG_PATH} 并填写配置。\n"
+                f"开发者可选复制 {DEFAULT_DEV_CONFIG_EXAMPLE_PATH} 为 {DEFAULT_DEV_CONFIG_PATH}。"
             )
 
         try:
-            with open(config_file, "r", encoding="utf-8") as f:
-                config_data = yaml.safe_load(f)
+            config_data = read_yaml_file(config_file)
 
             if not config_data:
                 raise ValueError("配置文件为空")
 
-            # 转换为小写键名（兼容性处理）
-            llm_config = config_data.get("LLM", {})
-            vision_llm_config = config_data.get("VISION_LLM", {}) or {}
-            agent_config = config_data.get("Agent", {})
-            log_level = config_data.get("log_level", "INFO")
-            log_dir = config_data.get("log_dir", "logs")
-            log_rotation = config_data.get("log_rotation", "50 MB")
-            log_retention = config_data.get("log_retention", "14 days")
-            log_json = config_data.get("log_json", True)
-            log_quiet_libs = config_data.get(
-                "log_quiet_libs",
-                ["httpx", "asyncio", "urllib3", "charset_normalizer", "multipart.multipart"],
-            )
-            log_quiet_level = config_data.get("log_quiet_level", "WARNING")
-            log_drop_keywords = config_data.get(
-                "log_drop_keywords",
-                [
-                    "Request options:",
-                    "Sending HTTP Request:",
-                    "HTTP Response:",
-                    "receive_response_body.started",
-                    "receive_response_headers.started",
-                    "send_request_headers.started",
-                    "send_request_body.started",
-                ],
-            )
-
-            # 处理 extra_config（可能为 None）
-            if "extra_config" in llm_config and llm_config["extra_config"] is None:
-                llm_config["extra_config"] = {}
-            if "extra_config" in vision_llm_config and vision_llm_config["extra_config"] is None:
-                vision_llm_config["extra_config"] = {}
-
-            # 处理 Agent 配置中可能为 None 的字符串字段
-            none_fields = [
-                "char_settings",
-                "char_personalities",
-                "mask",
-                "message_example",
-                "prompt",
-            ]
-            for field in none_fields:
-                if field in agent_config and agent_config[field] is None:
-                    agent_config[field] = ""
-
-            # 处理情绪函数配置
-            if "mood_functions" in agent_config:
-                mood_funcs = agent_config["mood_functions"]
-                if mood_funcs:
-                    agent_config["mood_functions"] = MoodFunctions(**mood_funcs)
-
-            # 构建完整的配置参数
-            settings_kwargs = {
-                "llm": LLMConfig(**llm_config),
-                "vision_llm": VisionLLMConfig(**vision_llm_config),
-                "agent": AgentConfig(**agent_config),
-                "log_level": log_level,
-                "log_dir": log_dir,
-                "log_rotation": log_rotation,
-                "log_retention": log_retention,
-                "log_json": log_json,
-                "log_quiet_libs": log_quiet_libs,
-                "log_quiet_level": log_quiet_level,
-                "log_drop_keywords": log_drop_keywords,
-            }
-
-            # 加载其他配置项（如果存在）
-            # 数据路径配置
-            if "data_dir" in config_data:
-                settings_kwargs["data_dir"] = config_data["data_dir"]
-            if "vector_db_path" in config_data:
-                settings_kwargs["vector_db_path"] = config_data["vector_db_path"]
-            if "memory_path" in config_data:
-                settings_kwargs["memory_path"] = config_data["memory_path"]
-            if "cache_path" in config_data:
-                settings_kwargs["cache_path"] = config_data["cache_path"]
-
-            # 嵌入模型配置（关键修复）
-            if "embedding_model" in config_data:
-                settings_kwargs["embedding_model"] = config_data["embedding_model"]
-            if "embedding_api_base" in config_data:
-                settings_kwargs["embedding_api_base"] = config_data["embedding_api_base"]
-
-            # 性能优化配置 (v2.30.27)
-            if "use_local_embedding" in config_data:
-                settings_kwargs["use_local_embedding"] = config_data["use_local_embedding"]
-            if "enable_embedding_cache" in config_data:
-                settings_kwargs["enable_embedding_cache"] = config_data["enable_embedding_cache"]
-
-            # 多模态配置
-            if "max_image_size" in config_data:
-                settings_kwargs["max_image_size"] = config_data["max_image_size"]
-            if "max_audio_duration" in config_data:
-                settings_kwargs["max_audio_duration"] = config_data["max_audio_duration"]
-
-            # MCP 配置 (v2.30.15 新增)
-            if "MCP" in config_data:
-                mcp_config_data = config_data["MCP"]
-                if mcp_config_data:
-                    # 处理服务器配置
-                    servers = {}
-                    if "servers" in mcp_config_data and mcp_config_data["servers"]:
-                        for server_name, server_config in mcp_config_data["servers"].items():
-                            if server_config:
-                                servers[server_name] = MCPServerConfig(**server_config)
-
-                    # ???? MCP ????
-                    enabled_value = mcp_config_data.get(
-                        "enabled", mcp_config_data.get("enable", True)
-                    )
-                    mcp_config = MCPConfig(enabled=enabled_value, servers=servers)
-                    settings_kwargs["mcp"] = mcp_config
-
-            # TTS 配置 (v2.48.10 新增)
-            if "TTS" in config_data:
-                tts_config_data = config_data["TTS"]
-                if tts_config_data:
-                    # 处理 ex_config（可能为 None）
-                    if "ex_config" in tts_config_data and tts_config_data["ex_config"] is None:
-                        tts_config_data["ex_config"] = {}
-
-                    # 创建 TTS 配置
-                    tts_config = TTSConfig(**tts_config_data)
-                    settings_kwargs["tts"] = tts_config
-
-            # ASR 配置 (v2.56.0 新增)
-            if "ASR" in config_data:
-                asr_config_data = config_data["ASR"]
-                if asr_config_data:
-                    asr_config = ASRConfig(**asr_config_data)
-                    settings_kwargs["asr"] = asr_config
-
-            return cls(**settings_kwargs)
+            return cls.from_dict(config_data)
 
         except yaml.YAMLError as e:
             raise ValueError(f"配置文件格式错误: {e}")
         except Exception as e:
             raise ValueError(f"加载配置文件失败: {e}")
+
+    @classmethod
+    def from_dict(cls, config_data: Dict[str, Any]) -> "Settings":
+        """从 dict 加载配置（通常来自多文件合并结果）。"""
+        if not config_data:
+            raise ValueError("配置数据为空")
+
+        # 转换为小写键名（兼容性处理）
+        llm_config = config_data.get("LLM", {})
+        vision_llm_config = config_data.get("VISION_LLM", {}) or {}
+        agent_config = config_data.get("Agent", {})
+        log_level = config_data.get("log_level", "INFO")
+        log_dir = config_data.get("log_dir", "logs")
+        log_rotation = config_data.get("log_rotation", "50 MB")
+        log_retention = config_data.get("log_retention", "14 days")
+        log_json = config_data.get("log_json", True)
+        log_quiet_libs = config_data.get("log_quiet_libs")
+        if not isinstance(log_quiet_libs, list):
+            log_quiet_libs = []
+        log_quiet_level = config_data.get("log_quiet_level", "WARNING")
+        log_drop_keywords = config_data.get("log_drop_keywords")
+        if not isinstance(log_drop_keywords, list):
+            log_drop_keywords = []
+
+        # 处理 extra_config（可能为 None）
+        if "extra_config" in llm_config and llm_config["extra_config"] is None:
+            llm_config["extra_config"] = {}
+        if "extra_config" in vision_llm_config and vision_llm_config["extra_config"] is None:
+            vision_llm_config["extra_config"] = {}
+
+        # 处理 Agent 配置中可能为 None 的字符串字段
+        none_fields = [
+            "char_settings",
+            "char_personalities",
+            "mask",
+            "message_example",
+            "prompt",
+        ]
+        for field in none_fields:
+            if field in agent_config and agent_config[field] is None:
+                agent_config[field] = ""
+
+        # 处理情绪函数配置
+        if "mood_functions" in agent_config:
+            mood_funcs = agent_config["mood_functions"]
+            if mood_funcs:
+                agent_config["mood_functions"] = MoodFunctions(**mood_funcs)
+
+        # 构建完整的配置参数
+        settings_kwargs = {
+            "llm": LLMConfig(**llm_config),
+            "vision_llm": VisionLLMConfig(**vision_llm_config),
+            "agent": AgentConfig(**agent_config),
+            "log_level": log_level,
+            "log_dir": log_dir,
+            "log_rotation": log_rotation,
+            "log_retention": log_retention,
+            "log_json": log_json,
+            "log_quiet_libs": log_quiet_libs,
+            "log_quiet_level": log_quiet_level,
+            "log_drop_keywords": log_drop_keywords,
+        }
+
+        # 加载其他配置项（如果存在）
+        # 数据路径配置
+        if "data_dir" in config_data:
+            settings_kwargs["data_dir"] = config_data["data_dir"]
+        if "vector_db_path" in config_data:
+            settings_kwargs["vector_db_path"] = config_data["vector_db_path"]
+        if "memory_path" in config_data:
+            settings_kwargs["memory_path"] = config_data["memory_path"]
+        if "cache_path" in config_data:
+            settings_kwargs["cache_path"] = config_data["cache_path"]
+
+        # 嵌入模型配置（关键修复）
+        if "embedding_model" in config_data:
+            settings_kwargs["embedding_model"] = config_data["embedding_model"]
+        if "embedding_api_base" in config_data:
+            settings_kwargs["embedding_api_base"] = config_data["embedding_api_base"]
+
+        # 性能优化配置 (v2.30.27)
+        if "use_local_embedding" in config_data:
+            settings_kwargs["use_local_embedding"] = config_data["use_local_embedding"]
+        if "enable_embedding_cache" in config_data:
+            settings_kwargs["enable_embedding_cache"] = config_data["enable_embedding_cache"]
+
+        # 多模态配置
+        if "max_image_size" in config_data:
+            settings_kwargs["max_image_size"] = config_data["max_image_size"]
+        if "max_audio_duration" in config_data:
+            settings_kwargs["max_audio_duration"] = config_data["max_audio_duration"]
+
+        # MCP 配置 (v2.30.15 新增)
+        if "MCP" in config_data:
+            mcp_config_data = config_data["MCP"]
+            if mcp_config_data:
+                # 处理服务器配置
+                servers = {}
+                if "servers" in mcp_config_data and mcp_config_data["servers"]:
+                    for server_name, server_config in mcp_config_data["servers"].items():
+                        if server_config:
+                            servers[server_name] = MCPServerConfig(**server_config)
+
+                # ???? MCP ????
+                enabled_value = mcp_config_data.get("enabled", mcp_config_data.get("enable", True))
+                mcp_config = MCPConfig(enabled=enabled_value, servers=servers)
+                settings_kwargs["mcp"] = mcp_config
+
+        # TTS 配置 (v2.48.10 新增)
+        if "TTS" in config_data:
+            tts_config_data = config_data["TTS"]
+            if tts_config_data:
+                # 创建 TTS 配置
+                tts_config = TTSConfig(**tts_config_data)
+                settings_kwargs["tts"] = tts_config
+
+        # ASR 配置 (v2.56.0 新增)
+        if "ASR" in config_data:
+            asr_config_data = config_data["ASR"]
+            if asr_config_data:
+                asr_config = ASRConfig(**asr_config_data)
+                settings_kwargs["asr"] = asr_config
+
+        return cls(**settings_kwargs)
 
     def to_yaml(self, output_path: str) -> None:
         """
@@ -1747,61 +1738,103 @@ class Settings(BaseModel):
 
 # 配置缓存
 _settings_cache: Optional[Settings] = None
-_settings_cache_path: Optional[str] = None
+_settings_cache_key: Optional[tuple[str, str, int | None, int | None]] = None
 
 
-def load_settings(config_path: str = "config.yaml", use_cache: bool = True) -> Settings:
+def load_settings(
+    user_config_path: str = DEFAULT_USER_CONFIG_PATH,
+    dev_config_path: str = DEFAULT_DEV_CONFIG_PATH,
+    use_cache: bool = True,
+    *,
+    allow_legacy: bool = True,
+) -> Settings:
     """
     加载配置（带缓存优化）
 
     Args:
-        config_path: 配置文件路径
+        user_config_path: 普通用户配置文件路径（默认 config.user.yaml；兼容 legacy config.yaml）
+        dev_config_path: 开发者配置文件路径（默认 config.dev.yaml；可选）
         use_cache: 是否使用缓存（默认True，提升性能）
+        allow_legacy: 是否允许回退到 legacy config.yaml（默认 True）
 
     Returns:
         Settings: 配置实例
     """
-    global _settings_cache, _settings_cache_path
+    global _settings_cache, _settings_cache_key
+
+    user_path, dev_path, legacy_used = resolve_config_paths(
+        user_config_path=user_config_path,
+        dev_config_path=dev_config_path,
+        allow_legacy=allow_legacy,
+    )
+
+    def _mtime_ns(path: Path | None) -> int | None:
+        if path is None:
+            return None
+        try:
+            return path.stat().st_mtime_ns
+        except FileNotFoundError:
+            return None
+
+    cache_key = (
+        str(user_path),
+        str(dev_path) if dev_path is not None else "",
+        _mtime_ns(user_path),
+        _mtime_ns(dev_path),
+    )
 
     # 使用缓存（避免重复加载）
-    if use_cache and _settings_cache is not None and _settings_cache_path == config_path:
-        logger.debug(f"配置缓存命中: {config_path}")
+    if use_cache and _settings_cache is not None and _settings_cache_key == cache_key:
+        logger.debug(f"配置缓存命中: user={user_path} dev={dev_path}")
         return _settings_cache
 
+    if legacy_used:
+        logger.info(
+            f"检测到 legacy 配置文件: {LEGACY_CONFIG_PATH}；"
+            f"建议迁移到 {DEFAULT_USER_CONFIG_PATH} + {DEFAULT_DEV_CONFIG_PATH}。"
+        )
+
     try:
-        settings_instance = Settings.from_yaml(config_path)
-        settings_instance.ensure_directories()
-        try:
-            from src.utils.logger import apply_settings as apply_logging_settings
+        user_data: Dict[str, Any] = {}
+        if user_path.exists():
+            user_data = read_yaml_file(user_path)
+        else:
+            if user_config_path == DEFAULT_USER_CONFIG_PATH and not legacy_used:
+                logger.warning(
+                    f"未找到配置文件 {DEFAULT_USER_CONFIG_PATH}，将使用默认配置；"
+                    f"首次运行请复制 {DEFAULT_USER_CONFIG_EXAMPLE_PATH} 为 {DEFAULT_USER_CONFIG_PATH}。"
+                )
+            else:
+                logger.warning(f"配置文件不存在: {user_path}，将使用默认配置。")
 
-            apply_logging_settings(settings_instance)
-        except Exception as exc:
-            logger.warning(f"日志配置应用失败，将使用默认日志: {exc}")
+        dev_data: Dict[str, Any] = {}
+        if dev_path is not None:
+            try:
+                dev_data = read_yaml_file(dev_path)
+            except Exception as exc:
+                logger.warning(f"开发者配置文件读取失败，将忽略: {dev_path} ({exc})")
+                dev_data = {}
 
-        # 更新缓存
-        if use_cache:
-            _settings_cache = settings_instance
-            _settings_cache_path = config_path
-
-        return settings_instance
-    except FileNotFoundError:
-        # 如果配置文件不存在，使用默认配置
-        logger.warning(f"警告: 配置文件 {config_path} 不存在，使用默认配置")
+        config_data = deep_merge_dict(user_data, dev_data)
+        settings_instance = Settings.from_dict(config_data)
+    except Exception as exc:
+        logger.warning(f"加载配置失败，将使用默认配置: {exc}")
         settings_instance = Settings()
-        settings_instance.ensure_directories()
-        try:
-            from src.utils.logger import apply_settings as apply_logging_settings
 
-            apply_logging_settings(settings_instance)
-        except Exception as exc:
-            logger.warning(f"日志配置应用失败，将使用默认日志: {exc}")
+    settings_instance.ensure_directories()
+    try:
+        from src.utils.logger import apply_settings as apply_logging_settings
 
-        # 更新缓存
-        if use_cache:
-            _settings_cache = settings_instance
-            _settings_cache_path = config_path
+        apply_logging_settings(settings_instance)
+    except Exception as exc:
+        logger.warning(f"日志配置应用失败，将使用默认日志: {exc}")
 
-        return settings_instance
+    # 更新缓存
+    if use_cache:
+        _settings_cache = settings_instance
+        _settings_cache_key = cache_key
+
+    return settings_instance
 
 
 # 创建全局配置实例

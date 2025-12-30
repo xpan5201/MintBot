@@ -63,17 +63,17 @@ Windows/Linux 环境下，本项目锁定使用 `torch==2.9.1+cu130`（来自 Py
 ./.venv/bin/python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 ```
 
-### 3) 配置（生成本地 `config.yaml`）
+### 3) 配置（生成本地 `config.user.yaml`）
 
 ```bash
 # Windows
-copy config.yaml.example config.yaml
+copy config.user.yaml.example config.user.yaml
 
 # macOS / Linux
-cp config.yaml.example config.yaml
+cp config.user.yaml.example config.user.yaml
 ```
 
-`config.yaml` 已在 `.gitignore` 中忽略，请不要提交真实 key；如需提交模板请改 `config.yaml.example`。
+`config.user.yaml` / `config.dev.yaml` 已在 `.gitignore` 中忽略，请不要提交真实 key；提交模板请使用 `*.example` 文件。
 
 ### (可选) 启用语音输入 ASR（SenseVoiceSmall）
 
@@ -81,7 +81,7 @@ cp config.yaml.example config.yaml
 uv sync --locked --no-install-project --extra asr
 ```
 
-然后在 `config.yaml` 中打开 `ASR.enabled: true`（其余参数可参考 `config.yaml.example`）。
+然后在 `config.user.yaml` 中打开 `ASR.enabled: true`（其余参数可参考 `config.user.yaml.example` / `config.dev.yaml.example`）。
 
 实时语音输入已内置轻量 RMS-VAD + 停顿自动结束（如 `ASR.endpoint_silence_ms`、`ASR.silence_threshold_mode`、`ASR.pre_roll_ms`），可根据环境噪声与使用习惯微调。
 
@@ -168,8 +168,11 @@ MintChat/
 ├── MintChat.py          # GUI 入口
 ├── pyproject.toml       # 依赖与项目元数据（uv 源）
 ├── uv.lock              # 锁文件（可复现安装）
-├── config.yaml.example  # 可提交的配置模板
-└── config.yaml          # 本地配置（已被 git 忽略）
+├── config.user.yaml.example  # 可提交的用户配置模板
+├── config.dev.yaml.example   # 可提交的开发者配置模板（可选覆盖）
+├── config.yaml.example       # legacy 单文件模板（可选）
+├── config.user.yaml          # 本地用户配置（已被 git 忽略）
+└── config.dev.yaml           # 本地开发者配置（已被 git 忽略）
 ```
 
 ## 常见问题
@@ -187,7 +190,7 @@ uv pip install --upgrade setuptools
 
 这是 FunASR 在 HuggingFace 仓库布局下无法解析 `model` 配置导致的。请改用 ModelScope 的 SenseVoiceSmall：
 
-- `config.yaml` 中设置：
+- `config.user.yaml`（或 `config.dev.yaml`）中设置：
   - `ASR.model: "iic/SenseVoiceSmall"`
   - `ASR.hub: "ms"`
 - 然后执行：`uv sync --locked --no-install-project --extra asr`

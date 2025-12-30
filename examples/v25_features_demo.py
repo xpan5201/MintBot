@@ -236,6 +236,7 @@ def main():
     except Exception as e:
         print(f"\n\n演示过程中出错: {e}")
         import traceback
+
         traceback.print_exc()
 
 

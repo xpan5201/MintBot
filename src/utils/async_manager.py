@@ -335,13 +335,13 @@ def with_timeout(timeout_seconds: float):
         timeout_seconds: 超时时间（秒）
     """
 
-    def decorator(func: Callable[..., Coroutine[Any, Any, T]]) -> Callable[..., Coroutine[Any, Any, T]]:
+    def decorator(
+        func: Callable[..., Coroutine[Any, Any, T]],
+    ) -> Callable[..., Coroutine[Any, Any, T]]:
         @functools.wraps(func)
         async def wrapper(*args, **kwargs) -> T:
             try:
-                return await asyncio.wait_for(
-                    func(*args, **kwargs), timeout=timeout_seconds
-                )
+                return await asyncio.wait_for(func(*args, **kwargs), timeout=timeout_seconds)
             except asyncio.TimeoutError:
                 raise TimeoutError(f"函数执行超时 ({timeout_seconds}秒): {func.__name__}")
 

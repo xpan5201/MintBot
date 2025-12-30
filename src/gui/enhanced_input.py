@@ -7,19 +7,23 @@
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QTextEdit,
+    QPushButton,
     QLabel,
 )
-from PyQt6.QtCore import (
-    Qt, QPropertyAnimation, QEasingCurve, pyqtSignal, pyqtProperty
-)
+from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtSignal, pyqtProperty
 
-from .material_design_light import (
-    MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION
-)
+from .material_design_light import MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION
 from .material_design_enhanced import (
-    MD3_ENHANCED_COLORS, MD3_ENHANCED_SPACING, MD3_ENHANCED_RADIUS,
-    MD3_ENHANCED_DURATION, MD3_ENHANCED_EASING, get_typography_css
+    MD3_ENHANCED_COLORS,
+    MD3_ENHANCED_SPACING,
+    MD3_ENHANCED_RADIUS,
+    MD3_ENHANCED_DURATION,
+    MD3_ENHANCED_EASING,
+    get_typography_css,
 )
 from .material_icons import MaterialIcon
 
@@ -44,7 +48,7 @@ class EnhancedTextInput(QTextEdit):
         # 设置基本属性
         self.setPlaceholderText(placeholder)
         self.setMaximumHeight(150)  # 增加最大高度
-        self.setMinimumHeight(48)   # 符合MD3最小触摸目标
+        self.setMinimumHeight(48)  # 符合MD3最小触摸目标
 
         # 设置样式
         self.setup_style()
@@ -57,7 +61,8 @@ class EnhancedTextInput(QTextEdit):
 
     def setup_style(self):
         """设置样式 - 使用增强的设计系统"""
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             QTextEdit {{
                 background: {MD3_ENHANCED_COLORS['surface_container']};
                 color: {MD3_ENHANCED_COLORS['on_surface']};
@@ -70,7 +75,8 @@ class EnhancedTextInput(QTextEdit):
                 border: 2px solid {MD3_ENHANCED_COLORS['primary']};
                 background: {MD3_ENHANCED_COLORS['surface_container_high']};
             }}
-        """)
+        """
+        )
 
     def setup_animations(self):
         """设置动画 - 优化流畅度"""
@@ -116,13 +122,19 @@ class EnhancedTextInput(QTextEdit):
     def keyPressEvent(self, event):
         """按键事件"""
         # Ctrl+Enter 发送
-        if event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+        if (
+            event.key() == Qt.Key.Key_Return
+            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+        ):
             self.send_requested.emit()
             return
 
         # 检查字符限制
         if len(self.toPlainText()) >= self.max_chars and event.key() not in [
-            Qt.Key.Key_Backspace, Qt.Key.Key_Delete, Qt.Key.Key_Left, Qt.Key.Key_Right
+            Qt.Key.Key_Backspace,
+            Qt.Key.Key_Delete,
+            Qt.Key.Key_Left,
+            Qt.Key.Key_Right,
         ]:
             return
 
@@ -183,19 +195,22 @@ class SmartSendButton(QPushButton):
 
         # 发送文本
         self.text_label = QLabel("发送")
-        self.text_label.setStyleSheet(f"""
+        self.text_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_primary']};
                 font-size: 14px;
                 font-weight: 500;
                 background: transparent;
             }}
-        """)
+        """
+        )
         layout.addWidget(self.text_label)
 
     def setup_style(self):
         """设置样式"""
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             QPushButton {{
                 background: {MD3_LIGHT_COLORS['gradient_mint_cyan']};
                 border: none;
@@ -211,7 +226,8 @@ class SmartSendButton(QPushButton):
                 background: {MD3_LIGHT_COLORS['surface_container']};
                 opacity: 0.5;
             }}
-        """)
+        """
+        )
 
     def setup_animations(self):
         """设置动画"""
@@ -303,37 +319,43 @@ class EnhancedInputArea(QWidget):
 
         # 提示文本
         self.hint_label = QLabel("Ctrl+Enter 发送")
-        self.hint_label.setStyleSheet(f"""
+        self.hint_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
                 font-size: 12px;
                 background: transparent;
             }}
-        """)
+        """
+        )
         info_row.addWidget(self.hint_label)
 
         info_row.addStretch()
 
         # 字符计数
         self.char_count_label = QLabel("0/2000")
-        self.char_count_label.setStyleSheet(f"""
+        self.char_count_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
                 font-size: 12px;
                 background: transparent;
             }}
-        """)
+        """
+        )
         info_row.addWidget(self.char_count_label)
 
         main_layout.addLayout(info_row)
 
         # 设置背景
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             QWidget {{
                 background: {MD3_LIGHT_COLORS['primary_container']};
                 border-top: 1px solid {MD3_LIGHT_COLORS['primary_light']};
             }}
-        """)
+        """
+        )
 
     def _on_text_changed(self, text: str):
         """文本改变"""
@@ -343,21 +365,25 @@ class EnhancedInputArea(QWidget):
 
         # 更新字符计数颜色
         if char_count > 1800:
-            self.char_count_label.setStyleSheet(f"""
+            self.char_count_label.setStyleSheet(
+                f"""
                 QLabel {{
                     color: {MD3_LIGHT_COLORS['error']};
                     font-size: 12px;
                     background: transparent;
                 }}
-            """)
+            """
+            )
         else:
-            self.char_count_label.setStyleSheet(f"""
+            self.char_count_label.setStyleSheet(
+                f"""
                 QLabel {{
                     color: {MD3_LIGHT_COLORS['on_surface_variant']};
                     font-size: 12px;
                     background: transparent;
                 }}
-            """)
+            """
+            )
 
         # 更新发送按钮状态
         self.send_btn.setEnabled(len(text.strip()) > 0)

@@ -10,9 +10,18 @@ TTS历史记录面板 - v2.40.0
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView,
-    QMessageBox, QComboBox, QDateEdit
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QLineEdit,
+    QHeaderView,
+    QMessageBox,
+    QComboBox,
+    QDateEdit,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QDate
 from typing import List, Dict, Any
@@ -25,50 +34,53 @@ logger = get_logger(__name__)
 
 class TTSHistoryPanel(QWidget):
     """TTS历史记录面板 (v2.40.0)"""
-    
+
     # 信号
     replay_requested = pyqtSignal(int)  # 重新播放请求 (record_id)
     export_requested = pyqtSignal(list)  # 导出请求 (record_ids)
     filter_changed = pyqtSignal()  # 筛选条件变化 (v2.41.0)
-    
+
     def __init__(self, parent=None):
         """
         初始化TTS历史记录面板
-        
+
         Args:
             parent: 父窗口
         """
         super().__init__(parent)
-        
+
         self._init_ui()
         logger.info("TTS历史记录面板已初始化")
-    
+
     def _init_ui(self):
         """初始化UI"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
-        
+
         # 标题和搜索栏
         header_layout = QHBoxLayout()
-        
+
         title_label = QLabel("📜 TTS历史记录")
-        title_label.setStyleSheet("""
+        title_label.setStyleSheet(
+            """
             QLabel {
                 font-size: 16px;
                 font-weight: bold;
                 color: #FF6B9D;
             }
-        """)
+        """
+        )
         header_layout.addWidget(title_label)
-        
+
         header_layout.addStretch()
-        
+
         # 搜索框
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("🔍 搜索文本...")
         self.search_input.setFixedWidth(200)
-        self.search_input.setStyleSheet("""
+        self.search_input.setStyleSheet(
+            """
             QLineEdit {
                 padding: 6px 12px;
                 border: 2px solid rgba(255, 107, 157, 0.3);
@@ -80,7 +92,8 @@ class TTSHistoryPanel(QWidget):
                 border-color: #FF6B9D;
                 background: white;
             }
-        """)
+        """
+        )
         self.search_input.textChanged.connect(self._on_search)
         header_layout.addWidget(self.search_input)
 
@@ -100,7 +113,8 @@ class TTSHistoryPanel(QWidget):
         self.start_date_edit.setDate(QDate.currentDate().addDays(-30))  # 默认最近30天
         self.start_date_edit.setDisplayFormat("yyyy-MM-dd")
         self.start_date_edit.setFixedWidth(120)
-        self.start_date_edit.setStyleSheet("""
+        self.start_date_edit.setStyleSheet(
+            """
             QDateEdit {
                 padding: 4px 8px;
                 border: 2px solid rgba(255, 107, 157, 0.3);
@@ -111,7 +125,8 @@ class TTSHistoryPanel(QWidget):
             QDateEdit:focus {
                 border-color: #FF6B9D;
             }
-        """)
+        """
+        )
         self.start_date_edit.dateChanged.connect(self._on_filter_changed)
         filter_layout.addWidget(self.start_date_edit)
 
@@ -122,7 +137,8 @@ class TTSHistoryPanel(QWidget):
         self.end_date_edit.setDate(QDate.currentDate())
         self.end_date_edit.setDisplayFormat("yyyy-MM-dd")
         self.end_date_edit.setFixedWidth(120)
-        self.end_date_edit.setStyleSheet("""
+        self.end_date_edit.setStyleSheet(
+            """
             QDateEdit {
                 padding: 4px 8px;
                 border: 2px solid rgba(255, 107, 157, 0.3);
@@ -133,7 +149,8 @@ class TTSHistoryPanel(QWidget):
             QDateEdit:focus {
                 border-color: #FF6B9D;
             }
-        """)
+        """
+        )
         self.end_date_edit.dateChanged.connect(self._on_filter_changed)
         filter_layout.addWidget(self.end_date_edit)
 
@@ -147,7 +164,8 @@ class TTSHistoryPanel(QWidget):
         self.ref_audio_combo = QComboBox()
         self.ref_audio_combo.addItem("全部", None)
         self.ref_audio_combo.setFixedWidth(150)
-        self.ref_audio_combo.setStyleSheet("""
+        self.ref_audio_combo.setStyleSheet(
+            """
             QComboBox {
                 padding: 4px 8px;
                 border: 2px solid rgba(255, 107, 157, 0.3);
@@ -168,7 +186,8 @@ class TTSHistoryPanel(QWidget):
                 border-top: 6px solid #FF6B9D;
                 margin-right: 8px;
             }
-        """)
+        """
+        )
         self.ref_audio_combo.currentIndexChanged.connect(self._on_filter_changed)
         filter_layout.addWidget(self.ref_audio_combo)
 
@@ -182,7 +201,8 @@ class TTSHistoryPanel(QWidget):
         self.emotion_combo = QComboBox()
         self.emotion_combo.addItem("全部", None)
         self.emotion_combo.setFixedWidth(120)
-        self.emotion_combo.setStyleSheet("""
+        self.emotion_combo.setStyleSheet(
+            """
             QComboBox {
                 padding: 4px 8px;
                 border: 2px solid rgba(255, 107, 157, 0.3);
@@ -203,7 +223,8 @@ class TTSHistoryPanel(QWidget):
                 border-top: 6px solid #FF6B9D;
                 margin-right: 8px;
             }
-        """)
+        """
+        )
         self.emotion_combo.currentIndexChanged.connect(self._on_filter_changed)
         filter_layout.addWidget(self.emotion_combo)
 
@@ -212,7 +233,8 @@ class TTSHistoryPanel(QWidget):
         # 重置筛选按钮
         reset_filter_btn = QPushButton("🔄 重置筛选")
         reset_filter_btn.setFixedSize(100, 30)
-        reset_filter_btn.setStyleSheet("""
+        reset_filter_btn.setStyleSheet(
+            """
             QPushButton {
                 background: qlineargradient(
                     x1:0, y1:0, x2:0, y2:1,
@@ -233,7 +255,8 @@ class TTSHistoryPanel(QWidget):
             QPushButton:pressed {
                 background: #FF7F50;
             }
-        """)
+        """
+        )
         reset_filter_btn.clicked.connect(self._on_reset_filter)
         filter_layout.addWidget(reset_filter_btn)
 
@@ -242,12 +265,13 @@ class TTSHistoryPanel(QWidget):
         # 历史记录表格
         self.history_table = QTableWidget()
         self.history_table.setColumnCount(6)
-        self.history_table.setHorizontalHeaderLabels([
-            "时间", "文本", "参考音频", "情感", "时长", "操作"
-        ])
-        
+        self.history_table.setHorizontalHeaderLabels(
+            ["时间", "文本", "参考音频", "情感", "时长", "操作"]
+        )
+
         # 设置表格样式
-        self.history_table.setStyleSheet("""
+        self.history_table.setStyleSheet(
+            """
             QTableWidget {
                 border: 2px solid rgba(255, 107, 157, 0.3);
                 border-radius: 12px;
@@ -273,8 +297,9 @@ class TTSHistoryPanel(QWidget):
                 font-weight: bold;
                 font-size: 13px;
             }
-        """)
-        
+        """
+        )
+
         # 设置列宽
         header = self.history_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # 时间
@@ -284,17 +309,17 @@ class TTSHistoryPanel(QWidget):
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # 时长
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)  # 操作
         self.history_table.setColumnWidth(5, 150)
-        
+
         # 设置行高
         self.history_table.verticalHeader().setDefaultSectionSize(50)
         self.history_table.verticalHeader().setVisible(False)
-        
+
         # 设置选择模式
         self.history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.history_table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
-        
+
         layout.addWidget(self.history_table)
-        
+
         # 底部按钮栏
         button_layout = QHBoxLayout()
 
@@ -332,13 +357,15 @@ class TTSHistoryPanel(QWidget):
 
         # 统计信息
         self.stats_label = QLabel()
-        self.stats_label.setStyleSheet("""
+        self.stats_label.setStyleSheet(
+            """
             QLabel {
                 color: #666;
                 font-size: 12px;
                 padding: 5px;
             }
-        """)
+        """
+        )
         layout.addWidget(self.stats_label)
 
     def _style_button(self, button: QPushButton, color: str):
@@ -349,7 +376,8 @@ class TTSHistoryPanel(QWidget):
             button: 按钮
             color: 主题颜色
         """
-        button.setStyleSheet(f"""
+        button.setStyleSheet(
+            f"""
             QPushButton {{
                 background: {color};
                 color: white;
@@ -372,7 +400,8 @@ class TTSHistoryPanel(QWidget):
                 background: #CCCCCC;
                 color: #999999;
             }}
-        """)
+        """
+        )
 
     def load_history(self, records: List[Dict[str, Any]]):
         """
@@ -388,42 +417,42 @@ class TTSHistoryPanel(QWidget):
             self.history_table.insertRow(row)
 
             # 时间
-            created_at = record.get('created_at', '')
+            created_at = record.get("created_at", "")
             if created_at:
                 try:
                     dt = datetime.fromisoformat(created_at)
-                    time_str = dt.strftime('%m-%d %H:%M')
+                    time_str = dt.strftime("%m-%d %H:%M")
                 except:
                     time_str = created_at[:16]
             else:
-                time_str = ''
+                time_str = ""
 
             time_item = QTableWidgetItem(time_str)
             time_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.history_table.setItem(row, 0, time_item)
 
             # 文本（截断显示）
-            text = record.get('text', '')
-            text_preview = text[:50] + '...' if len(text) > 50 else text
+            text = record.get("text", "")
+            text_preview = text[:50] + "..." if len(text) > 50 else text
             text_item = QTableWidgetItem(text_preview)
             text_item.setToolTip(text)  # 完整文本作为提示
             self.history_table.setItem(row, 1, text_item)
 
             # 参考音频
-            ref_audio = record.get('ref_audio_name', '')
+            ref_audio = record.get("ref_audio_name", "")
             ref_item = QTableWidgetItem(ref_audio)
             ref_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.history_table.setItem(row, 2, ref_item)
 
             # 情感
-            emotion = record.get('ref_audio_emotion', '')
+            emotion = record.get("ref_audio_emotion", "")
             emotion_item = QTableWidgetItem(emotion)
             emotion_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.history_table.setItem(row, 3, emotion_item)
 
             # 时长
-            duration = record.get('duration', 0.0)
-            duration_str = f"{duration:.1f}s" if duration else ''
+            duration = record.get("duration", 0.0)
+            duration_str = f"{duration:.1f}s" if duration else ""
             duration_item = QTableWidgetItem(duration_str)
             duration_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.history_table.setItem(row, 4, duration_item)
@@ -461,7 +490,7 @@ class TTSHistoryPanel(QWidget):
             self.history_table.setCellWidget(row, 5, action_widget)
 
             # 存储record_id到item的data中
-            time_item.setData(Qt.ItemDataRole.UserRole, record.get('id'))
+            time_item.setData(Qt.ItemDataRole.UserRole, record.get("id"))
 
         logger.debug(f"加载历史记录: {len(records)}条")
 
@@ -472,9 +501,9 @@ class TTSHistoryPanel(QWidget):
         Args:
             stats: 统计信息
         """
-        total_count = stats.get('total_count', 0)
-        total_duration = stats.get('total_duration', 0.0)
-        today_count = stats.get('today_count', 0)
+        total_count = stats.get("total_count", 0)
+        total_duration = stats.get("total_duration", 0.0)
+        today_count = stats.get("today_count", 0)
 
         # 格式化时长
         hours = int(total_duration // 3600)
@@ -514,7 +543,7 @@ class TTSHistoryPanel(QWidget):
         Args:
             record: 历史记录
         """
-        record_id = record.get('id')
+        record_id = record.get("id")
         if record_id:
             self.replay_requested.emit(record_id)
             logger.debug(f"请求重新播放: ID={record_id}")
@@ -526,7 +555,7 @@ class TTSHistoryPanel(QWidget):
         Args:
             record: 历史记录
         """
-        record_id = record.get('id')
+        record_id = record.get("id")
         if record_id:
             self.export_requested.emit([record_id])
             logger.debug(f"请求导出: ID={record_id}")
@@ -538,13 +567,13 @@ class TTSHistoryPanel(QWidget):
         Args:
             record: 历史记录
         """
-        record_id = record.get('id')
+        record_id = record.get("id")
         if record_id:
             reply = QMessageBox.question(
                 self,
                 "确认删除",
                 "确定要删除这条历史记录吗？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
 
             if reply == QMessageBox.StandardButton.Yes:
@@ -582,7 +611,7 @@ class TTSHistoryPanel(QWidget):
             self,
             "确认删除",
             f"确定要删除选中的 {len(selected_rows)} 条记录吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
@@ -595,7 +624,7 @@ class TTSHistoryPanel(QWidget):
             self,
             "确认清空",
             "确定要清空所有历史记录吗？此操作不可恢复！",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
@@ -674,9 +703,8 @@ class TTSHistoryPanel(QWidget):
         emotion = self.emotion_combo.currentData()
 
         return {
-            'start_date': datetime.combine(start_date, datetime.min.time()),
-            'end_date': datetime.combine(end_date, datetime.max.time()),
-            'ref_audio_name': ref_audio,
-            'ref_audio_emotion': emotion
+            "start_date": datetime.combine(start_date, datetime.min.time()),
+            "end_date": datetime.combine(end_date, datetime.max.time()),
+            "ref_audio_name": ref_audio,
+            "ref_audio_emotion": emotion,
         }
-

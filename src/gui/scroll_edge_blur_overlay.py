@@ -136,7 +136,9 @@ class ScrollEdgeBlurOverlay(QWidget):
         try:
             bar = self._scroll_area.verticalScrollBar()
             bar.valueChanged.connect(lambda _=None: self.schedule_update())
-            bar.rangeChanged.connect(lambda _min=None, _max=None: self.schedule_update(immediate=True))
+            bar.rangeChanged.connect(
+                lambda _min=None, _max=None: self.schedule_update(immediate=True)
+            )
         except Exception:
             pass
 

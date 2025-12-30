@@ -11,7 +11,14 @@ from pathlib import Path
 
 from PyQt6.QtCore import QPropertyAnimation, QTimer, QEasingCurve, Qt, pyqtSignal
 from PyQt6.QtGui import QGuiApplication
-from PyQt6.QtWidgets import QGraphicsOpacityEffect, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .live2d_gl_widget import Live2DGlWidget
 from .enhanced_rich_input import ChatComposerIconButton
@@ -28,7 +35,9 @@ class _Live2DViewport(QWidget):
         self._gl = Live2DGlWidget(model_json=model_path, parent=self)
         try:
             # Avoid transparent/black GL background; match the frosted panel tone.
-            self._gl.set_clear_color_css(MD3_ENHANCED_COLORS.get("surface_container_low", "#FFF7FB"), force_alpha=1.0)
+            self._gl.set_clear_color_css(
+                MD3_ENHANCED_COLORS.get("surface_container_low", "#FFF7FB"), force_alpha=1.0
+            )
         except Exception:
             pass
         try:
@@ -272,8 +281,8 @@ class Live2DPanel(QWidget):
         self._viewport = viewport
         self._gl = viewport.gl
         try:
-            # Default to "portrait" (upper-body) so the avatar feels like a VTuber instead of a full-body figurine.
-            self._gl.set_view_mode(Live2DGlWidget.VIEW_MODE_PORTRAIT)
+            # Default to full-body view (user can switch to portrait via the view button).
+            self._gl.set_view_mode(Live2DGlWidget.VIEW_MODE_FULL)
         except Exception:
             pass
 

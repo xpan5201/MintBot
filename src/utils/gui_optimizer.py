@@ -295,9 +295,7 @@ class MemoryLeakDetector:
         if obj_id in self._tracked_objects:
             info = self._tracked_objects.pop(obj_id)
             lifetime = time.time() - info["created_at"]
-            logger.debug(
-                f"对象 {info['name']} ({info['type']}) 已销毁，生命周期: {lifetime:.2f}秒"
-            )
+            logger.debug(f"对象 {info['name']} ({info['type']}) 已销毁，生命周期: {lifetime:.2f}秒")
 
     def check_leaks(self):
         """检查潜在的内存泄漏"""
@@ -307,16 +305,12 @@ class MemoryLeakDetector:
         for obj_id, info in self._tracked_objects.items():
             lifetime = current_time - info["created_at"]
             if lifetime > 300:  # 超过5分钟
-                leaks.append(
-                    {"name": info["name"], "type": info["type"], "lifetime": lifetime}
-                )
+                leaks.append({"name": info["name"], "type": info["type"], "lifetime": lifetime})
 
         if leaks:
             logger.warning(f"检测到 {len(leaks)} 个潜在内存泄漏:")
             for leak in leaks:
-                logger.warning(
-                    f"  - {leak['name']} ({leak['type']}): {leak['lifetime']:.2f}秒"
-                )
+                logger.warning(f"  - {leak['name']} ({leak['type']}): {leak['lifetime']:.2f}秒")
 
         return leaks
 

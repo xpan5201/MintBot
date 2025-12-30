@@ -14,7 +14,7 @@ logger = get_logger(__name__)
 
 class OptimizedStreamingBubble(QWidget):
     """优化的流式消息气泡（QPlainTextEdit、批量追加16ms、防抖100ms、GPU加速）"""
-    
+
     def __init__(self, is_user: bool = False, parent=None):
         super().__init__(parent)
 
@@ -35,7 +35,7 @@ class OptimizedStreamingBubble(QWidget):
 
         self.setup_ui()
         self.setup_timers()
-        
+
     def setup_ui(self):
         """设置UI"""
         layout = QVBoxLayout(self)
@@ -49,10 +49,19 @@ class OptimizedStreamingBubble(QWidget):
         self.text_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.text_edit.setFont(QFont("Microsoft YaHei UI", 10))
 
-        bg_color = MD3_LIGHT_COLORS['primary_container'] if self.is_user else MD3_LIGHT_COLORS['surface_container_high']
-        text_color = MD3_LIGHT_COLORS['on_primary_container'] if self.is_user else MD3_LIGHT_COLORS['on_surface']
+        bg_color = (
+            MD3_LIGHT_COLORS["primary_container"]
+            if self.is_user
+            else MD3_LIGHT_COLORS["surface_container_high"]
+        )
+        text_color = (
+            MD3_LIGHT_COLORS["on_primary_container"]
+            if self.is_user
+            else MD3_LIGHT_COLORS["on_surface"]
+        )
 
-        self.text_edit.setStyleSheet(f"""
+        self.text_edit.setStyleSheet(
+            f"""
             QPlainTextEdit {{
                 background: {bg_color};
                 color: {text_color};
@@ -60,7 +69,8 @@ class OptimizedStreamingBubble(QWidget):
                 border-radius: {MD3_RADIUS['medium']};
                 padding: 8px 12px;
             }}
-        """)
+        """
+        )
 
         self.text_edit.setMinimumHeight(40)
         self.text_edit.setMaximumHeight(400)
@@ -72,7 +82,7 @@ class OptimizedStreamingBubble(QWidget):
         shadow.setColor(QColor(0, 0, 0, 30))
         shadow.setOffset(0, 2)
         self.setGraphicsEffect(shadow)
-        
+
     def setup_timers(self):
         """设置定时器"""
         self.buffer_timer = QTimer(self)
@@ -95,10 +105,9 @@ class OptimizedStreamingBubble(QWidget):
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         self.stats["total_appends"] += 1
         self.stats["avg_append_time_ms"] = (
-            (self.stats["avg_append_time_ms"] * (self.stats["total_appends"] - 1) + elapsed_ms)
-            / self.stats["total_appends"]
-        )
-        
+            self.stats["avg_append_time_ms"] * (self.stats["total_appends"] - 1) + elapsed_ms
+        ) / self.stats["total_appends"]
+
     def _flush_text_buffer(self):
         """刷新文本缓冲区"""
         if not self.text_buffer:
@@ -138,9 +147,8 @@ class OptimizedStreamingBubble(QWidget):
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         self.stats["total_adjusts"] += 1
         self.stats["avg_adjust_time_ms"] = (
-            (self.stats["avg_adjust_time_ms"] * (self.stats["total_adjusts"] - 1) + elapsed_ms)
-            / self.stats["total_adjusts"]
-        )
+            self.stats["avg_adjust_time_ms"] * (self.stats["total_adjusts"] - 1) + elapsed_ms
+        ) / self.stats["total_adjusts"]
 
         if elapsed_ms > 10:
             logger.warning(f"高度调整耗时: {elapsed_ms:.2f}ms")
@@ -191,15 +199,24 @@ class OptimizedMessageBubble(QWidget):
         self.label = QLabel(self.message)
         self.label.setWordWrap(True)
         self.label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse |
-            Qt.TextInteractionFlag.TextSelectableByKeyboard
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         self.label.setFont(QFont("Microsoft YaHei UI", 10))
 
-        bg_color = MD3_LIGHT_COLORS['primary_container'] if self.is_user else MD3_LIGHT_COLORS['surface_container_high']
-        text_color = MD3_LIGHT_COLORS['on_primary_container'] if self.is_user else MD3_LIGHT_COLORS['on_surface']
+        bg_color = (
+            MD3_LIGHT_COLORS["primary_container"]
+            if self.is_user
+            else MD3_LIGHT_COLORS["surface_container_high"]
+        )
+        text_color = (
+            MD3_LIGHT_COLORS["on_primary_container"]
+            if self.is_user
+            else MD3_LIGHT_COLORS["on_surface"]
+        )
 
-        self.label.setStyleSheet(f"""
+        self.label.setStyleSheet(
+            f"""
             QLabel {{
                 background: {bg_color};
                 color: {text_color};
@@ -207,7 +224,8 @@ class OptimizedMessageBubble(QWidget):
                 border-radius: {MD3_RADIUS['medium']};
                 padding: 8px 12px;
             }}
-        """)
+        """
+        )
 
         layout.addWidget(self.label)
 

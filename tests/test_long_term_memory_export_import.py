@@ -78,7 +78,9 @@ def _patch_dummy_chroma(monkeypatch: pytest.MonkeyPatch) -> list[_DummyVectorSto
     return instances
 
 
-def test_long_term_add_memory_preserves_timestamp_and_sets_content_hash(monkeypatch, temp_dir: Path):
+def test_long_term_add_memory_preserves_timestamp_and_sets_content_hash(
+    monkeypatch, temp_dir: Path
+):
     _patch_dummy_chroma(monkeypatch)
     lt = memory_mod.LongTermMemory(persist_directory=temp_dir / "lt", collection_name="t")
 
@@ -216,7 +218,9 @@ def test_search_memories_rerank_uses_character_consistency(monkeypatch, temp_dir
     lt = memory_mod.LongTermMemory(persist_directory=temp_dir / "lt", collection_name="t")
 
     # 让角色一致性对 rerank 有明显影响，避免只依赖插入顺序
-    monkeypatch.setattr(memory_mod.settings.agent, "memory_character_consistency_weight", 1.0, raising=False)
+    monkeypatch.setattr(
+        memory_mod.settings.agent, "memory_character_consistency_weight", 1.0, raising=False
+    )
 
     scorer_version = 2
     if getattr(memory_mod, "CharacterConsistencyScorer", None) is not None:

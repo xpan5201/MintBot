@@ -27,4 +27,3 @@ def test_execute_tool_propagates_timeout_to_async_runtime_and_cancels():
         assert cancelled.wait(timeout=1.0)
     finally:
         registry.close()
-

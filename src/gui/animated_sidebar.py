@@ -6,18 +6,25 @@ MintChat GUI - 动画侧边栏组件
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QListWidget, QListWidgetItem, QFrame
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QListWidget,
+    QListWidgetItem,
+    QFrame,
 )
 from PyQt6.QtCore import (
-    Qt, QPropertyAnimation, QEasingCurve, QSize,
-    pyqtSignal, QParallelAnimationGroup
+    Qt,
+    QPropertyAnimation,
+    QEasingCurve,
+    QSize,
+    pyqtSignal,
+    QParallelAnimationGroup,
 )
 
-from .material_design import (
-    MD3_COLORS, MD3_RADIUS, MD3_DURATION,
-    get_typography_style
-)
+from .material_design import MD3_COLORS, MD3_RADIUS, MD3_DURATION, get_typography_style
 
 
 class AnimatedSidebar(QWidget):
@@ -129,7 +136,8 @@ class AnimatedSidebar(QWidget):
 
     def _apply_styles(self):
         """应用样式"""
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             AnimatedSidebar {{
                 background-color: {MD3_COLORS['surface_container']};
                 border-right: 1px solid {MD3_COLORS['outline_variant']};
@@ -206,18 +214,19 @@ class AnimatedSidebar(QWidget):
                 background-color: {MD3_COLORS['secondary_container']};
                 color: {MD3_COLORS['on_secondary_container']};
             }}
-        """)
+        """
+        )
 
     def _setup_animations(self):
         """设置动画"""
         # 宽度动画
         self.width_animation = QPropertyAnimation(self, b"maximumWidth")
-        self.width_animation.setDuration(MD3_DURATION['medium3'])
+        self.width_animation.setDuration(MD3_DURATION["medium3"])
         self.width_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
         # 最小宽度动画
         self.min_width_animation = QPropertyAnimation(self, b"minimumWidth")
-        self.min_width_animation.setDuration(MD3_DURATION['medium3'])
+        self.min_width_animation.setDuration(MD3_DURATION["medium3"])
         self.min_width_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
         # 组合动画

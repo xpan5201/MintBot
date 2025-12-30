@@ -32,7 +32,6 @@ MATERIAL_ICONS = {
     "arrow_forward": "arrow_forward",
     "close": "close",
     "check": "check",
-
     # 操作
     "send": "send",
     "attach_file": "attach_file",
@@ -47,7 +46,6 @@ MATERIAL_ICONS = {
     "save": "save",
     "refresh": "refresh",
     "restore": "restore_page",
-
     # 媒体
     "image": "image",
     "video": "videocam",
@@ -57,7 +55,6 @@ MATERIAL_ICONS = {
     "camera_alt": "camera_alt",
     "photo_library": "photo_library",
     "folder_open": "folder_open",
-
     # 状态
     "done": "done",
     "check_circle": "check_circle",
@@ -65,7 +62,6 @@ MATERIAL_ICONS = {
     "warning": "warning",
     "info": "info",
     "lightbulb": "lightbulb",
-
     # 用户
     "person": "person",
     "group": "group",
@@ -73,7 +69,6 @@ MATERIAL_ICONS = {
     "face": "face",
     "smart_toy": "smart_toy",
     "pets": "pets",
-
     # 系统
     "tune": "tune",
     "build": "build",
@@ -86,22 +81,18 @@ MATERIAL_ICONS = {
     "library_books": "library_books",
     "book": "book",
     "auto_stories": "auto_stories",
-
     # 文档和文件
     "text_snippet": "text_snippet",
     "assignment": "assignment",
     "topic": "topic",
-
     # 分析和搜索
     "pageview": "pageview",
     "find_in_page": "find_in_page",
     "manage_search": "manage_search",
     "troubleshoot": "troubleshoot",
-
     # 角色和表演
     "theater_comedy": "theater_comedy",
     "masks": "masks",
-
     # 窗口控制
     "minimize": "minimize",
     "maximize": "crop_square",
@@ -138,17 +129,21 @@ class MaterialIcon(QLabel):
     def setup_style(self):
         """设置样式"""
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
             }}
-        """)
+        """
+        )
 
 
 class MaterialIconButton(QPushButton):
     """Material Design 图标按钮 - 带涟漪效果"""
 
-    def __init__(self, icon_name: str, tooltip: str = "", size: int = 48, icon_size: int = 24, parent=None):
+    def __init__(
+        self, icon_name: str, tooltip: str = "", size: int = 48, icon_size: int = 24, parent=None
+    ):
         super().__init__(parent)
 
         self.icon_name = icon_name
@@ -212,7 +207,8 @@ class MaterialIconButton(QPushButton):
         hover_1 = qss_rgba(MD3_LIGHT_COLORS["primary"], 0.12)
         pressed_0 = qss_rgba(MD3_LIGHT_COLORS["primary"], 0.15)
         pressed_1 = qss_rgba(MD3_LIGHT_COLORS["primary"], 0.20)
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             QPushButton {{
                 background: transparent;
                 border: none;
@@ -241,7 +237,8 @@ class MaterialIconButton(QPushButton):
                     stop:1 {pressed_1}
                 );
             }}
-        """)
+        """
+        )
         self.setCheckable(True)
 
     @pyqtProperty(int)
@@ -346,11 +343,7 @@ class MaterialIconButton(QPushButton):
             ripple_color.setAlpha(int(self.ripple_opacity * 70))
             painter.setBrush(QBrush(ripple_color))
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(
-                self.ripple_center,
-                self.ripple_radius,
-                self.ripple_radius
-            )
+            painter.drawEllipse(self.ripple_center, self.ripple_radius, self.ripple_radius)
 
 
 @lru_cache(maxsize=1)

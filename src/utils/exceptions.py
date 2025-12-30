@@ -244,4 +244,3 @@ def safe_execute(
         if logger:
             handle_exception(e, logger, error_message)
         return default_return
-

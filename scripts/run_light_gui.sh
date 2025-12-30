@@ -19,13 +19,15 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ ! -f "config.yaml" ]]; then
-  if [[ -f "config.yaml.example" ]]; then
-    cp "config.yaml.example" "config.yaml"
-    echo "[信息] 已创建 config.yaml，请编辑并填入 API Key 后再启动。"
+if [[ ! -f "config.user.yaml" ]]; then
+  if [[ -f "config.yaml" ]]; then
+    echo "[信息] 检测到 legacy 配置 config.yaml（仍可兼容读取），建议迁移到 config.user.yaml。"
+  elif [[ -f "config.user.yaml.example" ]]; then
+    cp "config.user.yaml.example" "config.user.yaml"
+    echo "[信息] 已创建 config.user.yaml，请编辑并填入 API Key 后再启动。"
     exit 0
   else
-    echo "[错误] 未找到 config.yaml.example"
+    echo "[错误] 未找到 config.user.yaml.example"
     exit 1
   fi
 fi

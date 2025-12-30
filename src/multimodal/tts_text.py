@@ -38,4 +38,3 @@ def strip_stage_directions(text: str) -> str:
 
 
 __all__ = ["strip_stage_directions"]
-

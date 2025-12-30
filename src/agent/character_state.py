@@ -83,8 +83,7 @@ class CharacterState:
 
         # 持久化文件
         self.persist_file = persist_file or str(
-            Path(settings.data_dir) / "memory" /
-            "character_state.json"
+            Path(settings.data_dir) / "memory" / "character_state.json"
         )
         Path(self.persist_file).parent.mkdir(parents=True, exist_ok=True)
 

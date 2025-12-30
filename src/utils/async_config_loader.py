@@ -29,11 +29,11 @@ logger = get_logger(__name__)
 
 class ConfigFileHandler(FileSystemEventHandler):
     """配置文件变更监听器"""
-    
+
     def __init__(self, schedule_reload):
         self.schedule_reload = schedule_reload
         super().__init__()
-    
+
     def on_modified(self, event):
         if not event.is_directory:
             try:
@@ -44,7 +44,7 @@ class ConfigFileHandler(FileSystemEventHandler):
 
 class AsyncConfigLoader:
     """异步配置加载器"""
-    
+
     def __init__(
         self,
         config_dir: Path,
@@ -53,7 +53,7 @@ class AsyncConfigLoader:
     ):
         """
         初始化异步配置加载器
-        
+
         Args:
             config_dir: 配置文件目录
             enable_cache: 是否启用缓存
@@ -62,13 +62,13 @@ class AsyncConfigLoader:
         self.config_dir = config_dir
         self.enable_cache = enable_cache
         self.enable_hot_reload = enable_hot_reload
-        
+
         # 文件监听器
         self._observer: Optional[Observer] = None
         self._reload_callbacks: Dict[str, list] = {}
         self._reload_loop: Optional[asyncio.AbstractEventLoop] = None
         self._reload_runner: Optional[AsyncLoopThread] = None
-        
+
         # 统计信息
         self._stats = {
             "total_loads": 0,
@@ -76,13 +76,15 @@ class AsyncConfigLoader:
             "cache_misses": 0,
             "total_time": 0.0,
         }
-        
-        logger.info(f"异步配置加载器初始化: 目录={config_dir}, 缓存={enable_cache}, 热重载={enable_hot_reload}")
-        
+
+        logger.info(
+            f"异步配置加载器初始化: 目录={config_dir}, 缓存={enable_cache}, 热重载={enable_hot_reload}"
+        )
+
         # 启动热重载
         if enable_hot_reload:
             self._start_hot_reload()
-    
+
     async def load_json(
         self,
         filename: str,
@@ -90,17 +92,17 @@ class AsyncConfigLoader:
     ) -> Optional[Dict[str, Any]]:
         """
         异步加载JSON配置文件
-        
+
         Args:
             filename: 文件名
             use_cache: 是否使用缓存
-        
+
         Returns:
             配置字典，失败返回None
         """
         start_time = time.perf_counter()
         file_path = self.config_dir / filename
-        
+
         # 检查缓存
         if use_cache and self.enable_cache:
             cache_key = f"config_json_{filename}"
@@ -109,36 +111,32 @@ class AsyncConfigLoader:
                 self._stats["cache_hits"] += 1
                 logger.debug(f"配置缓存命中: {filename}")
                 return cached_config
-        
+
         # 缓存未命中，异步加载
         self._stats["cache_misses"] += 1
-        
+
         try:
             loop = asyncio.get_running_loop()
             self._reload_loop = loop
-            config = await loop.run_in_executor(
-                None,
-                self._load_json_sync,
-                file_path
-            )
-            
+            config = await loop.run_in_executor(None, self._load_json_sync, file_path)
+
             # 添加到缓存
             if use_cache and self.enable_cache and config is not None:
                 cache_key = f"config_json_{filename}"
                 cache_manager.config_cache.set(cache_key, config)
-            
+
             # 更新统计
             elapsed = time.perf_counter() - start_time
             self._stats["total_loads"] += 1
             self._stats["total_time"] += elapsed
-            
+
             logger.debug(f"配置加载完成: {filename}, 耗时: {elapsed*1000:.1f}ms")
             return config
-            
+
         except Exception as e:
             logger.error(f"异步加载JSON配置失败 {filename}: {e}")
             return None
-    
+
     def _load_json_sync(self, file_path: Path) -> Dict[str, Any]:
         """同步加载JSON文件（在线程池中执行）"""
         try:
@@ -147,7 +145,7 @@ class AsyncConfigLoader:
         except Exception as e:
             logger.error(f"加载JSON文件失败 {file_path}: {e}")
             raise
-    
+
     async def load_yaml(
         self,
         filename: str,
@@ -155,17 +153,17 @@ class AsyncConfigLoader:
     ) -> Optional[Dict[str, Any]]:
         """
         异步加载YAML配置文件
-        
+
         Args:
             filename: 文件名
             use_cache: 是否使用缓存
-        
+
         Returns:
             配置字典，失败返回None
         """
         start_time = time.perf_counter()
         file_path = self.config_dir / filename
-        
+
         # 检查缓存
         if use_cache and self.enable_cache:
             cache_key = f"config_yaml_{filename}"
@@ -174,18 +172,14 @@ class AsyncConfigLoader:
                 self._stats["cache_hits"] += 1
                 logger.debug(f"配置缓存命中: {filename}")
                 return cached_config
-        
+
         # 缓存未命中，异步加载
         self._stats["cache_misses"] += 1
 
         try:
             loop = asyncio.get_running_loop()
             self._reload_loop = loop
-            config = await loop.run_in_executor(
-                None,
-                self._load_yaml_sync,
-                file_path
-            )
+            config = await loop.run_in_executor(None, self._load_yaml_sync, file_path)
 
             # 添加到缓存
             if use_cache and self.enable_cache and config is not None:
@@ -352,6 +346,7 @@ def get_async_config_loader(
 
 # 示例用法
 if __name__ == "__main__":
+
     async def test():
         """测试异步配置加载"""
         from pathlib import Path

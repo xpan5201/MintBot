@@ -42,13 +42,16 @@ class RegisterForm(QWidget):
     def setup_ui(self):
         """设置 UI - 优化布局和间距"""
         # 设置背景样式
-        self.setStyleSheet(f"""
-            QWidget {{
+        self.setObjectName("registerForm")
+        self.setStyleSheet(
+            f"""
+            QWidget#registerForm {{
                 background: {MD3_ENHANCED_COLORS['surface_bright']};
                 border-top-right-radius: 16px;
                 border-bottom-right-radius: 16px;
             }}
-        """)
+        """
+        )
 
         # 主布局 - 优化边距和间距
         layout = QVBoxLayout(self)
@@ -57,7 +60,8 @@ class RegisterForm(QWidget):
 
         # 标题区域
         title_label = QLabel("注册")
-        title_label.setStyleSheet(f"""
+        title_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface']};
                 font-size: 36px;
@@ -65,32 +69,37 @@ class RegisterForm(QWidget):
                 letter-spacing: 0.5px;
                 margin-bottom: 8px;
             }}
-        """)
+        """
+        )
         layout.addWidget(title_label)
 
         # 副标题
         subtitle_label = QLabel("创建您的 MintChat 账户")
-        subtitle_label.setStyleSheet(f"""
+        subtitle_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface_variant']};
                 font-size: 15px;
                 line-height: 1.6;
             }}
-        """)
+        """
+        )
         layout.addWidget(subtitle_label)
 
         layout.addSpacing(28)
 
         # 用户名输入框
         username_label = QLabel("用户名")
-        username_label.setStyleSheet(f"""
+        username_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface']};
                 font-size: 14px;
                 font-weight: 600;
                 margin-bottom: 8px;
             }}
-        """)
+        """
+        )
         layout.addWidget(username_label)
 
         self.username_input = MD3TextField("3-20个字符，支持字母、数字、下划线和中文")
@@ -101,14 +110,16 @@ class RegisterForm(QWidget):
 
         # 邮箱输入框
         email_label = QLabel("邮箱")
-        email_label.setStyleSheet(f"""
+        email_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface']};
                 font-size: 14px;
                 font-weight: 600;
                 margin-bottom: 8px;
             }}
-        """)
+        """
+        )
         layout.addWidget(email_label)
 
         self.email_input = MD3TextField("请输入邮箱地址")
@@ -118,14 +129,16 @@ class RegisterForm(QWidget):
 
         # 密码输入框
         password_label = QLabel("密码")
-        password_label.setStyleSheet(f"""
+        password_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface']};
                 font-size: 14px;
                 font-weight: 600;
                 margin-bottom: 8px;
             }}
-        """)
+        """
+        )
         layout.addWidget(password_label)
 
         self.password_input = MD3TextField("至少6个字符，包含字母和数字", is_password=True)
@@ -135,14 +148,16 @@ class RegisterForm(QWidget):
 
         # 确认密码输入框
         confirm_password_label = QLabel("确认密码")
-        confirm_password_label.setStyleSheet(f"""
+        confirm_password_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface']};
                 font-size: 14px;
                 font-weight: 600;
                 margin-bottom: 8px;
             }}
-        """)
+        """
+        )
         layout.addWidget(confirm_password_label)
 
         self.confirm_password_input = MD3TextField("请再次输入密码", is_password=True)
@@ -164,12 +179,14 @@ class RegisterForm(QWidget):
         login_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         login_hint = QLabel("已有账户？")
-        login_hint.setStyleSheet(f"""
+        login_hint.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface_variant']};
                 font-size: 14px;
             }}
-        """)
+        """
+        )
         login_layout.addWidget(login_hint)
 
         login_btn = MD3TextButton("立即登录")

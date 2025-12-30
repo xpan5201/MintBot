@@ -82,44 +82,53 @@ def check_python_version():
 
 def check_config():
     """检查配置文件"""
-    config_file = Path("config.yaml")
-    example_file = Path("config.yaml.example")
+    user_config_file = Path("config.user.yaml")
+    user_example_file = Path("config.user.yaml.example")
+    legacy_config_file = Path("config.yaml")
 
-    if not config_file.exists():
-        print("[警告] config.yaml 文件不存在")
+    if user_config_file.exists():
+        print("[成功] 配置文件检查通过")
+        return True
+
+    if legacy_config_file.exists():
+        print("[成功] 检测到 legacy 配置文件 config.yaml（仍可兼容读取）")
+        print("建议迁移到 config.user.yaml + config.dev.yaml（开发者可选覆盖）。")
+        return True
+
+    print("[警告] config.user.yaml 文件不存在")
+    print()
+
+    if user_example_file.exists():
+        print("[信息] 正在从示例创建用户配置文件...")
+        import shutil
+
+        shutil.copy(user_example_file, user_config_file)
+        print("[成功] 用户配置文件已创建")
         print()
+        print("=" * 60)
+        print("  重要提示")
+        print("=" * 60)
+        print()
+        print("请编辑 config.user.yaml 文件并填入您的 API Key")
+        print()
+        print(f"配置文件位置: {user_config_file.absolute()}")
+        print()
+        print("需要配置的项目:")
+        print("  1. LLM.key - 您的 API Key")
+        print("  2. LLM.api - API 地址（如使用 SiliconFlow）")
+        print("  3. LLM.model - 模型名称")
+        print()
+        print("开发者可选：复制 config.dev.yaml.example 为 config.dev.yaml，用于高级覆盖。")
+        print()
+        print("编辑完成后，请重新运行此脚本")
+        print()
+        return False
 
-        if example_file.exists():
-            print("[信息] 正在从示例创建配置文件...")
-            import shutil
-            shutil.copy(example_file, config_file)
-            print("[成功] 配置文件已创建")
-            print()
-            print("=" * 60)
-            print("  重要提示")
-            print("=" * 60)
-            print()
-            print("请编辑 config.yaml 文件并填入您的 API Key")
-            print()
-            print(f"配置文件位置: {config_file.absolute()}")
-            print()
-            print("需要配置的项目:")
-            print("  1. LLM.key - 您的 API Key")
-            print("  2. LLM.api - API 地址（如使用 SiliconFlow）")
-            print("  3. LLM.model - 模型名称")
-            print()
-            print("编辑完成后，请重新运行此脚本")
-            print()
-            return False
-        else:
-            print("[错误] 找不到 config.yaml.example 文件")
-            print()
-            print("请确保在 MintChat 项目根目录下运行此脚本")
-            print()
-            return False
-
-    print("[成功] 配置文件检查通过")
-    return True
+    print("[错误] 找不到 config.user.yaml.example 文件")
+    print()
+    print("请确保在 MintChat 项目根目录下运行此脚本")
+    print()
+    return False
 
 
 def check_dependencies():

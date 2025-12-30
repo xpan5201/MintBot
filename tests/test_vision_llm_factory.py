@@ -43,4 +43,3 @@ def test_get_vision_llm_enabled_builds_model(sample_config_dict, temp_dir, monke
     llm = factory.get_vision_llm()
     assert llm is not None
     assert hasattr(llm, "invoke")
-

@@ -42,7 +42,9 @@ def test_agent_pre_interaction_update_defers_persistence():
             called["style"] = persist
 
     class _DummyCharacterState:
-        def on_interaction(self, channel: str = "chat", persist: bool = True) -> None:  # noqa: ARG002
+        def on_interaction(
+            self, channel: str = "chat", persist: bool = True
+        ) -> None:  # noqa: ARG002
             called["char"] = persist
 
     agent = MintChatAgent.__new__(MintChatAgent)

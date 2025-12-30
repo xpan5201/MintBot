@@ -49,6 +49,14 @@ _asr_init_attempted = False
 _asr_init_lock = Lock()
 _asr_model_lock = Lock()
 
+# Streaming ASR model (for low-latency realtime STT)
+_asr_streaming_model: Any | None = None
+_asr_streaming_available = False
+_asr_streaming_init_attempted = False
+
+_asr_streaming_init_lock = Lock()
+_asr_streaming_model_lock = Lock()
+
 
 @contextmanager
 def _suppress_noisy_audio_dependency_output():
@@ -402,7 +410,9 @@ def init_asr(*, force: bool = False) -> bool:
             from funasr import AutoModel  # type: ignore
     except Exception as exc:
         logger.warning("未检测到 FunASR，ASR 不可用: %s", exc)
-        logger.info("如需启用 ASR，请先安装可选依赖：uv sync --locked --no-install-project --extra asr")
+        logger.info(
+            "如需启用 ASR，请先安装可选依赖：uv sync --locked --no-install-project --extra asr"
+        )
         _asr_available = False
         _asr_model = None
         return False
@@ -561,5 +571,175 @@ def get_asr_model_name() -> Optional[str]:
         if _asr_model is None:
             return None
         return str(getattr(settings.asr, "model", "") or "").strip() or None
+    except Exception:
+        return None
+
+
+def init_asr_streaming(*, force: bool = False) -> bool:
+    """初始化流式 ASR（单例）。
+
+    说明：
+    - 用于实时语音输入的低延迟 partial（例如 paraformer-zh-streaming）。
+    - 与 `init_asr()`（最终识别模型）相互独立：可单独启用/失败降级。
+    """
+    global _asr_streaming_model, _asr_streaming_available, _asr_streaming_init_attempted
+
+    with _asr_streaming_init_lock:
+        if force:
+            _asr_streaming_init_attempted = False
+            _asr_streaming_available = False
+            _asr_streaming_model = None
+
+        if _asr_streaming_init_attempted:
+            return bool(_asr_streaming_available and _asr_streaming_model is not None)
+        _asr_streaming_init_attempted = True
+
+    try:
+        asr_cfg = getattr(settings, "asr", None)
+        if asr_cfg is None or not bool(getattr(asr_cfg, "enabled", False)):
+            _asr_streaming_available = False
+            _asr_streaming_model = None
+            return False
+    except Exception:
+        _asr_streaming_available = False
+        _asr_streaming_model = None
+        return False
+
+    raw_stream_model = str(getattr(settings.asr, "streaming_model", "") or "").strip()
+    if not raw_stream_model or raw_stream_model.lower() == "none":
+        logger.info("ASR 流式模型未配置（settings.asr.streaming_model 为空/none）")
+        _asr_streaming_available = False
+        _asr_streaming_model = None
+        return False
+
+    # 在导入 funasr/pydub 之前尽量准备好 ffmpeg，避免其 import 阶段噪声输出。
+    try:
+        from .ffmpeg_setup import ensure_ffmpeg_for_audio
+
+        ensure_ffmpeg_for_audio(quiet=True)
+    except Exception:
+        pass
+
+    try:
+        with _suppress_noisy_audio_dependency_output():
+            from funasr import AutoModel  # type: ignore
+    except Exception as exc:
+        logger.warning("未检测到 FunASR，ASR 流式模型不可用: %s", exc)
+        _asr_streaming_available = False
+        _asr_streaming_model = None
+        return False
+
+    model_name = _normalize_model_id(raw_stream_model)
+    device = _resolve_device(getattr(settings.asr, "device", "auto"))
+
+    try:
+        logger.info("初始化 ASR 流式模型: %s (device=%s)", model_name, device)
+        if device.lower().startswith("cuda"):
+            try:
+                from src.utils.torch_optim import apply_torch_optimizations
+
+                apply_torch_optimizations(verbose=True)
+            except Exception:
+                pass
+
+        kwargs: dict[str, Any] = {
+            "model": model_name,
+            "device": device,
+            "disable_update": True,
+            "disable_pbar": True,
+        }
+
+        # hub: prefer streaming_hub; otherwise infer from model id.
+        try:
+            hub = getattr(settings.asr, "streaming_hub", None)
+            hub = str(hub).strip() if hub is not None else ""
+        except Exception:
+            hub = ""
+        if not hub:
+            hub = _infer_hub(model_name) or ""
+        if hub:
+            kwargs["hub"] = hub
+        try:
+            hub_norm = hub.lower()
+        except Exception:
+            hub_norm = ""
+
+        # Remote code rules follow init_asr(): only pass trust_remote_code for HF when enabled.
+        try:
+            if hub_norm in {"hf", "huggingface"}:
+                if bool(getattr(settings.asr, "trust_remote_code", False)):
+                    kwargs["trust_remote_code"] = True
+            else:
+                kwargs["trust_remote_code"] = False
+        except Exception:
+            if hub_norm not in {"hf", "huggingface"}:
+                kwargs["trust_remote_code"] = False
+
+        _asr_streaming_model = _call_automodel_with_fallback(AutoModel, dict(kwargs))
+        _asr_streaming_available = True
+        logger.info("ASR 流式模型初始化完成")
+
+        # Best-effort warmup to reduce first-chunk latency.
+        try:
+            if bool(getattr(settings.asr, "warmup", True)) and _asr_streaming_model is not None:
+                import numpy as np
+
+                chunk_size = getattr(settings.asr, "streaming_chunk_size", [0, 8, 4])
+                try:
+                    chunk = int(chunk_size[1]) if isinstance(chunk_size, (list, tuple)) else 8
+                except Exception:
+                    chunk = 8
+                # One chunk (~480ms/600ms) is enough to trigger model graph compilation.
+                sample_rate = int(getattr(settings.asr, "sample_rate", 16000) or 16000)
+                warm_s = max(0.2, float(chunk) * 0.06)
+                wav = np.zeros(int(max(8000, sample_rate) * warm_s), dtype=np.float32)
+                with _asr_streaming_model_lock:
+                    fn = getattr(_asr_streaming_model, "inference", None) or getattr(
+                        _asr_streaming_model, "generate", None
+                    )
+                    if fn is not None:
+                        fn(
+                            input=wav,
+                            sampling_rate=sample_rate,
+                            cache={},
+                            is_final=True,
+                            chunk_size=chunk_size,
+                            encoder_chunk_look_back=int(
+                                getattr(settings.asr, "streaming_encoder_chunk_look_back", 4) or 4
+                            ),
+                            decoder_chunk_look_back=int(
+                                getattr(settings.asr, "streaming_decoder_chunk_look_back", 1) or 1
+                            ),
+                            disable_pbar=True,
+                        )
+        except Exception:
+            pass
+
+        return True
+    except Exception as exc:
+        logger.error("ASR 流式模型初始化失败: %s", exc, exc_info=True)
+        _asr_streaming_available = False
+        _asr_streaming_model = None
+        return False
+
+
+def is_asr_streaming_available() -> bool:
+    return bool(_asr_streaming_available and _asr_streaming_model is not None)
+
+
+def get_asr_streaming_model_instance() -> Any | None:
+    return _asr_streaming_model
+
+
+def get_asr_streaming_model_lock() -> Lock:
+    """返回流式模型互斥锁（用于跨线程串行化推理调用，避免底层线程不安全）。"""
+    return _asr_streaming_model_lock
+
+
+def get_asr_streaming_model_name() -> Optional[str]:
+    try:
+        if _asr_streaming_model is None:
+            return None
+        return str(getattr(settings.asr, "streaming_model", "") or "").strip() or None
     except Exception:
         return None

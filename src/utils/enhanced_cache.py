@@ -22,12 +22,13 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 @dataclass
 class CacheEntry(Generic[T]):
     """缓存条目"""
+
     key: str
     value: T
     created_at: float = field(default_factory=time.time)
@@ -36,21 +37,21 @@ class CacheEntry(Generic[T]):
     ttl: float = 3600.0  # 默认1小时
     importance: float = 1.0  # 重要性权重（0-1）
     size_bytes: int = 0  # 估算大小（字节）
-    
+
     def is_expired(self) -> bool:
         """检查是否过期"""
         return time.time() - self.created_at > self.ttl
-    
+
     def update_access(self):
         """更新访问信息"""
         self.last_access = time.time()
         self.access_count += 1
-    
+
     def get_score(self) -> float:
         """
         计算缓存条目的分数（用于LRU淘汰）
         分数越高，越不应该被淘汰
-        
+
         考虑因素：
         - 访问频率
         - 最近访问时间
@@ -58,25 +59,26 @@ class CacheEntry(Generic[T]):
         """
         # 访问频率分数（0-1）
         freq_score = min(self.access_count / 100.0, 1.0)
-        
+
         # 时间衰减分数（0-1）
         time_since_access = time.time() - self.last_access
         time_score = max(0, 1.0 - time_since_access / self.ttl)
-        
+
         # 综合分数
-        return (freq_score * 0.4 + time_score * 0.4 + self.importance * 0.2)
+        return freq_score * 0.4 + time_score * 0.4 + self.importance * 0.2
 
 
 @dataclass
 class CacheStats:
     """缓存统计信息"""
+
     hits: int = 0
     misses: int = 0
     evictions: int = 0
     expirations: int = 0
     total_size_bytes: int = 0
     entry_count: int = 0
-    
+
     @property
     def hit_rate(self) -> float:
         """命中率"""
@@ -86,7 +88,7 @@ class CacheStats:
 
 class EnhancedCache(Generic[T]):
     """增强缓存管理器"""
-    
+
     def __init__(
         self,
         name: str,
@@ -98,7 +100,7 @@ class EnhancedCache(Generic[T]):
     ):
         """
         初始化增强缓存
-        
+
         Args:
             name: 缓存名称
             max_size: 最大条目数
@@ -113,27 +115,27 @@ class EnhancedCache(Generic[T]):
         self.max_memory_bytes = int(max_memory_mb * 1024 * 1024)
         self.enable_persistence = enable_persistence
         self.persistence_path = persistence_path or Path(f"data/cache/{name}.pkl")
-        
+
         self._cache: OrderedDict[str, CacheEntry[T]] = OrderedDict()
         self._lock = threading.RLock()
         self._stats = CacheStats()
-        
+
         # 加载持久化缓存
         if self.enable_persistence:
             self._load_from_disk()
-        
+
         logger.info(
             f"增强缓存 '{name}' 初始化完成 "
             f"(max_size={max_size}, ttl={default_ttl}s, max_memory={max_memory_mb}MB)"
         )
-    
+
     def _generate_key(self, key: Any) -> str:
         """生成缓存键"""
         if isinstance(key, str):
             return hashlib.md5(key.encode()).hexdigest()
         else:
             return hashlib.md5(str(key).encode()).hexdigest()
-    
+
     def _estimate_size(self, value: T) -> int:
         """估算对象大小（字节）"""
         try:
@@ -141,7 +143,7 @@ class EnhancedCache(Generic[T]):
         except Exception:
             # 如果无法序列化，返回估算值
             return 1024  # 默认1KB
-    
+
     def get(
         self,
         key: Any,
@@ -149,23 +151,23 @@ class EnhancedCache(Generic[T]):
     ) -> Optional[T]:
         """
         获取缓存值
-        
+
         Args:
             key: 缓存键
             default: 默认值
-            
+
         Returns:
             缓存值或默认值
         """
         cache_key = self._generate_key(key)
-        
+
         with self._lock:
             if cache_key not in self._cache:
                 self._stats.misses += 1
                 return default
-            
+
             entry = self._cache[cache_key]
-            
+
             # 检查是否过期
             if entry.is_expired():
                 del self._cache[cache_key]
@@ -173,13 +175,13 @@ class EnhancedCache(Generic[T]):
                 self._stats.misses += 1
                 self._update_total_size()
                 return default
-            
+
             # 更新访问信息
             entry.update_access()
-            
+
             # 移到末尾（LRU）
             self._cache.move_to_end(cache_key)
-            
+
             self._stats.hits += 1
             return entry.value
 
@@ -234,10 +236,7 @@ class EnhancedCache(Generic[T]):
             return
 
         # 计算所有条目的分数
-        scored_entries = [
-            (key, entry.get_score())
-            for key, entry in self._cache.items()
-        ]
+        scored_entries = [(key, entry.get_score()) for key, entry in self._cache.items()]
 
         # 淘汰分数最低的
         if scored_entries:
@@ -247,9 +246,7 @@ class EnhancedCache(Generic[T]):
 
     def _update_total_size(self) -> None:
         """更新总大小统计"""
-        self._stats.total_size_bytes = sum(
-            entry.size_bytes for entry in self._cache.values()
-        )
+        self._stats.total_size_bytes = sum(entry.size_bytes for entry in self._cache.values())
         self._stats.entry_count = len(self._cache)
 
     def cleanup_expired(self) -> int:
@@ -260,10 +257,7 @@ class EnhancedCache(Generic[T]):
             清理的条目数
         """
         with self._lock:
-            expired_keys = [
-                key for key, entry in self._cache.items()
-                if entry.is_expired()
-            ]
+            expired_keys = [key for key, entry in self._cache.items() if entry.is_expired()]
 
             for key in expired_keys:
                 del self._cache[key]
@@ -306,18 +300,13 @@ class EnhancedCache(Generic[T]):
             with self._lock:
                 # 只保存未过期的条目
                 valid_entries = {
-                    key: entry
-                    for key, entry in self._cache.items()
-                    if not entry.is_expired()
+                    key: entry for key, entry in self._cache.items() if not entry.is_expired()
                 }
 
-                with open(self.persistence_path, 'wb') as f:
+                with open(self.persistence_path, "wb") as f:
                     pickle.dump(valid_entries, f)
 
-                logger.info(
-                    f"缓存 '{self.name}' 已保存到磁盘 "
-                    f"({len(valid_entries)} 个条目)"
-                )
+                logger.info(f"缓存 '{self.name}' 已保存到磁盘 " f"({len(valid_entries)} 个条目)")
         except Exception as e:
             logger.error(f"保存缓存到磁盘失败: {e}")
 
@@ -327,7 +316,7 @@ class EnhancedCache(Generic[T]):
             return
 
         try:
-            with open(self.persistence_path, 'rb') as f:
+            with open(self.persistence_path, "rb") as f:
                 loaded_entries = pickle.load(f)
 
             with self._lock:
@@ -338,10 +327,7 @@ class EnhancedCache(Generic[T]):
 
                 self._update_total_size()
 
-                logger.info(
-                    f"缓存 '{self.name}' 从磁盘加载 "
-                    f"({len(self._cache)} 个条目)"
-                )
+                logger.info(f"缓存 '{self.name}' 从磁盘加载 " f"({len(self._cache)} 个条目)")
         except Exception as e:
             logger.error(f"从磁盘加载缓存失败: {e}")
 
@@ -368,7 +354,7 @@ class CacheManager:
         return cls._instance
 
     def __init__(self):
-        if hasattr(self, '_initialized'):
+        if hasattr(self, "_initialized"):
             return
 
         self._initialized = True
@@ -420,12 +406,11 @@ class CacheManager:
     def get_all_stats(self) -> Dict[str, CacheStats]:
         """获取所有缓存的统计信息"""
         with self._global_lock:
-            return {
-                name: cache.get_stats()
-                for name, cache in self._caches.items()
-            }
+            return {name: cache.get_stats() for name, cache in self._caches.items()}
 
-    def register_warmup_callback(self, cache_name: str, callback: Callable[[EnhancedCache], None]) -> None:
+    def register_warmup_callback(
+        self, cache_name: str, callback: Callable[[EnhancedCache], None]
+    ) -> None:
         """
         注册缓存预热回调
 
@@ -511,9 +496,7 @@ class CacheManager:
             results[cache_name] = self.warmup_cache(cache_name)
 
         success_count = sum(1 for v in results.values() if v)
-        logger.info(
-            f"缓存预热完成，成功 {success_count}/{len(results)} 个"
-        )
+        logger.info(f"缓存预热完成，成功 {success_count}/{len(results)} 个")
 
         return results
 
@@ -528,4 +511,3 @@ def get_cache_manager() -> CacheManager:
     if _cache_manager is None:
         _cache_manager = CacheManager()
     return _cache_manager
-

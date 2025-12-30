@@ -22,4 +22,3 @@ def test_normalize_model_id_handles_common_mistakes(raw: str, expected: str) -> 
     import src.multimodal.asr_initializer as mod
 
     assert mod._normalize_model_id(raw) == expected
-

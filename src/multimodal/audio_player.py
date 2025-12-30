@@ -18,6 +18,7 @@ from typing import Callable, Optional, Deque, Tuple
 try:
     import sounddevice as sd  # type: ignore[import-untyped]
     import soundfile as sf  # type: ignore[import-untyped]
+
     _has_sounddevice = True
     _sounddevice_error = None
 except Exception as e:
@@ -59,9 +60,7 @@ class AudioPlayer:
         self._on_playback_start: list[Callable[[list[float], float, float], None]] = []
 
         if not _has_sounddevice:
-            logger.warning(
-                "sounddevice 未安装，音频播放功能不可用"
-            )
+            logger.warning("sounddevice 未安装，音频播放功能不可用")
             if _sounddevice_error:
                 logger.debug(f"导入错误: {_sounddevice_error}")
         else:
@@ -133,7 +132,9 @@ class AudioPlayer:
         except Exception:
             pass
 
-    def register_playback_start_observer(self, callback: Callable[[list[float], float, float], None]) -> None:
+    def register_playback_start_observer(
+        self, callback: Callable[[list[float], float, float], None]
+    ) -> None:
         """Register a callback invoked when a queued audio segment actually starts playing.
 
         Args:
@@ -160,7 +161,9 @@ class AudioPlayer:
             except Exception:
                 pass
 
-    def _compute_level_envelope(self, data, samplerate: int, *, fps: int = 60) -> tuple[list[float], float]:
+    def _compute_level_envelope(
+        self, data, samplerate: int, *, fps: int = 60
+    ) -> tuple[list[float], float]:
         """Compute a coarse RMS envelope (0-1) for lip-sync/visualizers.
 
         This is intentionally lightweight and vectorized; it returns ~fps values per second.
@@ -223,9 +226,7 @@ class AudioPlayer:
                 overflow = len(self._queue) - self._max_queue_size
                 for _ in range(overflow):
                     self._queue.popleft()
-                logger.debug(
-                    "音频队列达到上限，丢弃最旧的 %d 段音频以保持顺序", overflow
-                )
+                logger.debug("音频队列达到上限，丢弃最旧的 %d 段音频以保持顺序", overflow)
             self._queue_event.set()
             return len(self._queue)
 
@@ -237,9 +238,7 @@ class AudioPlayer:
                 overflow = len(self._queue) - self._max_queue_size
                 for _ in range(overflow):
                     self._queue.popleft()
-                logger.debug(
-                    "调整音频队列上限，立即丢弃最旧的 %d 段音频", overflow
-                )
+                logger.debug("调整音频队列上限，立即丢弃最旧的 %d 段音频", overflow)
 
     def clear_queue(self) -> None:
         """清空待播放队列。"""

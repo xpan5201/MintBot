@@ -154,12 +154,14 @@ def main():
 
     # 检查配置文件
     print("检查配置文件...")
-    if os.path.exists("config.yaml"):
-        print("  ✓ config.yaml")
+    if os.path.exists("config.user.yaml"):
+        print("  ✓ config.user.yaml")
+    elif os.path.exists("config.yaml"):
+        print("  ✓ config.yaml (legacy，仍可兼容读取)")
     else:
-        print("  ✗ config.yaml (缺失)")
-        if os.path.exists("config.yaml.example"):
-            print("    提示: 请复制 config.yaml.example 为 config.yaml")
+        print("  ✗ config.user.yaml (缺失)")
+        if os.path.exists("config.user.yaml.example"):
+            print("    提示: 请复制 config.user.yaml.example 为 config.user.yaml")
         all_ok = False
     print()
 
@@ -180,7 +182,7 @@ def main():
         print("✓ 所有必需依赖已安装！")
         print()
         print("下一步:")
-        print("1. 编辑 config.yaml 文件，填入您的 API Key")
+        print("1. 编辑 config.user.yaml 文件，填入您的 API Key")
         print("2. 使用 .venv 启动（推荐）:")
         if sys.platform == "win32":
             print("   .\\.venv\\Scripts\\python.exe MintChat.py")

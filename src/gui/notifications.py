@@ -86,7 +86,11 @@ class Snackbar(QWidget):
 
         # 设置属性
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
 
         # 设置 UI
         self.setup_ui()
@@ -103,21 +107,24 @@ class Snackbar(QWidget):
 
         # 消息文本
         self.message_label = QLabel(self.message_text)
-        self.message_label.setStyleSheet(f"""
+        self.message_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['on_surface']};
                 background: transparent;
                 {get_typography_css('label_large')}
                 font-weight: 650;
             }}
-        """)
+        """
+        )
         self.message_label.setWordWrap(True)
         layout.addWidget(self.message_label, 1)
 
         # 操作按钮（如果有）
         if self.action_text:
             self.action_btn = QPushButton(self.action_text)
-            self.action_btn.setStyleSheet(f"""
+            self.action_btn.setStyleSheet(
+                f"""
                 QPushButton {{
                     background: transparent;
                     color: {MD3_ENHANCED_COLORS['primary']};
@@ -130,7 +137,8 @@ class Snackbar(QWidget):
                     background-color: {MD3_ENHANCED_COLORS['primary_container']};
                     border-radius: {MD3_ENHANCED_RADIUS['full']};
                 }}
-            """)
+            """
+            )
             self.action_btn.clicked.connect(self.action_clicked)
             layout.addWidget(self.action_btn)
 
@@ -320,7 +328,9 @@ class Toast(QWidget):
 
     closed = pyqtSignal()
 
-    def __init__(self, message: str, toast_type: str = TYPE_INFO, duration: int = 2000, parent=None):
+    def __init__(
+        self, message: str, toast_type: str = TYPE_INFO, duration: int = 2000, parent=None
+    ):
         super().__init__(parent)
 
         self._bg = QColor(MD3_ENHANCED_COLORS["surface_container_highest"])
@@ -340,7 +350,11 @@ class Toast(QWidget):
 
         # 设置属性
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
 
         # 设置 UI
         self.setup_ui()
@@ -363,14 +377,16 @@ class Toast(QWidget):
 
         # 消息文本
         self.message_label = QLabel(self.message_text)
-        self.message_label.setStyleSheet(f"""
+        self.message_label.setStyleSheet(
+            f"""
             QLabel {{
                 background: transparent;
                 color: {MD3_ENHANCED_COLORS['on_surface']};
                 {get_typography_css('label_large')}
                 font-weight: 650;
             }}
-        """)
+        """
+        )
         layout.addWidget(self.message_label)
 
         # Resolve background color once (paintEvent)
@@ -462,11 +478,17 @@ class Toast(QWidget):
     def _get_background_color(self):
         """获取背景颜色"""
         if self.toast_type == self.TYPE_SUCCESS:
-            return MD3_ENHANCED_COLORS.get("success_container", MD3_ENHANCED_COLORS["surface_container_highest"])
+            return MD3_ENHANCED_COLORS.get(
+                "success_container", MD3_ENHANCED_COLORS["surface_container_highest"]
+            )
         elif self.toast_type == self.TYPE_WARNING:
-            return MD3_ENHANCED_COLORS.get("warning_container", MD3_ENHANCED_COLORS["surface_container_highest"])
+            return MD3_ENHANCED_COLORS.get(
+                "warning_container", MD3_ENHANCED_COLORS["surface_container_highest"]
+            )
         elif self.toast_type == self.TYPE_ERROR:
-            return MD3_ENHANCED_COLORS.get("error_container", MD3_ENHANCED_COLORS["surface_container_highest"])
+            return MD3_ENHANCED_COLORS.get(
+                "error_container", MD3_ENHANCED_COLORS["surface_container_highest"]
+            )
         else:
             return MD3_ENHANCED_COLORS["surface_container_highest"]
 
@@ -552,6 +574,7 @@ def show_snackbar(parent: QWidget, message: str, action_text: str = "", duration
         pass
     snackbar = Snackbar(message, action_text, duration, host)
     try:
+
         def _maybe_clear() -> None:
             try:
                 if _ACTIVE_SNACKBARS.get(host) is snackbar:
@@ -570,7 +593,9 @@ def show_snackbar(parent: QWidget, message: str, action_text: str = "", duration
     return snackbar
 
 
-def show_toast(parent: QWidget, message: str, toast_type: str = Toast.TYPE_INFO, duration: int = 2000):
+def show_toast(
+    parent: QWidget, message: str, toast_type: str = Toast.TYPE_INFO, duration: int = 2000
+):
     """显示 Toast"""
     host = _resolve_host(parent) or parent
     try:
@@ -581,6 +606,7 @@ def show_toast(parent: QWidget, message: str, toast_type: str = Toast.TYPE_INFO,
         pass
     toast = Toast(message, toast_type, duration, host)
     try:
+
         def _maybe_clear() -> None:
             try:
                 if _ACTIVE_TOASTS.get(host) is toast:

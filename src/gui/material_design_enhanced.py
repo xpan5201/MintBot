@@ -26,7 +26,6 @@ MD3_ENHANCED_COLORS = {
     "primary_70": "#00796B",  # 深 - 强调
     "primary_80": "#00695C",  # 很深 - 文字
     "primary_90": "#004D40",  # 最深 - 高对比度
-
     # 主色调语义化
     "primary": "#26A69A",  # 主色
     "on_primary": "#FFFFFF",  # 主色上的文字
@@ -36,7 +35,6 @@ MD3_ENHANCED_COLORS = {
     "primary_fixed_dim": "#80CBC4",  # 固定主色暗版
     "on_primary_fixed": "#00201C",  # 固定主色上的文字
     "on_primary_fixed_variant": "#00695C",  # 固定主色变体上的文字
-
     # ========== 次要色 (Secondary) - 青绿色系 ==========
     "secondary_10": "#E0F7FA",
     "secondary_20": "#B2EBF2",
@@ -47,12 +45,10 @@ MD3_ENHANCED_COLORS = {
     "secondary_70": "#00ACC1",
     "secondary_80": "#0097A7",
     "secondary_90": "#00838F",
-
     "secondary": "#26C6DA",
     "on_secondary": "#FFFFFF",
     "secondary_container": "#B2EBF2",
     "on_secondary_container": "#001F24",
-
     # ========== 第三色 (Tertiary) - 天蓝色系 ==========
     "tertiary_10": "#E1F5FE",
     "tertiary_20": "#B3E5FC",
@@ -63,12 +59,10 @@ MD3_ENHANCED_COLORS = {
     "tertiary_70": "#039BE5",
     "tertiary_80": "#0288D1",
     "tertiary_90": "#0277BD",
-
     "tertiary": "#03A9F4",
     "on_tertiary": "#FFFFFF",
     "tertiary_container": "#B3E5FC",
     "on_tertiary_container": "#001E2F",
-
     # ========== 错误色 (Error) ==========
     "error_10": "#FFEBEE",
     "error_20": "#FFCDD2",
@@ -79,12 +73,10 @@ MD3_ENHANCED_COLORS = {
     "error_70": "#E53935",
     "error_80": "#D32F2F",
     "error_90": "#C62828",
-
     "error": "#EF5350",
     "on_error": "#FFFFFF",
     "error_container": "#FFCDD2",
     "on_error_container": "#C62828",
-
     # ========== 中性色 (Neutral) - 薄荷绿调 ==========
     "neutral_10": "#F8FFFE",  # 极淡薄荷绿
     "neutral_20": "#F0FBF8",  # 很淡薄荷绿
@@ -95,7 +87,6 @@ MD3_ENHANCED_COLORS = {
     "neutral_70": "#80CBC4",  # 深薄荷绿
     "neutral_80": "#4DB6AC",  # 很深薄荷绿
     "neutral_90": "#26A69A",  # 最深薄荷绿
-
     # ========== 表面色 (Surface) ==========
     "surface_dim": "#E8F8F5",  # 暗表面
     "surface": "#F8FFFE",  # 标准表面
@@ -106,43 +97,34 @@ MD3_ENHANCED_COLORS = {
     "surface_container_high": "#D8F3ED",  # 高容器
     "surface_container_highest": "#C8F3E8",  # 最高容器
     "surface_variant": "#D8F3ED",  # 表面变体
-
     "on_surface": "#1A1C1E",  # 表面上的文字
     "on_surface_variant": "#42474E",  # 表面变体上的文字
-
     # ========== 背景色 (Background) ==========
     "background": "#F0FBF8",  # 背景
     "on_background": "#1A1C1E",  # 背景上的文字
-
     # ========== 轮廓色 (Outline) ==========
     "outline": "#C8F3E8",  # 轮廓
     "outline_variant": "#D8F3ED",  # 轮廓变体
-
     # ========== 阴影和遮罩 ==========
     "shadow": "#000000",  # 阴影
     "scrim": "#000000",  # 遮罩
-
     # ========== 反色 (Inverse) ==========
     "inverse_surface": "#2D3132",  # 反色表面
     "inverse_on_surface": "#EFF1F1",  # 反色表面上的文字
     "inverse_primary": "#80CBC4",  # 反色主色
-
     # ========== 状态色 (State) ==========
     "success": "#66BB6A",  # 成功
     "on_success": "#FFFFFF",
     "success_container": "#C8E6C9",
     "on_success_container": "#1B5E20",
-
     "warning": "#FFA726",  # 警告
     "on_warning": "#FFFFFF",
     "warning_container": "#FFE0B2",
     "on_warning_container": "#E65100",
-
     "info": "#29B6F6",  # 信息
     "on_info": "#FFFFFF",
     "info_container": "#B3E5FC",
     "on_info_container": "#01579B",
-
     # ========== 渐变色 (Gradients) ==========
     "gradient_primary": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #80CBC4, stop:1 #26A69A)",
     "gradient_primary_vertical": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #80CBC4, stop:1 #26A69A)",
@@ -151,7 +133,6 @@ MD3_ENHANCED_COLORS = {
     "gradient_surface": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #F0FBF8, stop:1 #C8F3E8)",
     "gradient_mint_soft": "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #E0F2F1, stop:1 #B2DFDB)",
     "gradient_mint_radial": "qradialgradient(cx:0.5, cy:0.5, radius:1, fx:0.5, fy:0.5, stop:0 #B2DFDB, stop:1 #80CBC4)",
-
     # ========== 毛玻璃效果 (Frosted Glass) ==========
     "frosted_glass_light": "rgba(248, 255, 254, 0.85)",
     "frosted_glass": "rgba(240, 251, 248, 0.90)",
@@ -183,7 +164,6 @@ _ANIME_ENHANCED_COLOR_OVERRIDES: dict[str, str] = {
     "on_primary": "#FFFFFF",
     "primary_container": "#FFE3F1",
     "on_primary_container": "#5A1235",
-
     "secondary_20": "#ECEAFF",
     "secondary_30": "#DAD6FF",
     "secondary_40": "#B1A8FF",
@@ -191,7 +171,6 @@ _ANIME_ENHANCED_COLOR_OVERRIDES: dict[str, str] = {
     "secondary": "#8B7DFF",
     "secondary_container": "#ECEAFF",
     "on_secondary_container": "#2A1A5C",
-
     "tertiary_20": "#DDF3FF",
     "tertiary_30": "#C7E8FF",
     "tertiary_40": "#8FD1FF",
@@ -199,7 +178,6 @@ _ANIME_ENHANCED_COLOR_OVERRIDES: dict[str, str] = {
     "tertiary": "#5AB6FF",
     "tertiary_container": "#DDF3FF",
     "on_tertiary_container": "#0B375C",
-
     "surface": "#FFFCFE",
     "surface_bright": "#FFFFFF",
     "surface_container_low": "#FFF7FB",
@@ -207,11 +185,9 @@ _ANIME_ENHANCED_COLOR_OVERRIDES: dict[str, str] = {
     "surface_container_high": "#FFE3F1",
     "surface_container_highest": "#FFD2E6",
     "on_surface_variant": "#4A3E49",
-
     "background": "#FFF7FB",
     "outline": "#F1C3DA",
     "outline_variant": "#F6D8E7",
-
     # 渐变色：从薄荷系切换到樱花/薰衣草系
     "gradient_primary": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFB3D3, stop:1 #FF6FAE)",
     "gradient_primary_vertical": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFB3D3, stop:1 #FF6FAE)",
@@ -219,7 +195,6 @@ _ANIME_ENHANCED_COLOR_OVERRIDES: dict[str, str] = {
     "gradient_tertiary": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #C7E8FF, stop:1 #5AB6FF)",
     "gradient_surface": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFF7FB, stop:1 #FFE3F1)",
     "gradient_mint_soft": "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFF2FA, stop:1 #ECEAFF)",
-
     "frosted_glass_light": "rgba(255, 252, 254, 0.85)",
     "frosted_glass": "rgba(255, 247, 251, 0.90)",
     "frosted_glass_medium": "rgba(255, 242, 250, 0.92)",
@@ -230,7 +205,9 @@ try:
     from .theme_manager import is_anime_theme
 
     if is_anime_theme():
-        MD3_ENHANCED_COLORS = _apply_color_overrides(MD3_ENHANCED_COLORS, _ANIME_ENHANCED_COLOR_OVERRIDES)
+        MD3_ENHANCED_COLORS = _apply_color_overrides(
+            MD3_ENHANCED_COLORS, _ANIME_ENHANCED_COLOR_OVERRIDES
+        )
 except Exception:
     # Theme is an optional layer; fall back to default colors on any import/config error.
     pass
@@ -242,72 +219,113 @@ except Exception:
 MD3_ENHANCED_TYPOGRAPHY = {
     # Display - 大标题
     "display_large": {
-        "size": 57, "weight": 400, "line_height": 64,
-        "letter_spacing": -0.25, "font": "Segoe UI"
+        "size": 57,
+        "weight": 400,
+        "line_height": 64,
+        "letter_spacing": -0.25,
+        "font": "Segoe UI",
     },
     "display_medium": {
-        "size": 45, "weight": 400, "line_height": 52,
-        "letter_spacing": 0, "font": "Segoe UI"
+        "size": 45,
+        "weight": 400,
+        "line_height": 52,
+        "letter_spacing": 0,
+        "font": "Segoe UI",
     },
     "display_small": {
-        "size": 36, "weight": 400, "line_height": 44,
-        "letter_spacing": 0, "font": "Segoe UI"
+        "size": 36,
+        "weight": 400,
+        "line_height": 44,
+        "letter_spacing": 0,
+        "font": "Segoe UI",
     },
-
     # Headline - 标题
     "headline_large": {
-        "size": 32, "weight": 400, "line_height": 40,
-        "letter_spacing": 0, "font": "Segoe UI"
+        "size": 32,
+        "weight": 400,
+        "line_height": 40,
+        "letter_spacing": 0,
+        "font": "Segoe UI",
     },
     "headline_medium": {
-        "size": 28, "weight": 400, "line_height": 36,
-        "letter_spacing": 0, "font": "Segoe UI"
+        "size": 28,
+        "weight": 400,
+        "line_height": 36,
+        "letter_spacing": 0,
+        "font": "Segoe UI",
     },
     "headline_small": {
-        "size": 24, "weight": 400, "line_height": 32,
-        "letter_spacing": 0, "font": "Segoe UI"
+        "size": 24,
+        "weight": 400,
+        "line_height": 32,
+        "letter_spacing": 0,
+        "font": "Segoe UI",
     },
-
     # Title - 小标题
     "title_large": {
-        "size": 22, "weight": 500, "line_height": 28,
-        "letter_spacing": 0, "font": "Segoe UI"
+        "size": 22,
+        "weight": 500,
+        "line_height": 28,
+        "letter_spacing": 0,
+        "font": "Segoe UI",
     },
     "title_medium": {
-        "size": 16, "weight": 500, "line_height": 24,
-        "letter_spacing": 0.15, "font": "Segoe UI"
+        "size": 16,
+        "weight": 500,
+        "line_height": 24,
+        "letter_spacing": 0.15,
+        "font": "Segoe UI",
     },
     "title_small": {
-        "size": 14, "weight": 500, "line_height": 20,
-        "letter_spacing": 0.1, "font": "Segoe UI"
+        "size": 14,
+        "weight": 500,
+        "line_height": 20,
+        "letter_spacing": 0.1,
+        "font": "Segoe UI",
     },
-
     # Body - 正文
     "body_large": {
-        "size": 16, "weight": 400, "line_height": 24,
-        "letter_spacing": 0.5, "font": "Segoe UI"
+        "size": 16,
+        "weight": 400,
+        "line_height": 24,
+        "letter_spacing": 0.5,
+        "font": "Segoe UI",
     },
     "body_medium": {
-        "size": 14, "weight": 400, "line_height": 20,
-        "letter_spacing": 0.25, "font": "Segoe UI"
+        "size": 14,
+        "weight": 400,
+        "line_height": 20,
+        "letter_spacing": 0.25,
+        "font": "Segoe UI",
     },
     "body_small": {
-        "size": 12, "weight": 400, "line_height": 16,
-        "letter_spacing": 0.4, "font": "Segoe UI"
+        "size": 12,
+        "weight": 400,
+        "line_height": 16,
+        "letter_spacing": 0.4,
+        "font": "Segoe UI",
     },
-
     # Label - 标签
     "label_large": {
-        "size": 14, "weight": 500, "line_height": 20,
-        "letter_spacing": 0.1, "font": "Segoe UI"
+        "size": 14,
+        "weight": 500,
+        "line_height": 20,
+        "letter_spacing": 0.1,
+        "font": "Segoe UI",
     },
     "label_medium": {
-        "size": 12, "weight": 500, "line_height": 16,
-        "letter_spacing": 0.5, "font": "Segoe UI"
+        "size": 12,
+        "weight": 500,
+        "line_height": 16,
+        "letter_spacing": 0.5,
+        "font": "Segoe UI",
     },
     "label_small": {
-        "size": 11, "weight": 500, "line_height": 16,
-        "letter_spacing": 0.5, "font": "Segoe UI"
+        "size": 11,
+        "weight": 500,
+        "line_height": 16,
+        "letter_spacing": 0.5,
+        "font": "Segoe UI",
     },
 }
 
@@ -338,19 +356,18 @@ def get_typography_css(variant: str) -> str:
 MD3_ENHANCED_SPACING = {
     # 基础间距 (4px 基准)
     "0": "0px",
-    "1": "4px",   # 0.25rem
-    "2": "8px",   # 0.5rem
+    "1": "4px",  # 0.25rem
+    "2": "8px",  # 0.5rem
     "3": "12px",  # 0.75rem
     "4": "16px",  # 1rem
     "5": "20px",  # 1.25rem
     "6": "24px",  # 1.5rem
     "8": "32px",  # 2rem
-    "10": "40px", # 2.5rem
-    "12": "48px", # 3rem
-    "16": "64px", # 4rem
-    "20": "80px", # 5rem
-    "24": "96px", # 6rem
-
+    "10": "40px",  # 2.5rem
+    "12": "48px",  # 3rem
+    "16": "64px",  # 4rem
+    "20": "80px",  # 5rem
+    "24": "96px",  # 6rem
     # 语义化间距
     "xs": "4px",
     "sm": "8px",
@@ -377,7 +394,6 @@ MD3_ENHANCED_RADIUS = {
     "2xl": "20px",
     "3xl": "28px",
     "full": "9999px",
-
     # 语义化圆角
     "extra_small": "4px",
     "small": "8px",
@@ -402,7 +418,6 @@ try:
             "2xl": "22px",
             "3xl": "32px",
             "full": "9999px",
-
             "extra_small": "6px",
             "small": "10px",
             "medium": "14px",
@@ -421,45 +436,57 @@ except Exception:
 MD3_ENHANCED_ELEVATION = {
     # Level 0: 无阴影
     0: {
-        "offset_x": 0, "offset_y": 0,
-        "blur": 0, "spread": 0,
+        "offset_x": 0,
+        "offset_y": 0,
+        "blur": 0,
+        "spread": 0,
         "color": "rgba(0, 0, 0, 0)",
-        "opacity": 0.0
+        "opacity": 0.0,
     },
     # Level 1: 1dp elevation - 卡片、按钮
     1: {
-        "offset_x": 0, "offset_y": 1,
-        "blur": 3, "spread": 0,
+        "offset_x": 0,
+        "offset_y": 1,
+        "blur": 3,
+        "spread": 0,
         "color": "rgba(0, 0, 0, 0.12)",
-        "opacity": 0.12
+        "opacity": 0.12,
     },
     # Level 2: 3dp elevation - 悬停卡片
     2: {
-        "offset_x": 0, "offset_y": 2,
-        "blur": 6, "spread": 0,
+        "offset_x": 0,
+        "offset_y": 2,
+        "blur": 6,
+        "spread": 0,
         "color": "rgba(0, 0, 0, 0.14)",
-        "opacity": 0.14
+        "opacity": 0.14,
     },
     # Level 3: 6dp elevation - 对话框
     3: {
-        "offset_x": 0, "offset_y": 4,
-        "blur": 12, "spread": 0,
+        "offset_x": 0,
+        "offset_y": 4,
+        "blur": 12,
+        "spread": 0,
         "color": "rgba(0, 0, 0, 0.16)",
-        "opacity": 0.16
+        "opacity": 0.16,
     },
     # Level 4: 8dp elevation - 导航抽屉
     4: {
-        "offset_x": 0, "offset_y": 6,
-        "blur": 16, "spread": 0,
+        "offset_x": 0,
+        "offset_y": 6,
+        "blur": 16,
+        "spread": 0,
         "color": "rgba(0, 0, 0, 0.18)",
-        "opacity": 0.18
+        "opacity": 0.18,
     },
     # Level 5: 12dp elevation - 模态对话框
     5: {
-        "offset_x": 0, "offset_y": 8,
-        "blur": 24, "spread": 0,
+        "offset_x": 0,
+        "offset_y": 8,
+        "blur": 24,
+        "spread": 0,
         "color": "rgba(0, 0, 0, 0.20)",
-        "opacity": 0.20
+        "opacity": 0.20,
     },
 }
 
@@ -488,29 +515,25 @@ def get_elevation_shadow(level: int) -> str:
 
 MD3_ENHANCED_DURATION = {
     # Short durations (50-200ms) - 快速微交互
-    "short1": 50,   # 涟漪开始
+    "short1": 50,  # 涟漪开始
     "short2": 100,  # 悬停状态
     "short3": 150,  # 按压反馈
     "short4": 200,  # 快速过渡
-
     # Medium durations (250-400ms) - 标准过渡
     "medium1": 250,  # 淡入淡出
     "medium2": 300,  # 消息气泡出现
     "medium3": 350,  # 侧边栏展开
     "medium4": 400,  # 页面切换
-
     # Long durations (450-600ms) - 复杂动画
     "long1": 450,  # 打字指示器
     "long2": 500,  # 滚动动画
     "long3": 550,  # 加载动画
     "long4": 600,  # 完整过渡
-
     # Extra long durations (700-1000ms) - 特殊效果
-    "extra_long1": 700,   # 强调动画
-    "extra_long2": 800,   # 欢迎动画
-    "extra_long3": 900,   # 启动动画
+    "extra_long1": 700,  # 强调动画
+    "extra_long2": 800,  # 欢迎动画
+    "extra_long3": 900,  # 启动动画
     "extra_long4": 1000,  # 完整循环
-
     # 语义化动画时长
     "instant": 0,
     "fast": 100,
@@ -530,25 +553,20 @@ MD3_ENHANCED_EASING = {
     "standard": QEasingCurve.Type.InOutCubic,
     "standard_accelerate": QEasingCurve.Type.InCubic,
     "standard_decelerate": QEasingCurve.Type.OutCubic,
-
     # Material Design 3 强调缓动
     "emphasized": QEasingCurve.Type.OutCubic,
     "emphasized_accelerate": QEasingCurve.Type.InQuart,
     "emphasized_decelerate": QEasingCurve.Type.OutQuart,
-
     # 弹性缓动
     "bounce": QEasingCurve.Type.OutBounce,
     "elastic": QEasingCurve.Type.OutElastic,
     "spring": QEasingCurve.Type.OutBack,
-
     # 平滑缓动
     "smooth": QEasingCurve.Type.InOutQuad,
     "smooth_in": QEasingCurve.Type.InQuad,
     "smooth_out": QEasingCurve.Type.OutQuad,
-
     # 线性
     "linear": QEasingCurve.Type.Linear,
-
     # 特殊缓动
     "overshoot": QEasingCurve.Type.OutBack,
     "anticipate": QEasingCurve.Type.InBack,
@@ -580,13 +598,13 @@ MD3_ENHANCED_EASING_CSS = {
 # ============================================================================
 
 MD3_ENHANCED_STATE_LAYERS = {
-    "hover": 0.08,      # 悬停
-    "focus": 0.12,      # 聚焦
-    "pressed": 0.12,    # 按压
-    "dragged": 0.16,    # 拖拽
-    "selected": 0.12,   # 选中
+    "hover": 0.08,  # 悬停
+    "focus": 0.12,  # 聚焦
+    "pressed": 0.12,  # 按压
+    "dragged": 0.16,  # 拖拽
+    "selected": 0.12,  # 选中
     "activated": 0.12,  # 激活
-    "disabled": 0.38,   # 禁用
+    "disabled": 0.38,  # 禁用
 }
 
 

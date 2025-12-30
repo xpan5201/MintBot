@@ -30,16 +30,16 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class LRUCache:
     """LRU缓存实现 - 最近最少使用淘汰策略"""
-    
+
     def __init__(self, max_size: int = 100, ttl: int = 3600):
         """
         初始化LRU缓存
-        
+
         Args:
             max_size: 最大缓存条目数
             ttl: 缓存过期时间（秒），默认1小时
@@ -50,7 +50,7 @@ class LRUCache:
         # 使用 monotonic 记录过期时间点（避免系统时间变化影响 TTL）
         self.timestamps: Dict[str, float] = {}
         self._lock = Lock()
-        
+
         # 性能统计
         self.stats = {
             "hits": 0,
@@ -58,14 +58,14 @@ class LRUCache:
             "evictions": 0,
             "expirations": 0,
         }
-    
+
     def _is_expired(self, key: str) -> bool:
         """检查缓存是否过期"""
         expire_at = self.timestamps.get(key)
         if expire_at is None:
             return True
         return time.monotonic() > expire_at
-    
+
     def get(self, key: str) -> Optional[Any]:
         """获取缓存值"""
         with self._lock:
@@ -84,7 +84,7 @@ class LRUCache:
             self.cache.move_to_end(key)
             self.stats["hits"] += 1
             return self.cache[key]
-    
+
     def set(self, key: str, value: Any) -> None:
         """设置缓存值"""
         if self.max_size <= 0:
@@ -104,7 +104,7 @@ class LRUCache:
                 oldest_key = next(iter(self.cache))
                 self._delete_unlocked(oldest_key)
                 self.stats["evictions"] += 1
-    
+
     def delete(self, key: str) -> None:
         """删除缓存值"""
         with self._lock:
@@ -116,7 +116,7 @@ class LRUCache:
             del self.cache[key]
         if key in self.timestamps:
             del self.timestamps[key]
-    
+
     def clear(self) -> None:
         """清空缓存"""
         with self._lock:
@@ -135,7 +135,9 @@ class LRUCache:
                 return 0
 
             now = time.monotonic()
-            expired_keys = [key for key, expire_at in list(self.timestamps.items()) if now > expire_at]
+            expired_keys = [
+                key for key, expire_at in list(self.timestamps.items()) if now > expire_at
+            ]
 
             for key in expired_keys:
                 self._delete_unlocked(key)
@@ -178,46 +180,48 @@ class SmartCacheManager:
         self._cleanup_interval = 100  # 每100次操作清理一次
 
         logger.info("智能缓存管理器初始化完成")
-    
+
     @staticmethod
     def _generate_key(*args, **kwargs) -> str:
         """生成缓存键"""
         # 将参数转换为字符串并哈希
         key_str = json.dumps({"args": args, "kwargs": kwargs}, sort_keys=True)
         return hashlib.md5(key_str.encode()).hexdigest()
-    
+
     def cache_prompt(self, func: Callable) -> Callable:
         """Prompt缓存装饰器"""
+
         @wraps(func)
         def wrapper(*args, **kwargs):
             key = self._generate_key(*args, **kwargs)
-            
+
             # 尝试从缓存获取
             cached_value = self.prompt_cache.get(key)
             if cached_value is not None:
                 logger.debug("Prompt缓存命中: %.8s...", key)
                 return cached_value
-            
+
             # 执行函数并缓存结果
             result = func(*args, **kwargs)
             self.prompt_cache.set(key, result)
             logger.debug("Prompt缓存设置: %.8s...", key)
             return result
-        
+
         return wrapper
-    
+
     def cache_memory(self, func: Callable) -> Callable:
         """记忆缓存装饰器"""
+
         @wraps(func)
         def wrapper(*args, **kwargs):
             key = self._generate_key(*args, **kwargs)
-            
+
             # 尝试从缓存获取
             cached_value = self.memory_cache.get(key)
             if cached_value is not None:
                 logger.debug("记忆缓存命中: %.8s...", key)
                 return cached_value
-            
+
             # 执行函数并缓存结果
             result = func(*args, **kwargs)
             self.memory_cache.set(key, result)

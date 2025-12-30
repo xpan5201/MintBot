@@ -23,6 +23,7 @@ import heapq
 
 import networkx as nx
 from src.utils.logger import get_logger
+
 logger = get_logger(__name__)
 
 # 导入 Pydantic
@@ -57,6 +58,7 @@ except Exception as exc:  # pragma: no cover - 环境依赖差异
 
 class KnowledgeRelation(BaseModel):
     """知识关系模型"""
+
     source_id: str = Field(description="源知识ID")
     target_id: str = Field(description="目标知识ID")
     relation_type: str = Field(description="关系类型")
@@ -66,20 +68,21 @@ class KnowledgeRelation(BaseModel):
 
 class RelationExtractionResult(BaseModel):
     """关系提取结果"""
+
     relations: List[KnowledgeRelation] = Field(description="提取的关系列表")
 
 
 class KnowledgeGraph:
     """
     知识图谱 - 管理知识之间的关系
-    
+
     功能：
     1. 自动提取知识关系
     2. 存储和查询关系
     3. 知识推理
     4. 图谱可视化
     """
-    
+
     def __init__(
         self,
         graph_file: Optional[Path] = None,
@@ -94,7 +97,7 @@ class KnowledgeGraph:
     ):
         """
         初始化知识图谱
-        
+
         Args:
             graph_file: 图谱数据文件路径
             autosave: 是否自动保存到磁盘（默认 True）
@@ -108,7 +111,7 @@ class KnowledgeGraph:
         """
         self.graph_file = graph_file or Path("data/memory/knowledge_graph.json")
         self.graph_file.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # 创建有向图
         self.graph = nx.DiGraph()
 
@@ -130,7 +133,7 @@ class KnowledgeGraph:
         # JSON 保存策略
         self.save_pretty_json = bool(save_pretty_json)
         self.save_sort = bool(save_sort)
-        
+
         # 关系类型定义
         self.relation_types = {
             "related_to": "相关",
@@ -151,15 +154,15 @@ class KnowledgeGraph:
         # 索引（不持久化）：用于增量更新/快速候选检索
         self._category_index: Dict[str, Set[str]] = defaultdict(set)
         self._keyword_index: Dict[str, Set[str]] = defaultdict(set)
-        
+
         # 加载图谱数据
         self._load_graph()
-        
+
         # LLM 延迟初始化（首次需要 LLM 辅助提取时再创建）
         self.llm = None
-        
+
         logger.info("知识图谱初始化完成")
-    
+
     def _load_graph(self):
         """加载图谱数据"""
         if not self.graph_file.exists():
@@ -296,7 +299,7 @@ class KnowledgeGraph:
         self._category_index[category].add(node_id)
         for kw in keywords_list:
             self._keyword_index[kw].add(node_id)
-    
+
     def _save_graph(self):
         """保存图谱数据"""
         with self._lock:
@@ -493,7 +496,9 @@ class KnowledgeGraph:
         logger.debug("删除知识节点: %s", knowledge_id)
         return True
 
-    def upsert_knowledge_entry(self, knowledge: Dict[str, Any], *, update_edges: bool = True) -> bool:
+    def upsert_knowledge_entry(
+        self, knowledge: Dict[str, Any], *, update_edges: bool = True
+    ) -> bool:
         """
         用知识条目增量更新图谱（节点 + 可选规则边）。
 
@@ -521,7 +526,9 @@ class KnowledgeGraph:
 
         return True
 
-    def upsert_knowledge_entries(self, knowledge_entries: List[Dict[str, Any]], *, update_edges: bool = True) -> int:
+    def upsert_knowledge_entries(
+        self, knowledge_entries: List[Dict[str, Any]], *, update_edges: bool = True
+    ) -> int:
         """批量增量更新（节点 + 可选规则边），返回成功数量。"""
         if not knowledge_entries:
             return 0
@@ -586,7 +593,9 @@ class KnowledgeGraph:
                 ]
                 for anchor_id in anchors:
                     # 不覆盖已有非 rule 边
-                    if self.graph.has_edge(knowledge_id, anchor_id) or self.graph.has_edge(anchor_id, knowledge_id):
+                    if self.graph.has_edge(knowledge_id, anchor_id) or self.graph.has_edge(
+                        anchor_id, knowledge_id
+                    ):
                         continue
                     self.add_relation(
                         source_id=knowledge_id,
@@ -614,15 +623,21 @@ class KnowledgeGraph:
                 if candidates:
                     scored: List[Tuple[float, str, Set[str]]] = []
                     for other_id, shared in candidates.items():
-                        other_keywords = set(self._normalize_keywords(self.graph.nodes[other_id].get("keywords")))
+                        other_keywords = set(
+                            self._normalize_keywords(self.graph.nodes[other_id].get("keywords"))
+                        )
                         denom = max(len(keywords_set), len(other_keywords), 1)
                         confidence = len(shared) / denom
                         scored.append((confidence, other_id, shared))
 
                     scored.sort(key=lambda x: x[0], reverse=True)
-                    for confidence, other_id, shared in scored[: self.rule_max_keyword_links_per_node]:
+                    for confidence, other_id, shared in scored[
+                        : self.rule_max_keyword_links_per_node
+                    ]:
                         # 不覆盖已有非 rule 边
-                        if self.graph.has_edge(knowledge_id, other_id) or self.graph.has_edge(other_id, knowledge_id):
+                        if self.graph.has_edge(knowledge_id, other_id) or self.graph.has_edge(
+                            other_id, knowledge_id
+                        ):
                             continue
                         shared_sorted = sorted(shared)
                         shown = shared_sorted[: self.rule_shared_keywords_desc_limit]
@@ -725,7 +740,11 @@ class KnowledgeGraph:
                     existing_confidence = 1.0
 
                 # 同优先级时，保留更高置信度的边；但允许补齐 description
-                if existing and new_priority == existing_priority and confidence <= existing_confidence:
+                if (
+                    existing
+                    and new_priority == existing_priority
+                    and confidence <= existing_confidence
+                ):
                     if description and not existing.get("description"):
                         self.graph.add_edge(
                             u,
@@ -900,7 +919,10 @@ class KnowledgeGraph:
                 return
             key = _pair_key(a, b)
             if key not in pair_info:
-                pair_info[key] = {"confidence": confidence, "descriptions": {desc} if desc else set()}
+                pair_info[key] = {
+                    "confidence": confidence,
+                    "descriptions": {desc} if desc else set(),
+                }
                 return
 
             info = pair_info[key]
@@ -1160,9 +1182,9 @@ class KnowledgeGraph:
                     best_by_id[neighbor] = result
                 else:
                     # 更高置信度优先；同置信度更浅优先
-                    if (
-                        confidence > float(existing.get("confidence", 0.0))
-                        or (confidence == float(existing.get("confidence", 0.0)) and next_depth < int(existing.get("depth", next_depth)))
+                    if confidence > float(existing.get("confidence", 0.0)) or (
+                        confidence == float(existing.get("confidence", 0.0))
+                        and next_depth < int(existing.get("depth", next_depth))
                     ):
                         best_by_id[neighbor] = result
 
@@ -1269,19 +1291,21 @@ class KnowledgeGraph:
                     if edge2.get("relation_type") == "part_of":
                         # 检查是否已存在直接关系
                         if not self.graph.has_edge(knowledge_id, second_neighbor):
-                            confidence = min(
-                                edge1.get("confidence", 1.0),
-                                edge2.get("confidence", 1.0)
-                            ) * 0.8  # 降低推理的置信度
+                            confidence = (
+                                min(edge1.get("confidence", 1.0), edge2.get("confidence", 1.0))
+                                * 0.8
+                            )  # 降低推理的置信度
 
-                            inferences.append({
-                                "source_id": knowledge_id,
-                                "target_id": second_neighbor,
-                                "relation_type": "part_of",
-                                "confidence": confidence,
-                                "description": f"通过 {neighbor} 推理",
-                                "inference_type": "transitive",
-                            })
+                            inferences.append(
+                                {
+                                    "source_id": knowledge_id,
+                                    "target_id": second_neighbor,
+                                    "relation_type": "part_of",
+                                    "confidence": confidence,
+                                    "description": f"通过 {neighbor} 推理",
+                                    "inference_type": "transitive",
+                                }
+                            )
 
         # 推理规则2: 对称性关系
         # 如果 A -> B (similar_to)，则 B -> A (similar_to)
@@ -1291,14 +1315,16 @@ class KnowledgeGraph:
             if edge.get("relation_type") == "similar_to":
                 # 检查是否已存在反向关系
                 if not self.graph.has_edge(neighbor, knowledge_id):
-                    inferences.append({
-                        "source_id": neighbor,
-                        "target_id": knowledge_id,
-                        "relation_type": "similar_to",
-                        "confidence": edge.get("confidence", 1.0),
-                        "description": "对称关系",
-                        "inference_type": "symmetric",
-                    })
+                    inferences.append(
+                        {
+                            "source_id": neighbor,
+                            "target_id": knowledge_id,
+                            "relation_type": "similar_to",
+                            "confidence": edge.get("confidence", 1.0),
+                            "description": "对称关系",
+                            "inference_type": "symmetric",
+                        }
+                    )
 
         logger.debug(f"推理出 {len(inferences)} 条新关系")
         return inferences
@@ -1313,7 +1339,8 @@ class KnowledgeGraph:
         stats = {
             "node_count": self.graph.number_of_nodes(),
             "edge_count": self.graph.number_of_edges(),
-            "avg_degree": sum(dict(self.graph.degree()).values()) / max(self.graph.number_of_nodes(), 1),
+            "avg_degree": sum(dict(self.graph.degree()).values())
+            / max(self.graph.number_of_nodes(), 1),
             "density": nx.density(self.graph),
             "relation_types": {},
             "relation_sources": {},
@@ -1322,10 +1349,14 @@ class KnowledgeGraph:
         # 统计关系类型
         for u, v, data in self.graph.edges(data=True):
             relation_type = data.get("relation_type", "related_to")
-            stats["relation_types"][relation_type] = stats["relation_types"].get(relation_type, 0) + 1
+            stats["relation_types"][relation_type] = (
+                stats["relation_types"].get(relation_type, 0) + 1
+            )
 
             relation_source = data.get("relation_source") or "unknown"
-            stats["relation_sources"][relation_source] = stats["relation_sources"].get(relation_source, 0) + 1
+            stats["relation_sources"][relation_source] = (
+                stats["relation_sources"].get(relation_source, 0) + 1
+            )
 
         return stats
 
@@ -1339,23 +1370,29 @@ class KnowledgeGraph:
         nodes = []
         for node_id in self.graph.nodes():
             node_data = self.graph.nodes[node_id]
-            nodes.append({
-                "id": node_id,
-                "label": node_data.get("title", node_id),
-                "category": node_data.get("category", "general"),
-                "keywords": node_data.get("keywords", []),
-            })
+            nodes.append(
+                {
+                    "id": node_id,
+                    "label": node_data.get("title", node_id),
+                    "category": node_data.get("category", "general"),
+                    "keywords": node_data.get("keywords", []),
+                }
+            )
 
         edges = []
         for u, v, data in self.graph.edges(data=True):
-            edges.append({
-                "source": u,
-                "target": v,
-                "relation_type": data.get("relation_type", "related_to"),
-                "relation_source": data.get("relation_source") or "unknown",
-                "label": self.relation_types.get(data.get("relation_type", "related_to"), "相关"),
-                "confidence": data.get("confidence", 1.0),
-            })
+            edges.append(
+                {
+                    "source": u,
+                    "target": v,
+                    "relation_type": data.get("relation_type", "related_to"),
+                    "relation_source": data.get("relation_source") or "unknown",
+                    "label": self.relation_types.get(
+                        data.get("relation_type", "related_to"), "相关"
+                    ),
+                    "confidence": data.get("confidence", 1.0),
+                }
+            )
 
         return {
             "nodes": nodes,

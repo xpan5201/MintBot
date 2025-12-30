@@ -59,8 +59,12 @@ def test_long_term_prune_by_age_respects_protected_importance(monkeypatch, temp_
     lt = memory_mod.LongTermMemory(persist_directory=temp_dir / "lt", collection_name="t")
 
     now_iso = datetime.now().isoformat()
-    lt.add_memory("old-low", metadata={"timestamp": "2000-01-01T00:00:00", "importance": 0.2}, batch=False)
-    lt.add_memory("old-high", metadata={"timestamp": "2000-01-01T00:00:00", "importance": 0.95}, batch=False)
+    lt.add_memory(
+        "old-low", metadata={"timestamp": "2000-01-01T00:00:00", "importance": 0.2}, batch=False
+    )
+    lt.add_memory(
+        "old-high", metadata={"timestamp": "2000-01-01T00:00:00", "importance": 0.95}, batch=False
+    )
     lt.add_memory("new-low", metadata={"timestamp": now_iso, "importance": 0.2}, batch=False)
 
     dry = lt.prune(max_age_days=30, preserve_importance_above=0.9, dry_run=True)
@@ -79,10 +83,18 @@ def test_long_term_prune_by_count_keeps_protected(monkeypatch, temp_dir: Path):
     lt = memory_mod.LongTermMemory(persist_directory=temp_dir / "lt", collection_name="t")
 
     # 1 protected + 3 unprotected
-    lt.add_memory("protected", metadata={"timestamp": "2000-01-01T00:00:00", "importance": 0.95}, batch=False)
-    lt.add_memory("u1", metadata={"timestamp": "2000-01-01T00:00:00", "importance": 0.8}, batch=False)
-    lt.add_memory("u2", metadata={"timestamp": "2020-01-01T00:00:00", "importance": 0.7}, batch=False)
-    lt.add_memory("u3", metadata={"timestamp": "2024-01-01T00:00:00", "importance": 0.1}, batch=False)
+    lt.add_memory(
+        "protected", metadata={"timestamp": "2000-01-01T00:00:00", "importance": 0.95}, batch=False
+    )
+    lt.add_memory(
+        "u1", metadata={"timestamp": "2000-01-01T00:00:00", "importance": 0.8}, batch=False
+    )
+    lt.add_memory(
+        "u2", metadata={"timestamp": "2020-01-01T00:00:00", "importance": 0.7}, batch=False
+    )
+    lt.add_memory(
+        "u3", metadata={"timestamp": "2024-01-01T00:00:00", "importance": 0.1}, batch=False
+    )
 
     # max_items=2 => 保留 protected + 最佳 unprotected (u1: importance 0.8)
     applied = lt.prune(max_items=2, preserve_importance_above=0.9, dry_run=False)
@@ -127,8 +139,12 @@ def test_long_term_prune_does_not_require_export_records(monkeypatch, temp_dir: 
     _patch_dummy_chroma(monkeypatch)
     lt = memory_mod.LongTermMemory(persist_directory=temp_dir / "lt", collection_name="t")
 
-    lt.add_memory("old-low", metadata={"timestamp": "2000-01-01T00:00:00", "importance": 0.2}, batch=False)
-    lt.add_memory("old-high", metadata={"timestamp": "2000-01-01T00:00:00", "importance": 0.95}, batch=False)
+    lt.add_memory(
+        "old-low", metadata={"timestamp": "2000-01-01T00:00:00", "importance": 0.2}, batch=False
+    )
+    lt.add_memory(
+        "old-high", metadata={"timestamp": "2000-01-01T00:00:00", "importance": 0.95}, batch=False
+    )
 
     def should_not_be_called(*_args, **_kwargs):  # noqa: ANN001
         raise AssertionError("prune should not call export_records()")

@@ -8,8 +8,13 @@
 
 from PyQt6.QtWidgets import QWidget, QGraphicsOpacityEffect
 from PyQt6.QtCore import (
-    QPropertyAnimation, QEasingCurve, QParallelAnimationGroup,
-    QPoint, QRect, pyqtProperty, Qt
+    QPropertyAnimation,
+    QEasingCurve,
+    QParallelAnimationGroup,
+    QPoint,
+    QRect,
+    pyqtProperty,
+    Qt,
 )
 
 from .material_design_light import MD3_DURATION
@@ -32,7 +37,7 @@ class AnimationMixin:
 
     def fade_in(self, duration: int = None):
         """淡入"""
-        if not hasattr(self, 'fade_animation'):
+        if not hasattr(self, "fade_animation"):
             self.setup_fade_animation(duration)
 
         self.fade_animation.setStartValue(0.0)
@@ -41,7 +46,7 @@ class AnimationMixin:
 
     def fade_out(self, duration: int = None):
         """淡出"""
-        if not hasattr(self, 'fade_animation'):
+        if not hasattr(self, "fade_animation"):
             self.setup_fade_animation(duration)
 
         self.fade_animation.setStartValue(1.0)
@@ -59,7 +64,7 @@ class AnimationMixin:
 
     def slide_in_from_right(self, distance: int = 300):
         """从右侧滑入"""
-        if not hasattr(self, 'slide_animation'):
+        if not hasattr(self, "slide_animation"):
             self.setup_slide_animation()
 
         start_pos = self.pos() + QPoint(distance, 0)
@@ -71,7 +76,7 @@ class AnimationMixin:
 
     def slide_in_from_bottom(self, distance: int = 100):
         """从底部滑入"""
-        if not hasattr(self, 'slide_animation'):
+        if not hasattr(self, "slide_animation"):
             self.setup_slide_animation()
 
         start_pos = self.pos() + QPoint(0, distance)
@@ -92,7 +97,7 @@ class AnimationMixin:
 
     def scale_in(self, scale_factor: float = 0.8):
         """缩放进入"""
-        if not hasattr(self, 'scale_animation'):
+        if not hasattr(self, "scale_animation"):
             self.setup_scale_animation()
 
         current_rect = self.geometry()
@@ -106,7 +111,7 @@ class AnimationMixin:
             center.x() - scaled_width // 2,
             center.y() - scaled_height // 2,
             scaled_width,
-            scaled_height
+            scaled_height,
         )
 
         self.scale_animation.setStartValue(start_rect)
@@ -182,7 +187,7 @@ class RippleEffect(QWidget):
 
     def paintEvent(self, event):
         """绘制涟漪"""
-        if not hasattr(self, 'ripple_center'):
+        if not hasattr(self, "ripple_center"):
             return
 
         from PyQt6.QtGui import QPainter, QBrush, QColor
@@ -196,11 +201,7 @@ class RippleEffect(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
 
         # 绘制圆形
-        painter.drawEllipse(
-            self.ripple_center,
-            self._radius,
-            self._radius
-        )
+        painter.drawEllipse(self.ripple_center, self._radius, self._radius)
 
 
 class LoadingAnimation(QWidget):
@@ -268,12 +269,13 @@ class LoadingAnimation(QWidget):
             int(radius * 2),
             int(radius * 2),
             start_angle,
-            span_angle
+            span_angle,
         )
 
 
-def create_bounce_animation(widget: QWidget, property_name: bytes,
-                           start_value, end_value, duration: int = None):
+def create_bounce_animation(
+    widget: QWidget, property_name: bytes, start_value, end_value, duration: int = None
+):
     """创建弹跳动画"""
     if duration is None:
         duration = MD3_DURATION["medium3"]

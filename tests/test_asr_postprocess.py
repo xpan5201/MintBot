@@ -9,4 +9,3 @@ def test_postprocess_asr_text_removes_rich_tokens_and_collapses_whitespace(monke
 
     raw = " <|zh|>  hello   \n  world <|HAPPY|> "
     assert mod._postprocess_asr_text(raw) == "hello world"
-

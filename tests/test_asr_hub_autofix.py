@@ -34,4 +34,3 @@ def test_asr_initializer_auto_fixes_hub_mismatch_iic_with_hf(monkeypatch):
     passed = captured[-1]
     assert passed.get("hub") == "ms"
     assert passed.get("trust_remote_code") is False
-

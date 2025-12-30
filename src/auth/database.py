@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from src.utils.logger import get_logger
+
 logger = get_logger(__name__)
 
 _USER_DB_INIT_GUARD_LOCK = threading.Lock()
@@ -37,8 +38,10 @@ def _ensure_user_db_initialized(db_key: str, init_fn: Callable[[], None]) -> Non
         init_fn()
         _USER_DB_INITIALIZED.add(db_key)
 
+
 try:
     from src.utils.prepared_statements import get_prepared_statement_manager
+
     HAS_PREPARED_STATEMENTS = True
 except ImportError as e:
     HAS_PREPARED_STATEMENTS = False
@@ -140,7 +143,8 @@ class UserDatabase:
             cursor.execute("PRAGMA journal_mode=WAL")
 
             # 用户表 - v2.22.0 新增：用户头像和AI助手头像字段
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
@@ -153,10 +157,12 @@ class UserDatabase:
                     last_login TIMESTAMP,
                     is_active INTEGER DEFAULT 1
                 )
-            """)
+            """
+            )
 
             # 会话表
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
@@ -166,26 +172,37 @@ class UserDatabase:
                     is_active INTEGER DEFAULT 1,
                     FOREIGN KEY (user_id) REFERENCES users (id)
                 )
-            """)
+            """
+            )
 
             # 创建索引
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_username ON users(username)
-            """)
-            cursor.execute("""
+            """
+            )
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_email ON users(email)
-            """)
-            cursor.execute("""
+            """
+            )
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_session_token ON sessions(session_token)
-            """)
-            cursor.execute("""
+            """
+            )
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_sessions_user_active
                 ON sessions(user_id, is_active)
-            """)
-            cursor.execute("""
+            """
+            )
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at
                 ON sessions(expires_at)
-            """)
+            """
+            )
 
             # 启动时清理过期会话（避免 sessions 表长期膨胀导致查询变慢）
             now = datetime.now().isoformat(sep=" ", timespec="microseconds")
@@ -234,10 +251,7 @@ class UserDatabase:
             哈希后的密码
         """
         return hashlib.pbkdf2_hmac(
-            'sha256',
-            password.encode('utf-8'),
-            salt.encode('utf-8'),
-            100000
+            "sha256", password.encode("utf-8"), salt.encode("utf-8"), 100000
         ).hex()
 
     def create_user(self, username: str, email: str, password: str) -> Optional[int]:
@@ -375,19 +389,18 @@ class UserDatabase:
                 return None
 
             # 更新最后登录时间（在同一个连接中）
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE users
                 SET last_login = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             conn.commit()
 
-            return {
-                'id': user_id,
-                'username': username,
-                'email': email
-            }
+            return {"id": user_id, "username": username, "email": email}
         finally:
             conn.close()
 
@@ -397,11 +410,14 @@ class UserDatabase:
         try:
             cursor = conn.cursor()
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE users
                 SET last_login = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             conn.commit()
         finally:
@@ -423,11 +439,14 @@ class UserDatabase:
             cursor = conn.cursor()
 
             # 获取用户信息
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT password_hash, salt
                 FROM users
                 WHERE id = ?
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             row = cursor.fetchone()
             if not row:
@@ -447,11 +466,14 @@ class UserDatabase:
             new_password_hash = self._hash_password(new_password, new_salt)
 
             # 更新密码
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE users
                 SET password_hash = ?, salt = ?
                 WHERE id = ?
-            """, (new_password_hash, new_salt, user_id))
+            """,
+                (new_password_hash, new_salt, user_id),
+            )
 
             conn.commit()
 
@@ -477,11 +499,14 @@ class UserDatabase:
             cursor = conn.cursor()
 
             # 获取用户信息
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT id
                 FROM users
                 WHERE username = ? AND email = ? AND is_active = 1
-            """, (username_norm, email_norm))
+            """,
+                (username_norm, email_norm),
+            )
 
             row = cursor.fetchone()
             if not row:
@@ -496,11 +521,14 @@ class UserDatabase:
             new_password_hash = self._hash_password(new_password, new_salt)
 
             # 更新密码
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE users
                 SET password_hash = ?, salt = ?
                 WHERE id = ?
-            """, (new_password_hash, new_salt, user_id))
+            """,
+                (new_password_hash, new_salt, user_id),
+            )
 
             conn.commit()
             return True
@@ -557,10 +585,13 @@ class UserDatabase:
             )
 
             # 插入会话
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO sessions (user_id, session_token, expires_at)
                 VALUES (?, ?, ?)
-            """, (user_id, session_token, expires_at))
+            """,
+                (user_id, session_token, expires_at),
+            )
 
             conn.commit()
             return session_token
@@ -579,11 +610,7 @@ class UserDatabase:
         # 使用预编译语句（提升30-50%性能）
         if self.use_prepared and self._prepared_mgr:
             try:
-                row = self._prepared_mgr.execute(
-                    "verify_session",
-                    (session_token,),
-                    fetch_one=True
-                )
+                row = self._prepared_mgr.execute("verify_session", (session_token,), fetch_one=True)
 
                 if not row:
                     return None
@@ -595,11 +622,7 @@ class UserDatabase:
                     self.invalidate_session(session_token)
                     return None
 
-                return {
-                    'id': user_id,
-                    'username': username,
-                    'email': email
-                }
+                return {"id": user_id, "username": username, "email": email}
             except Exception as e:
                 logger.error(f"预编译语句验证会话失败: {e}")
                 # 降级到传统模式
@@ -609,12 +632,15 @@ class UserDatabase:
         try:
             cursor = conn.cursor()
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT s.user_id, u.username, u.email, s.expires_at
                 FROM sessions s
                 JOIN users u ON s.user_id = u.id
                 WHERE s.session_token = ? AND s.is_active = 1
-            """, (session_token,))
+            """,
+                (session_token,),
+            )
 
             row = cursor.fetchone()
 
@@ -628,11 +654,7 @@ class UserDatabase:
                 self.invalidate_session(session_token)
                 return None
 
-            return {
-                'id': user_id,
-                'username': username,
-                'email': email
-            }
+            return {"id": user_id, "username": username, "email": email}
         finally:
             conn.close()
 
@@ -645,11 +667,7 @@ class UserDatabase:
         # 使用预编译语句
         if self.use_prepared and self._prepared_mgr:
             try:
-                self._prepared_mgr.execute(
-                    "invalidate_session",
-                    (session_token,),
-                    commit=True
-                )
+                self._prepared_mgr.execute("invalidate_session", (session_token,), commit=True)
                 return
             except Exception as e:
                 logger.error(f"预编译语句使会话失效失败: {e}")
@@ -659,11 +677,14 @@ class UserDatabase:
         try:
             cursor = conn.cursor()
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE sessions
                 SET is_active = 0
                 WHERE session_token = ?
-            """, (session_token,))
+            """,
+                (session_token,),
+            )
 
             conn.commit()
         finally:
@@ -685,11 +706,14 @@ class UserDatabase:
         try:
             cursor = conn.cursor()
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE users
                 SET user_avatar = ?
                 WHERE id = ?
-            """, (avatar, user_id))
+            """,
+                (avatar, user_id),
+            )
 
             conn.commit()
             affected_rows = cursor.rowcount
@@ -714,11 +738,14 @@ class UserDatabase:
         try:
             cursor = conn.cursor()
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE users
                 SET ai_avatar = ?
                 WHERE id = ?
-            """, (avatar, user_id))
+            """,
+                (avatar, user_id),
+            )
 
             conn.commit()
             affected_rows = cursor.rowcount
@@ -742,19 +769,19 @@ class UserDatabase:
         try:
             cursor = conn.cursor()
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT user_avatar, ai_avatar
                 FROM users
                 WHERE id = ?
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             row = cursor.fetchone()
 
             if row:
-                return {
-                    'user_avatar': row[0] or '👤',
-                    'ai_avatar': row[1] or '🐱'
-                }
+                return {"user_avatar": row[0] or "👤", "ai_avatar": row[1] or "🐱"}
             return None
         except Exception as e:
             logger.error(f"获取用户头像失败: {e}")

@@ -1,0 +1,103 @@
+MCP:
+  enable: false
+  servers: {}
+Agent:
+  books_thresholds: 0.5
+  diary_importance_threshold: 0.6
+  is_check_memorys: true
+  is_core_mem: true
+  long_term_batch_size: 10
+  long_term_batch_flush_interval_s: 30.0
+  memory_dedup_max_hashes: 50000
+  mem_thresholds: 0.36
+  mood_functions:
+    negative_impact: (sqrt(pi) * x) / (1 + exp(sqrt(e) * 0.8 * (sqrt(pi) - x))) +
+      sqrt(e)
+    positive_impact: 1 + log(3 * pi * x) + 0.8 * sqrt(x)
+  mood_persists: true
+  scan_depth: 4
+  use_llm_extraction: false
+  llm_stream_disable_after_failures: 2
+  llm_stream_disable_cooldown_s: 60.0
+  tool_selector_timeout_s: 4.0
+  tool_selector_disable_cooldown_s: 300.0
+  tool_output_max_chars: 12000
+  tool_timeout_s: 30.0
+  tool_rewrite_timeout_s: 8.0
+  memory_character_consistency_weight: 0.1
+  knowledge_graph_rule_max_ids_per_keyword: 200
+  knowledge_graph_rule_max_keyword_links_per_node: 12
+  knowledge_graph_rule_category_anchor_count: 2
+  knowledge_graph_rule_max_relations: 100000
+  knowledge_graph_rule_shared_keywords_desc_limit: 12
+  knowledge_graph_find_max_results: 200
+  knowledge_graph_find_max_nodes_visited: 5000
+  knowledge_graph_find_include_incoming: true
+  mood_persist_interval_s: 1.0
+  mood_history_max_len: 500
+  emotion_persist_interval_s: 1.0
+  dual_source_emotion: true
+  style_persist_interval_s: 15.0
+  style_persist_every_n_interactions: 10
+  style_history_max_len: 100
+  style_word_counter_max: 100
+  style_topic_counter_max: 50
+  style_learning_max_message_chars: 800
+  style_learning_max_message_lines: 12
+  style_guidance_min_interactions: 6
+  style_guidance_max_chars: 600
+  style_topic_decay: 0.985
+  style_formality_decay: 0.99
+  proactive_push_k: 2
+  proactive_push_recent_topics_max_len: 8
+  proactive_push_cooldown_s: 300.0
+  proactive_push_daily_limit: 10
+  proactive_push_min_quality_score: 0.5
+  proactive_push_min_relevance_score: 0.3
+  proactive_push_max_history: 1000
+  proactive_push_max_pushed_per_user: 500
+  proactive_push_max_chars_per_item: 480
+  proactive_push_candidate_pool_size: 60
+ASR:
+  streaming_model: paraformer-zh-streaming
+  # hf=HuggingFace, ms=ModelScope; null=auto infer from model id
+  streaming_hub: null
+  streaming_chunk_size:
+  - 0
+  - 8
+  - 4
+  streaming_encoder_chunk_look_back: 4
+  streaming_decoder_chunk_look_back: 1
+  dual_emit_streaming_final: true
+  partial_interval_ms: 260
+  partial_window_s: 4.0
+TTS:
+  circuit_break_cooldown: 15.0
+  circuit_break_threshold: 4
+  client_max_retries: 3
+  connect_timeout: 10.0
+  disk_cache_compress: true
+  disk_cache_max_bytes: 268435456
+  disk_cache_max_items: 400
+  disk_cache_ttl_seconds: 1209600
+  http2_enabled: false
+  latency_warning_ms: 2500.0
+  max_parallel_requests: 3
+  paragraph_min_sentence_length: 8
+  pool_keepalive_expiry: 30.0
+  pool_max_connections: 10
+  pool_max_keepalive_connections: 5
+  read_timeout: 30.0
+  request_timeout: 30.0
+  write_timeout: 30.0
+TAVILY:
+  search_depth: basic
+  include_answer: true
+log_json: true
+log_rotation: 50 MB
+log_retention: 14 days
+# Logging noise control:
+# - empty list => use built-in defaults (recommended)
+log_quiet_libs: []
+log_quiet_level: WARNING
+log_drop_keywords: []

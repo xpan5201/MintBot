@@ -63,4 +63,3 @@ def test_async_task_manager_run_sync_works_inside_running_loop():
         assert asyncio.run(_main()) == 2
     finally:
         manager.shutdown(wait=False)
-

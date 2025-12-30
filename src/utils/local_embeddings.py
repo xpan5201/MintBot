@@ -33,6 +33,7 @@ except ImportError:
 # 尝试导入 torch 用于 GPU 检测
 try:
     import torch
+
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
@@ -296,11 +297,7 @@ class LocalEmbeddings:
 
     def get_stats(self) -> dict:
         """获取性能统计"""
-        avg_time = (
-            self.total_time_ms / self.total_embeddings
-            if self.total_embeddings > 0
-            else 0
-        )
+        avg_time = self.total_time_ms / self.total_embeddings if self.total_embeddings > 0 else 0
 
         stats = {
             "total_embeddings": self.total_embeddings,

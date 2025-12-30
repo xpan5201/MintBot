@@ -111,4 +111,3 @@ def apply_torch_optimizations(*, verbose: bool = False) -> TorchOptimStatus:
         )
 
     return status
-

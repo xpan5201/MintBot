@@ -5,9 +5,16 @@
 """
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
-    QMessageBox, QKeySequenceEdit
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QMessageBox,
+    QKeySequenceEdit,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QKeySequence
@@ -65,13 +72,15 @@ class ShortcutSettingsDialog(QDialog):
 
         # 标题
         title_label = QLabel("⌨️ 快捷键设置")
-        title_label.setStyleSheet("""
+        title_label.setStyleSheet(
+            """
             QLabel {
                 font-size: 18px;
                 font-weight: bold;
                 color: #FF6B9D;
             }
-        """)
+        """
+        )
         layout.addWidget(title_label)
 
         # 说明
@@ -82,12 +91,11 @@ class ShortcutSettingsDialog(QDialog):
         # 快捷键表格
         self.shortcut_table = QTableWidget()
         self.shortcut_table.setColumnCount(3)
-        self.shortcut_table.setHorizontalHeaderLabels([
-            "功能", "快捷键", "操作"
-        ])
+        self.shortcut_table.setHorizontalHeaderLabels(["功能", "快捷键", "操作"])
 
         # 设置表格样式
-        self.shortcut_table.setStyleSheet("""
+        self.shortcut_table.setStyleSheet(
+            """
             QTableWidget {
                 border: 2px solid rgba(255, 107, 157, 0.3);
                 border-radius: 12px;
@@ -109,7 +117,8 @@ class ShortcutSettingsDialog(QDialog):
                 font-weight: bold;
                 font-size: 13px;
             }
-        """)
+        """
+        )
 
         # 设置列宽
         header = self.shortcut_table.horizontalHeader()
@@ -161,12 +170,15 @@ class ShortcutSettingsDialog(QDialog):
         for key, shortcut in self.current_shortcuts.items():
             # 功能名称
             function_item = QTableWidgetItem(self.SHORTCUT_DESCRIPTIONS.get(key, key))
-            function_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            function_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
             self.shortcut_table.setItem(row, 0, function_item)
 
             # 快捷键编辑器
             editor = QKeySequenceEdit(QKeySequence(shortcut))
-            editor.setStyleSheet("""
+            editor.setStyleSheet(
+                """
                 QKeySequenceEdit {
                     padding: 5px;
                     border: 1px solid rgba(255, 107, 157, 0.3);
@@ -176,14 +188,16 @@ class ShortcutSettingsDialog(QDialog):
                 QKeySequenceEdit:focus {
                     border: 2px solid #FF6B9D;
                 }
-            """)
+            """
+            )
             self.shortcut_editors[key] = editor
             self.shortcut_table.setCellWidget(row, 1, editor)
 
             # 重置按钮
             reset_btn = QPushButton("重置")
             reset_btn.setFixedSize(60, 28)
-            reset_btn.setStyleSheet("""
+            reset_btn.setStyleSheet(
+                """
                 QPushButton {
                     background: #f0f0f0;
                     border: 1px solid #ddd;
@@ -193,7 +207,8 @@ class ShortcutSettingsDialog(QDialog):
                 QPushButton:hover {
                     background: #e0e0e0;
                 }
-            """)
+            """
+            )
             reset_btn.clicked.connect(lambda checked, k=key: self._reset_single_shortcut(k))
             self.shortcut_table.setCellWidget(row, 2, reset_btn)
 
@@ -212,7 +227,7 @@ class ShortcutSettingsDialog(QDialog):
             self,
             "确认重置",
             "确定要将所有快捷键重置为默认值吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:

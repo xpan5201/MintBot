@@ -30,7 +30,16 @@ from PyQt6.QtCore import (
     QRectF,
     QEvent,
 )
-from PyQt6.QtGui import QFont, QColor, QLinearGradient, QPixmap, QPainter, QPen, QBrush, QFontMetrics
+from PyQt6.QtGui import (
+    QFont,
+    QColor,
+    QLinearGradient,
+    QPixmap,
+    QPainter,
+    QPen,
+    QBrush,
+    QFontMetrics,
+)
 from pathlib import Path
 from functools import lru_cache
 from typing import Any, Optional
@@ -66,6 +75,8 @@ def _guess_sticker_emotion(sticker_path: str) -> str:
         if any(keyword in sticker_name for keyword in keywords):
             return emotion
     return "表情"
+
+
 # 流式渲染：固定帧率小步追加（更像 ChatGPT 网页端，且避免一次性塞入大段文本导致“段落跳动”）
 # 兼容：历史环境变量 MINTCHAT_GUI_STREAM_FLUSH_MS 仍可作为渲染间隔的兜底值。
 STREAM_RENDER_INTERVAL_MS = max(
@@ -106,9 +117,16 @@ SMOOTH_SCROLL_ENABLED = os.getenv("MINTCHAT_GUI_SMOOTH_SCROLL", "0").lower() not
     "no",
     "off",
 }
-FPS_OVERLAY_ENABLED = os.getenv("MINTCHAT_GUI_FPS_OVERLAY", "0").lower() not in {"0", "false", "no", "off"}
+FPS_OVERLAY_ENABLED = os.getenv("MINTCHAT_GUI_FPS_OVERLAY", "0").lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 SHADOW_BUDGET = max(0, int(os.getenv("MINTCHAT_GUI_SHADOW_BUDGET", "24")))
-ANIMATED_IMAGE_VISIBLE_ONLY = os.getenv("MINTCHAT_GUI_ANIMATED_IMAGE_VISIBLE_ONLY", "1").lower() not in {
+ANIMATED_IMAGE_VISIBLE_ONLY = os.getenv(
+    "MINTCHAT_GUI_ANIMATED_IMAGE_VISIBLE_ONLY", "1"
+).lower() not in {
     "0",
     "false",
     "no",
@@ -262,6 +280,11 @@ class CharacterStatusIsland(QWidget):
         self._bg_color = QColor(255, 255, 255, 235)
         self._border_color = QColor(0, 0, 0, 30)
         self._details_target_height = 0
+        self._last_mood_pct: int | None = None
+        self._last_affection_pct: int | None = None
+        self._last_mood_left = ""
+        self._last_affection_left = ""
+        self._last_format_key: tuple[int, int, int, int, str, str] | None = None
 
         self.setObjectName("characterStatusIsland")
         try:
@@ -360,17 +383,22 @@ class CharacterStatusIsland(QWidget):
 
         divider = QWidget()
         divider.setFixedHeight(1)
-        divider.setStyleSheet(f"background: {qss_rgba(MD3_ENHANCED_COLORS['outline_variant'], 0.9)};")
+        divider.setStyleSheet(
+            f"background: {qss_rgba(MD3_ENHANCED_COLORS['outline_variant'], 0.9)};"
+        )
         details_layout.addWidget(divider)
-        self._details_divider = divider
 
         affection_row = QHBoxLayout()
         affection_row.setContentsMargins(0, 0, 0, 0)
         affection_row.setSpacing(10)
-        self.affection_icon = self._create_metric_icon("favorite", tooltip="好感度", accent="secondary")
+        self.affection_icon = self._create_metric_icon(
+            "favorite", tooltip="好感度", accent="secondary"
+        )
         affection_row.addWidget(self.affection_icon, 0, Qt.AlignmentFlag.AlignVCenter)
         self.affection_bar = QProgressBar()
-        self._style_progress(self.affection_bar, MD3_ENHANCED_COLORS["gradient_secondary"], height=18)
+        self._style_progress(
+            self.affection_bar, MD3_ENHANCED_COLORS["gradient_secondary"], height=18
+        )
         self.affection_bar.setFormat("— 0%")
         affection_row.addWidget(self.affection_bar, 1)
         details_layout.addLayout(affection_row)
@@ -592,6 +620,14 @@ class CharacterStatusIsland(QWidget):
         except Exception:
             pass
 
+    def resizeEvent(self, event):  # noqa: N802 - Qt API naming
+        super().resizeEvent(event)
+        try:
+            if self._expanded and bool(self.details.isVisible()):
+                self._update_bar_formats()
+        except Exception:
+            pass
+
     def set_agent(self, agent: object | None) -> None:
         self._agent = agent
         self._refresh_details()
@@ -641,7 +677,9 @@ class CharacterStatusIsland(QWidget):
                 emotion_engine = getattr(agent, "emotion_engine", None)
                 if emotion_engine is not None:
                     user_profile = getattr(emotion_engine, "user_profile", None)
-                    relationship_level = float(getattr(user_profile, "relationship_level", relationship_level) or 0.0)
+                    relationship_level = float(
+                        getattr(user_profile, "relationship_level", relationship_level) or 0.0
+                    )
                     relationship_desc = str(emotion_engine.get_relationship_description() or "")
             except Exception:
                 pass
@@ -649,17 +687,71 @@ class CharacterStatusIsland(QWidget):
         mood_pct = int(max(0, min(100, round((mood_value + 1.0) * 50.0))))
         affection_pct = int(max(0, min(100, round(relationship_level * 100.0))))
 
+        mood_left = str(mood_state) if mood_state else "—"
+        affection_left = str(relationship_desc) if relationship_desc else "—"
+
+        metrics_changed = False
+        if self._last_mood_pct != mood_pct or self._last_mood_left != mood_left:
+            self._last_mood_pct = mood_pct
+            self._last_mood_left = mood_left
+            metrics_changed = True
+        if self._last_affection_pct != affection_pct or self._last_affection_left != affection_left:
+            self._last_affection_pct = affection_pct
+            self._last_affection_left = affection_left
+            metrics_changed = True
+
         try:
-            self.mood_bar.setValue(mood_pct)
-            left = str(mood_state) if mood_state else "—"
-            self.mood_bar.setFormat(self._format_bar_text(self.mood_bar, left, mood_pct))
+            if int(self.mood_bar.value()) != mood_pct:
+                self.mood_bar.setValue(mood_pct)
         except Exception:
             pass
 
         try:
-            self.affection_bar.setValue(affection_pct)
-            left = str(relationship_desc) if relationship_desc else "—"
-            self.affection_bar.setFormat(self._format_bar_text(self.affection_bar, left, affection_pct))
+            if int(self.affection_bar.value()) != affection_pct:
+                self.affection_bar.setValue(affection_pct)
+        except Exception:
+            pass
+
+        if metrics_changed:
+            self._last_format_key = None
+        self._update_bar_formats(force=metrics_changed)
+
+    def _update_bar_formats(self, *, force: bool = False) -> None:
+        try:
+            mood_pct = self._last_mood_pct
+            affection_pct = self._last_affection_pct
+            if mood_pct is None or affection_pct is None:
+                return
+
+            mood_left = self._last_mood_left or "—"
+            affection_left = self._last_affection_left or "—"
+
+            key = (
+                int(self.mood_bar.width() or 0),
+                int(self.affection_bar.width() or 0),
+                int(mood_pct),
+                int(affection_pct),
+                mood_left,
+                affection_left,
+            )
+            if (not force) and self._last_format_key == key:
+                return
+            self._last_format_key = key
+
+            mood_fmt = self._format_bar_text(self.mood_bar, mood_left, int(mood_pct))
+            affection_fmt = self._format_bar_text(
+                self.affection_bar, affection_left, int(affection_pct)
+            )
+            try:
+                if self.mood_bar.format() != mood_fmt:
+                    self.mood_bar.setFormat(mood_fmt)
+            except Exception:
+                self.mood_bar.setFormat(mood_fmt)
+            try:
+                if self.affection_bar.format() != affection_fmt:
+                    self.affection_bar.setFormat(affection_fmt)
+            except Exception:
+                self.affection_bar.setFormat(affection_fmt)
         except Exception:
             pass
 
@@ -696,6 +788,12 @@ class CharacterStatusIsland(QWidget):
             self._details_opacity_anim.setStartValue(float(self._details_effect.opacity()))
             self._details_opacity_anim.setEndValue(1.0)
             self._details_opacity_anim.start()
+        except Exception:
+            pass
+
+        try:
+            # Ensure bar labels are computed using the final layout width (fonts/HiDPI can change it).
+            QTimer.singleShot(0, lambda: self._update_bar_formats(force=True))
         except Exception:
             pass
 
@@ -1056,7 +1154,9 @@ class LightChatWindow(LightFramelessWindow):
 
         self.messages_layout = QVBoxLayout(self.messages_widget)
         # 顶部预留空间给“原子岛”悬浮层（不占布局高度）
-        self.messages_layout.setContentsMargins(0, CharacterStatusIsland.COLLAPSED_HEIGHT + 20, 0, 16)
+        self.messages_layout.setContentsMargins(
+            0, CharacterStatusIsland.COLLAPSED_HEIGHT + 20, 0, 16
+        )
         self.messages_layout.setSpacing(8)
         self.messages_layout.addStretch()
 
@@ -1163,7 +1263,9 @@ class LightChatWindow(LightFramelessWindow):
 
         self.enhanced_input = EnhancedInputWidget()
         try:
-            self.enhanced_input.setMaximumWidth(int(getattr(self, "_messages_column_max_width", 820)))
+            self.enhanced_input.setMaximumWidth(
+                int(getattr(self, "_messages_column_max_width", 820))
+            )
         except Exception:
             pass
         self.enhanced_input.send_requested.connect(self._on_enhanced_send)
@@ -1173,7 +1275,9 @@ class LightChatWindow(LightFramelessWindow):
         except Exception:
             pass
         try:
-            self.enhanced_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.enhanced_input.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
         except Exception:
             pass
         input_layout.addWidget(self.enhanced_input, 1, Qt.AlignmentFlag.AlignHCenter)
@@ -1397,8 +1501,16 @@ class LightChatWindow(LightFramelessWindow):
                 is_sending = False
 
             asr_listening = bool(getattr(self, "_asr_listening", False))
-            agent_ready = (self.agent is not None) and not bool(getattr(self, "_agent_initializing", False))
-            can_send = bool(enabled) and agent_ready and has_content and not is_sending and not asr_listening
+            agent_ready = (self.agent is not None) and not bool(
+                getattr(self, "_agent_initializing", False)
+            )
+            can_send = (
+                bool(enabled)
+                and agent_ready
+                and has_content
+                and not is_sending
+                and not asr_listening
+            )
             self.send_btn.setEnabled(can_send)
         except Exception:
             pass
@@ -1589,7 +1701,10 @@ class LightChatWindow(LightFramelessWindow):
         try:
             # 通过 RichTextInput 的 send_requested 信号复用 EnhancedInputWidget 的采集逻辑
             if getattr(self, "input_text", None) is not None:
-                self.input_text.send_requested.emit()
+                if hasattr(self.input_text, "request_send"):
+                    self.input_text.request_send()
+                else:
+                    self.input_text.send_requested.emit()
                 return
         except Exception:
             pass
@@ -1618,6 +1733,33 @@ class LightChatWindow(LightFramelessWindow):
 
         enable_entry_animation = bool(with_animation and GUI_ANIMATIONS_ENABLED)
         message_stripped = message.strip()
+
+        # Live2D: allow explicit hidden directives inside the message text.
+        live2d_directive_applied = False
+        if not bulk_loading:
+            try:
+                if "[[live2d:" in str(message).lower():
+                    from src.gui.live2d_state_event import extract_explicit_state_directive
+
+                    cleaned, directive = extract_explicit_state_directive(message)
+                    if directive is not None:
+                        try:
+                            live2d_directive_applied = bool(
+                                self._apply_live2d_state_directive(
+                                    directive,
+                                    source="user_send" if is_user else "assistant_reply",
+                                )
+                            )
+                        except Exception:
+                            pass
+                    if cleaned:
+                        message = cleaned
+                        message_stripped = cleaned.strip()
+            except Exception:
+                pass
+        if not message_stripped:
+            # Pure directive message: apply Live2D state but don't render an empty bubble.
+            return
 
         # v2.29.10: 使用预编译的正则表达式，提升性能
         sticker_only = STICKER_PATTERN.fullmatch(message_stripped)
@@ -1686,6 +1828,12 @@ class LightChatWindow(LightFramelessWindow):
                 self._maybe_live2d_react("user_send" if is_user else "assistant_reply")
             except Exception:
                 pass
+            if not is_user:
+                try:
+                    if not live2d_directive_applied:
+                        self._maybe_live2d_state_event(message, source="assistant_reply")
+                except Exception:
+                    pass
 
         # 保存到数据库和缓存
         if save_to_db:
@@ -1705,8 +1853,12 @@ class LightChatWindow(LightFramelessWindow):
                                 self._loaded_message_count = {}
                             if not hasattr(self, "_total_message_count"):
                                 self._total_message_count = {}
-                            self._loaded_message_count[contact] = self._loaded_message_count.get(contact, 0) + 1
-                            self._total_message_count[contact] = self._total_message_count.get(contact, 0) + 1
+                            self._loaded_message_count[contact] = (
+                                self._loaded_message_count.get(contact, 0) + 1
+                            )
+                            self._total_message_count[contact] = (
+                                self._total_message_count.get(contact, 0) + 1
+                            )
                 except Exception as e:
                     from src.utils.exceptions import handle_exception
 
@@ -2071,6 +2223,7 @@ class LightChatWindow(LightFramelessWindow):
             with_animation: 是否显示动画
         """
         from PyQt6.QtWidgets import QWidget, QHBoxLayout
+
         try:
             bulk_loading = bool(getattr(self, "_bulk_loading_messages", False))
             # 创建容器
@@ -2093,7 +2246,9 @@ class LightChatWindow(LightFramelessWindow):
                 if i % 2 == 0:
                     # 文字部分
                     if part.strip():
-                        text_bubble = LightMessageBubble(part, is_user, enable_shadow=with_animation)
+                        text_bubble = LightMessageBubble(
+                            part, is_user, enable_shadow=with_animation
+                        )
                         if enable_entry_animation:
                             text_bubble.show_with_animation()
                         widgets.append(text_bubble)
@@ -2195,7 +2350,7 @@ class LightChatWindow(LightFramelessWindow):
             return
 
         # 创建平滑滚动动画
-        if not hasattr(self, '_scroll_animation'):
+        if not hasattr(self, "_scroll_animation"):
             self._scroll_animation = QPropertyAnimation(scrollbar, b"value")
             self._scroll_animation.setDuration(200)  # 200ms 平滑滚动
             self._scroll_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -2231,7 +2386,11 @@ class LightChatWindow(LightFramelessWindow):
         self.typing_indicator = LightTypingIndicator()
         # v2.30.8: 插入到最后（stretch之前）
         insert_position = self.messages_layout.count() - 1
-        logger.debug("显示打字指示器: position=%s, total_count=%s", insert_position, self.messages_layout.count())
+        logger.debug(
+            "显示打字指示器: position=%s, total_count=%s",
+            insert_position,
+            self.messages_layout.count(),
+        )
         self.messages_layout.insertWidget(insert_position, self.typing_indicator)
 
         # v2.30.8: 强制显示和更新
@@ -2267,6 +2426,12 @@ class LightChatWindow(LightFramelessWindow):
         self._stream_render_pending = ""
         self._stream_render_pending_pos = 0
         self._stream_render_remaining = 0
+        # Live2D: reset streaming-only buffers as well.
+        try:
+            self._live2d_stream_directive_buf = ""
+            self._live2d_stream_text_buf = ""
+        except Exception:
+            pass
 
     def _schedule_stream_scroll(self) -> None:
         """轻量调度滚动到底部（保持视图跟随，但避免信号风暴）。"""
@@ -2294,7 +2459,10 @@ class LightChatWindow(LightFramelessWindow):
         """根据积压量动态调整每帧输出量：小积压更细腻，大积压自动加速追赶。"""
         backlog = int(getattr(self, "_stream_render_remaining", 0))
         if STREAM_RENDER_TYPEWRITER and not getattr(self, "_stream_model_done", False):
-            if STREAM_RENDER_TYPEWRITER_MAX_BACKLOG <= 0 or backlog <= STREAM_RENDER_TYPEWRITER_MAX_BACKLOG:
+            if (
+                STREAM_RENDER_TYPEWRITER_MAX_BACKLOG <= 0
+                or backlog <= STREAM_RENDER_TYPEWRITER_MAX_BACKLOG
+            ):
                 return 1
         base = int(STREAM_RENDER_BASE_CHARS)
         max_chars = int(STREAM_RENDER_MAX_CHARS)
@@ -2442,6 +2610,20 @@ class LightChatWindow(LightFramelessWindow):
 
         full_response = self.current_streaming_bubble.message_text.toPlainText()
 
+        # Live2D: flush any leftover directive fragments from streaming (avoid dropping content).
+        try:
+            buf = str(getattr(self, "_live2d_stream_directive_buf", "") or "")
+            if buf:
+                full_response = f"{full_response}{buf}"
+                try:
+                    self.current_streaming_bubble.message_text.setPlainText(full_response)
+                except Exception:
+                    pass
+            self._live2d_stream_directive_buf = ""
+            self._live2d_stream_text_buf = ""
+        except Exception:
+            pass
+
         # 最终过滤工具信息（确保保存到数据库的内容也是干净的）
         if full_response and self._needs_tool_filter(full_response):
             filtered_response = self._filter_tool_info_safe(full_response)
@@ -2451,6 +2633,28 @@ class LightChatWindow(LightFramelessWindow):
                     self.current_streaming_bubble.message_text.setPlainText(full_response)
                 except Exception:
                     pass
+
+        # Live2D: strip/apply explicit directives (authoritative).
+        live2d_directive_applied = False
+        try:
+            from src.gui.live2d_state_event import extract_explicit_state_directive
+
+            cleaned, directive = extract_explicit_state_directive(full_response)
+            if directive is not None:
+                try:
+                    live2d_directive_applied = bool(
+                        self._apply_live2d_state_directive(directive, source="assistant_reply")
+                    )
+                except Exception:
+                    pass
+            if cleaned != full_response and cleaned:
+                full_response = cleaned
+                try:
+                    self.current_streaming_bubble.message_text.setPlainText(full_response)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         # 完成流式输出（停止 caret、补齐阴影、最终高度）
         try:
@@ -2483,8 +2687,12 @@ class LightChatWindow(LightFramelessWindow):
                             self._loaded_message_count = {}
                         if not hasattr(self, "_total_message_count"):
                             self._total_message_count = {}
-                        self._loaded_message_count[contact] = self._loaded_message_count.get(contact, 0) + 1
-                        self._total_message_count[contact] = self._total_message_count.get(contact, 0) + 1
+                        self._loaded_message_count[contact] = (
+                            self._loaded_message_count.get(contact, 0) + 1
+                        )
+                        self._total_message_count[contact] = (
+                            self._total_message_count.get(contact, 0) + 1
+                        )
             except Exception as e:
                 logger.error("保存AI回复失败: %s", e)
 
@@ -2494,6 +2702,11 @@ class LightChatWindow(LightFramelessWindow):
         # Live2D: react once per completed assistant response.
         try:
             self._maybe_live2d_react("assistant_reply")
+        except Exception:
+            pass
+        try:
+            if not live2d_directive_applied:
+                self._maybe_live2d_state_event(full_response, source="assistant_reply")
         except Exception:
             pass
 
@@ -2548,17 +2761,252 @@ class LightChatWindow(LightFramelessWindow):
         except Exception:
             pass
 
+    def _infer_live2d_state_event(self, text: str) -> tuple[str, float] | None:
+        """Infer a semantic Live2D state event from the current dialogue text."""
+        msg = (text or "").strip()
+        if not msg:
+            return None
+
+        # Fast path: lightweight local keyword inference (negation-aware).
+        try:
+            from src.gui.live2d_state_event import infer_state_event_from_text
+
+            inferred = infer_state_event_from_text(msg)
+            if inferred:
+                return inferred
+        except Exception:
+            pass
+
+        # Fallback: use agent's emotion engine if available.
+        engine = None
+        try:
+            agent = getattr(self, "agent", None)
+            engine = getattr(agent, "emotion_engine", None) if agent is not None else None
+        except Exception:
+            engine = None
+        if engine is None:
+            return None
+
+        try:
+            from src.agent.emotion import EmotionType
+
+            msg_for_engine = msg[:2000] if len(msg) > 2000 else msg
+            emo = engine.analyze_message(msg_for_engine)
+            intensity = float(engine.estimate_message_intensity(msg_for_engine, emo))
+        except Exception:
+            return None
+
+        if intensity < 0.55:
+            return None
+
+        mapping = {
+            EmotionType.ANGRY: "angry",
+            EmotionType.SAD: "sad",
+            EmotionType.SURPRISED: "surprise",
+            EmotionType.AFFECTIONATE: "love",
+            EmotionType.WORRIED: "shy",
+            EmotionType.CONFUSED: "dizzy",
+        }
+        key = mapping.get(emo)
+        if not key:
+            return None
+        return (key, max(0.0, min(1.0, intensity)))
+
+    def _maybe_live2d_state_event(self, text: str, *, source: str = "") -> None:
+        """Send a semantic state event to Live2D for real-time expression feedback."""
+        try:
+            from src.gui.live2d_state_config import get_live2d_state_events_config
+
+            if not get_live2d_state_events_config().enabled:
+                return
+        except Exception:
+            pass
+
+        panel = getattr(self, "live2d_panel", None)
+        if panel is None:
+            return
+        try:
+            if bool(getattr(panel, "is_collapsed", False)):
+                return
+        except Exception:
+            pass
+        try:
+            if not panel.isVisible():
+                return
+        except Exception:
+            pass
+
+        gl = None
+        try:
+            gl = getattr(panel, "gl", None)
+        except Exception:
+            gl = None
+        if gl is None:
+            return
+        try:
+            if hasattr(gl, "is_ready") and not bool(gl.is_ready):
+                return
+        except Exception:
+            pass
+
+        inferred = self._infer_live2d_state_event(text)
+        if not inferred:
+            return
+        event, intensity = inferred
+
+        # Debounce to prevent rapid toggling during fast UI operations.
+        try:
+            from src.gui.live2d_state_config import get_live2d_state_events_config
+
+            debounce_ms = int(get_live2d_state_events_config().debounce_ms)
+        except Exception:
+            debounce_ms = 750
+        debounce_ms = max(0, min(30_000, int(debounce_ms)))
+
+        try:
+            now_ms = time.monotonic() * 1000.0
+            last_ms = float(getattr(self, "_live2d_last_state_ms", 0.0) or 0.0)
+            last_event = str(getattr(self, "_live2d_last_state_event", "") or "")
+            # Only debounce the *same* event; allow different events to override quickly so we don't get
+            # "stuck" in an older expression during streaming.
+            if (
+                debounce_ms
+                and last_event
+                and str(event) == last_event
+                and (now_ms - last_ms) < float(debounce_ms)
+            ):
+                return
+            self._live2d_last_state_ms = now_ms
+            self._live2d_last_state_event = str(event)
+        except Exception:
+            pass
+
+        try:
+            request = getattr(gl, "request_state_event", None)
+            if callable(request):
+                request(
+                    str(event), intensity=float(intensity), hold_s=None, source=str(source or "")
+                )
+            else:
+                apply = getattr(gl, "apply_state_event", None)
+                if callable(apply):
+                    apply(str(event), intensity=float(intensity), source=str(source or ""))
+        except Exception:
+            pass
+
+    def _apply_live2d_state_directive(
+        self,
+        directive: tuple[str, float | None, float | None],
+        *,
+        source: str = "",
+    ) -> bool:
+        """Apply an explicit (authoritative) Live2D state directive."""
+        try:
+            from src.gui.live2d_state_config import get_live2d_state_events_config
+
+            cfg = get_live2d_state_events_config()
+            if (not cfg.enabled) or (not cfg.allow_directives):
+                return False
+        except Exception:
+            pass
+
+        panel = getattr(self, "live2d_panel", None)
+        if panel is None:
+            return False
+        try:
+            if bool(getattr(panel, "is_collapsed", False)):
+                return False
+        except Exception:
+            pass
+        try:
+            if not panel.isVisible():
+                return False
+        except Exception:
+            pass
+        gl = None
+        try:
+            gl = getattr(panel, "gl", None)
+        except Exception:
+            gl = None
+        if gl is None:
+            return False
+        try:
+            if hasattr(gl, "is_ready") and not bool(gl.is_ready):
+                return False
+        except Exception:
+            pass
+
+        event, intensity, hold_s = directive
+        try:
+            iv = float(intensity) if intensity is not None else 0.7
+        except Exception:
+            iv = 0.7
+        iv = max(0.0, min(1.0, iv))
+        hs = None
+        if hold_s is not None:
+            try:
+                hs = float(hold_s)
+            except Exception:
+                hs = None
+        try:
+            request = getattr(gl, "request_state_event", None)
+            if callable(request):
+                request(str(event), intensity=float(iv), hold_s=hs, source=str(source or ""))
+            else:
+                apply = getattr(gl, "apply_state_event", None)
+                if callable(apply):
+                    apply(str(event), intensity=float(iv), hold_s=hs, source=str(source or ""))
+        except Exception:
+            pass
+        return True
+
     def _handle_stream_chunk(self, chunk: str) -> None:
         """处理流式输出块：过滤、创建气泡、入队渲染、TTS。"""
         chunk = chunk or ""
         if not chunk:
             return
 
+        # Live2D: strip/apply explicit directives during streaming (avoid flashing control tags).
+        try:
+            buf = str(getattr(self, "_live2d_stream_directive_buf", "") or "")
+            if buf or "[[" in chunk or "live2d" in chunk.lower():
+                from src.gui.live2d_state_event import filter_explicit_state_directives_stream
+
+                clean, new_buf, directive = filter_explicit_state_directives_stream(buf, chunk)
+                self._live2d_stream_directive_buf = new_buf
+                if directive is not None:
+                    try:
+                        self._apply_live2d_state_directive(directive, source="assistant_stream")
+                    except Exception:
+                        pass
+                chunk = clean
+        except Exception:
+            pass
+
         # 过滤工具信息（热路径：仅在看起来包含工具信息时执行，避免无谓开销）
         if self._needs_tool_filter(chunk):
             chunk = self._filter_tool_info_safe(chunk)
             if not chunk:
                 return
+
+        # Live2D: keep a small rolling tail buffer so negations across chunk boundaries still work.
+        try:
+            from src.gui.live2d_state_config import get_live2d_state_events_config
+
+            tail_chars = int(get_live2d_state_events_config().stream_tail_chars)
+            tail_chars = max(0, min(5000, tail_chars))
+        except Exception:
+            tail_chars = 360
+
+        try:
+            tail = str(getattr(self, "_live2d_stream_text_buf", "") or "")
+            if tail_chars <= 0:
+                tail = ""
+            else:
+                tail = (tail + chunk)[-tail_chars:]
+            self._live2d_stream_text_buf = tail
+        except Exception:
+            pass
 
         # 隐藏打字指示器（只在第一次）
         if hasattr(self, "typing_indicator") and self.typing_indicator is not None:
@@ -2582,6 +3030,20 @@ class LightChatWindow(LightFramelessWindow):
             except Exception:
                 pass
             return
+
+        # Live2D: best-effort realtime feedback for strong keywords during streaming.
+        try:
+            from src.gui.live2d_state_config import get_live2d_state_events_config
+
+            if not get_live2d_state_events_config().stream_feedback:
+                raise RuntimeError("stream_feedback disabled")
+            from src.gui.live2d_state_event import STATE_EVENT_FAST_TOKENS
+
+            if any(t and (t in chunk) for t in STATE_EVENT_FAST_TOKENS):
+                ctx = str(getattr(self, "_live2d_stream_text_buf", "") or chunk)
+                self._maybe_live2d_state_event(ctx, source="assistant_stream")
+        except Exception:
+            pass
 
         # 创建或更新流式消息气泡
         if self.current_streaming_bubble is None:
@@ -2664,7 +3126,7 @@ class LightChatWindow(LightFramelessWindow):
         """将过长文本切分为小段以降低单次渲染压力。"""
         if not text or len(text) <= max_len:
             return [text]
-        return [text[i:i + max_len] for i in range(0, len(text), max_len)]
+        return [text[i : i + max_len] for i in range(0, len(text), max_len)]
 
     def _hide_typing_indicator(self):
         """隐藏打字指示器"""
@@ -2882,7 +3344,9 @@ class LightChatWindow(LightFramelessWindow):
 
             # 语音输入模式下禁用发送：避免边录音边触发对话与流式刷新
             if bool(getattr(self, "_asr_listening", False)):
-                show_toast(self, "语音输入中：请先停止语音输入再发送", Toast.TYPE_INFO, duration=1600)
+                show_toast(
+                    self, "语音输入中：请先停止语音输入再发送", Toast.TYPE_INFO, duration=1600
+                )
                 return
 
             # Agent 未就绪时不允许发送：避免输入被清空/消息被写入历史后又失败
@@ -2955,7 +3419,9 @@ class LightChatWindow(LightFramelessWindow):
             ai_message_raw = text_clean
             if sticker_paths:
                 stickers_raw = " ".join(f"[STICKER:{p}]" for p in sticker_paths)
-                ai_message_raw = f"{ai_message_raw}\n{stickers_raw}" if ai_message_raw else stickers_raw
+                ai_message_raw = (
+                    f"{ai_message_raw}\n{stickers_raw}" if ai_message_raw else stickers_raw
+                )
 
             # 3) 图片识别：该路径由图片识别流程接管（识别完成后再启动 ChatThread）
             if file_paths:
@@ -3019,50 +3485,43 @@ class LightChatWindow(LightFramelessWindow):
 
     def _show_composer_tools_menu(self) -> None:
         """显示输入框“+”菜单（附件、表情等）。"""
-        from PyQt6.QtWidgets import QMenu
+        from src.gui.widgets.popup_action_menu import PopupAction, PopupActionMenu
 
         anchor = getattr(self, "composer_plus_btn", None)
         if anchor is None:
             return
 
-        menu = QMenu(self)
-        menu_selected = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.08)
-        menu.setStyleSheet(
-            f"""
-            QMenu {{
-                background: {MD3_ENHANCED_COLORS['surface_container']};
-                border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
-                border-radius: {MD3_ENHANCED_RADIUS['xl']};
-                padding: 6px;
-            }}
-            QMenu::item {{
-                padding: 8px 12px;
-                border-radius: {MD3_ENHANCED_RADIUS['lg']};
-                color: {MD3_ENHANCED_COLORS['on_surface']};
-            }}
-            QMenu::item:selected {{
-                background: {menu_selected};
-            }}
-        """
-        )
+        try:
+            popup = getattr(self, "_composer_tools_popup", None)
+            if popup is not None:
+                popup.dismiss()
+        except Exception:
+            pass
 
-        attach_action = menu.addAction("添加图片/附件…")
-        emoji_action = menu.addAction("表情/表情包…")
-        menu.addSeparator()
-        clear_action = menu.addAction("清空输入")
+        actions = [
+            PopupAction("attach", "添加图片/附件…"),
+            PopupAction("emoji", "表情/表情包…"),
+            PopupAction("clear_input", "清空输入"),
+        ]
+        popup = PopupActionMenu(actions, parent=self)
 
-        action = menu.exec(anchor.mapToGlobal(QPoint(0, anchor.height())))
-        if action is None:
-            return
-        if action == attach_action:
-            self._on_attach_clicked()
-        elif action == emoji_action:
-            self._on_emoji_clicked()
-        elif action == clear_action:
-            try:
-                self.enhanced_input.clear_all()
-            except Exception:
-                pass
+        def _handle(action_id: str) -> None:
+            if action_id == "attach":
+                self._on_attach_clicked()
+                return
+            if action_id == "emoji":
+                self._on_emoji_clicked()
+                return
+            if action_id == "clear_input":
+                try:
+                    self.enhanced_input.clear_all()
+                except Exception:
+                    pass
+                return
+
+        popup.action_selected.connect(_handle)
+        self._composer_tools_popup = popup
+        popup.open_at_anchor(anchor, prefer_below=True, align_right=False)
 
     def _on_composer_mic_clicked(self) -> None:
         """输入框语音按钮点击：切换 ASR 语音输入模式。"""
@@ -3085,8 +3544,18 @@ class LightChatWindow(LightFramelessWindow):
             settings = None
 
         try:
-            if settings is None or not hasattr(settings, "asr") or not settings.asr or not settings.asr.enabled:
-                show_toast(self, "语音输入未启用，请在设置中开启 ASR 后重启", Toast.TYPE_INFO, duration=2200)
+            if (
+                settings is None
+                or not hasattr(settings, "asr")
+                or not settings.asr
+                or not settings.asr.enabled
+            ):
+                show_toast(
+                    self,
+                    "语音输入未启用，请在设置中开启 ASR 后重启",
+                    Toast.TYPE_INFO,
+                    duration=2200,
+                )
                 return
         except Exception:
             show_toast(self, "语音输入配置不可用，请检查设置", Toast.TYPE_ERROR, duration=2200)
@@ -3165,7 +3634,9 @@ class LightChatWindow(LightFramelessWindow):
         try:
             msg = "开始语音输入…再次点击麦克风停止"
             try:
-                endpoint_ms = int(getattr(getattr(settings, "asr", None), "endpoint_silence_ms", 0) or 0)
+                endpoint_ms = int(
+                    getattr(getattr(settings, "asr", None), "endpoint_silence_ms", 0) or 0
+                )
                 if endpoint_ms > 0:
                     msg = "开始语音输入…再次点击麦克风停止，或停顿自动完成"
             except Exception:
@@ -3353,7 +3824,9 @@ class LightChatWindow(LightFramelessWindow):
             count += 1
             caption = ""
             try:
-                caption = caption_map.get(os.path.normcase(os.path.normpath(sticker_path)), "") or ""
+                caption = (
+                    caption_map.get(os.path.normcase(os.path.normpath(sticker_path)), "") or ""
+                )
             except Exception:
                 caption = ""
             if caption:
@@ -3410,7 +3883,10 @@ class LightChatWindow(LightFramelessWindow):
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
         file_paths, _ = QFileDialog.getOpenFileNames(
-            self, "选择图片（可多选）", "", "图片文件 (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;所有文件 (*)"
+            self,
+            "选择图片（可多选）",
+            "",
+            "图片文件 (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;所有文件 (*)",
         )
 
         if file_paths:
@@ -3429,7 +3905,7 @@ class LightChatWindow(LightFramelessWindow):
                     QMessageBox.warning(
                         self,
                         "不支持的文件类型",
-                        f"文件 {Path(file_path).name} 不是图片格式，已跳过。"
+                        f"文件 {Path(file_path).name} 不是图片格式，已跳过。",
                     )
                     logger.warning("不支持的文件类型: %s", file_path)
 
@@ -3462,14 +3938,23 @@ class LightChatWindow(LightFramelessWindow):
 
     def _process_multiple_images(self, image_paths: list, user_message: str = ""):
         """处理多张图片的识别 (v2.30.2 新增)"""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QRadioButton, QButtonGroup
+        from PyQt6.QtWidgets import (
+            QDialog,
+            QVBoxLayout,
+            QLabel,
+            QPushButton,
+            QHBoxLayout,
+            QRadioButton,
+            QButtonGroup,
+        )
         from src.gui.material_design_light import MD3_LIGHT_COLORS
 
         # 创建识别模式选择对话框
         dialog = QDialog(self)
         dialog.setWindowTitle("图片识别")
         dialog.setFixedWidth(400)
-        dialog.setStyleSheet(f"""
+        dialog.setStyleSheet(
+            f"""
             QDialog {{
                 background: {MD3_LIGHT_COLORS['surface']};
             }}
@@ -3501,7 +3986,8 @@ class LightChatWindow(LightFramelessWindow):
             QPushButton#cancelBtn:hover {{
                 background: {MD3_LIGHT_COLORS['surface_container_high']};
             }}
-        """)
+        """
+        )
 
         layout = QVBoxLayout(dialog)
         layout.setSpacing(16)
@@ -3586,10 +4072,9 @@ class LightChatWindow(LightFramelessWindow):
 
         # 创建并启动线程
         from src.llm.factory import get_vision_llm
+
         vision_llm = get_vision_llm()
-        self.batch_recognition_thread = BatchImageRecognitionThread(
-            image_paths, mode, vision_llm
-        )
+        self.batch_recognition_thread = BatchImageRecognitionThread(image_paths, mode, vision_llm)
         self.batch_recognition_thread.progress.connect(
             lambda idx, total, result: logger.debug("图片识别进度: %s/%s", idx, total)
         )
@@ -3597,11 +4082,15 @@ class LightChatWindow(LightFramelessWindow):
             lambda results: self._on_batch_recognition_finished(results, user_message)
         )
         self.batch_recognition_thread.error.connect(
-            lambda error: self._on_batch_recognition_error(error, image_paths=image_paths, mode=mode, user_message=user_message)
+            lambda error: self._on_batch_recognition_error(
+                error, image_paths=image_paths, mode=mode, user_message=user_message
+            )
         )
         self.batch_recognition_thread.start()
 
-    def _on_batch_recognition_error(self, error: str, *, image_paths: list, mode: str, user_message: str = "") -> None:
+    def _on_batch_recognition_error(
+        self, error: str, *, image_paths: list, mode: str, user_message: str = ""
+    ) -> None:
         """批量识别失败：不展示过程消息，仅给出最终回复/提示。"""
         logger.error("批量识别失败: %s", error)
         try:
@@ -3618,13 +4107,21 @@ class LightChatWindow(LightFramelessWindow):
         logger.info("批量识别完成: count=%s", len(results))
 
         # 合并所有图片分析结果
-        first_image_path = results[0].get('image_path') if results else None
+        first_image_path = results[0].get("image_path") if results else None
         combined_analysis = {
             "mode": results[0].get("mode", "auto"),
-            "description": "\n\n".join([f"图片{i+1}: {r.get('description', '')}" for i, r in enumerate(results) if r.get('description')]),
-            "text": "\n\n".join([f"图片{i+1}: {r.get('text', '')}" for i, r in enumerate(results) if r.get('text')]),
+            "description": "\n\n".join(
+                [
+                    f"图片{i+1}: {r.get('description', '')}"
+                    for i, r in enumerate(results)
+                    if r.get("description")
+                ]
+            ),
+            "text": "\n\n".join(
+                [f"图片{i+1}: {r.get('text', '')}" for i, r in enumerate(results) if r.get("text")]
+            ),
             "success": all(r.get("success", False) for r in results),
-            "image_count": len(results)
+            "image_count": len(results),
         }
         try:
             logger.debug(
@@ -3705,6 +4202,7 @@ class LightChatWindow(LightFramelessWindow):
         self.send_btn.setEnabled(False)
 
         from src.llm.factory import get_vision_llm
+
         vision_llm = get_vision_llm()
 
         task = VisionAnalyzeTask(image_path, mode="auto", llm=vision_llm)
@@ -3739,9 +4237,16 @@ class LightChatWindow(LightFramelessWindow):
         self._add_message(f"抱歉主人，图片识别失败了：{error} 喵~", is_user=False)
         self._set_send_enabled(True)
 
-    def _on_single_image_recognition_finished(self, result: dict, image_path: str, user_message: str = ""):
+    def _on_single_image_recognition_finished(
+        self, result: dict, image_path: str, user_message: str = ""
+    ):
         """单张图片识别完成回调（增强输入框用）。"""
-        logger.info("图片识别完成: %s, mode=%s, success=%s", image_path, result.get("mode"), result.get("success"))
+        logger.info(
+            "图片识别完成: %s, mode=%s, success=%s",
+            image_path,
+            result.get("mode"),
+            result.get("success"),
+        )
         try:
             logger.debug(
                 "图片识别结果: desc_chars=%s, text_chars=%s",
@@ -3786,7 +4291,15 @@ class LightChatWindow(LightFramelessWindow):
 
     def _handle_image_upload(self, image_path: str):
         """处理图片上传和识别 (v2.30.0 新增，v2.30.2 已弃用，保留用于兼容)"""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QRadioButton, QButtonGroup
+        from PyQt6.QtWidgets import (
+            QDialog,
+            QVBoxLayout,
+            QLabel,
+            QPushButton,
+            QHBoxLayout,
+            QRadioButton,
+            QButtonGroup,
+        )
         from src.gui.material_design_light import MD3_LIGHT_COLORS
 
         # 显示图片消息气泡
@@ -3797,7 +4310,8 @@ class LightChatWindow(LightFramelessWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle("图片识别")
         dialog.setFixedWidth(400)
-        dialog.setStyleSheet(f"""
+        dialog.setStyleSheet(
+            f"""
             QDialog {{
                 background: {MD3_LIGHT_COLORS['surface']};
             }}
@@ -3829,7 +4343,8 @@ class LightChatWindow(LightFramelessWindow):
             QPushButton#cancelBtn:hover {{
                 background: {MD3_LIGHT_COLORS['surface_container_high']};
             }}
-        """)
+        """
+        )
 
         layout = QVBoxLayout(dialog)
         layout.setSpacing(16)
@@ -3899,6 +4414,7 @@ class LightChatWindow(LightFramelessWindow):
         self.send_btn.setEnabled(False)
 
         from src.llm.factory import get_vision_llm
+
         vision_llm = get_vision_llm()
 
         task = VisionAnalyzeTask(image_path, mode=mode, llm=vision_llm)
@@ -3926,7 +4442,12 @@ class LightChatWindow(LightFramelessWindow):
 
     def _on_image_recognition_finished(self, result: dict, image_path: str):
         """图片识别完成回调 (v2.30.0 新增)"""
-        logger.info("图片识别完成(手动模式): %s, mode=%s, success=%s", image_path, result.get("mode"), result.get("success"))
+        logger.info(
+            "图片识别完成(手动模式): %s, mode=%s, success=%s",
+            image_path,
+            result.get("mode"),
+            result.get("success"),
+        )
         # 直接触发一次 AI 回复：不在聊天区展示识别过程/识别结果明细
         ai_message = "请帮我分析这张图片。"
 
@@ -3996,49 +4517,44 @@ class LightChatWindow(LightFramelessWindow):
 
     def _show_header_menu(self) -> None:
         """显示头部“更多”菜单。"""
-        from PyQt6.QtWidgets import QMenu
+        from src.gui.widgets.popup_action_menu import PopupAction, PopupActionMenu
 
         anchor = getattr(self, "more_btn", None)
         if anchor is None:
             return
 
-        menu = QMenu(self)
-        menu_selected = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.08)
-        menu.setStyleSheet(
-            f"""
-            QMenu {{
-                background: {MD3_ENHANCED_COLORS['surface_container']};
-                border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
-                border-radius: {MD3_ENHANCED_RADIUS['xl']};
-                padding: 6px;
-            }}
-            QMenu::item {{
-                padding: 8px 12px;
-                border-radius: {MD3_ENHANCED_RADIUS['lg']};
-                color: {MD3_ENHANCED_COLORS['on_surface']};
-            }}
-            QMenu::item:selected {{
-                background: {menu_selected};
-            }}
-        """
-        )
+        try:
+            popup = getattr(self, "_header_menu_popup", None)
+            if popup is not None:
+                popup.dismiss()
+        except Exception:
+            pass
 
-        settings_action = menu.addAction("设置")
-        refresh_action = menu.addAction("刷新当前对话")
-        clear_action = menu.addAction("清空当前聊天记录…")
-        logout_action = menu.addAction("退出登录")
+        actions = [
+            PopupAction("settings", "设置"),
+            PopupAction("refresh", "刷新当前对话"),
+            PopupAction("clear_chat", "清空当前聊天记录…"),
+            PopupAction("logout", "退出登录", destructive=True),
+        ]
+        popup = PopupActionMenu(actions, parent=self)
 
-        action = menu.exec(anchor.mapToGlobal(QPoint(0, anchor.height())))
-        if action is None:
-            return
-        if action == settings_action:
-            self._on_settings_clicked()
-        elif action == refresh_action:
-            self._refresh_current_chat()
-        elif action == clear_action:
-            self._confirm_and_clear_current_chat_history()
-        elif action == logout_action:
-            self._on_logout_clicked()
+        def _handle(action_id: str) -> None:
+            if action_id == "settings":
+                self._on_settings_clicked()
+                return
+            if action_id == "refresh":
+                self._refresh_current_chat()
+                return
+            if action_id == "clear_chat":
+                self._confirm_and_clear_current_chat_history()
+                return
+            if action_id == "logout":
+                self._on_logout_clicked()
+                return
+
+        popup.action_selected.connect(_handle)
+        self._header_menu_popup = popup
+        popup.open_at_anchor(anchor, prefer_below=True, align_right=True)
 
     def _refresh_current_chat(self) -> None:
         """刷新当前对话视图（清空 UI 并重新加载最近消息）。"""
@@ -4750,7 +5266,9 @@ class LightChatWindow(LightFramelessWindow):
                     continue
                 if i % 2 == 0:
                     if part.strip():
-                        text_bubble = LightMessageBubble(part, is_user, enable_shadow=with_animation)
+                        text_bubble = LightMessageBubble(
+                            part, is_user, enable_shadow=with_animation
+                        )
                         if enable_entry_animation:
                             text_bubble.show_with_animation()
                         widgets.append(text_bubble)
@@ -4811,7 +5329,9 @@ class LightChatWindow(LightFramelessWindow):
         try:
             scrollbar = self.scroll_area.verticalScrollBar()
             prev_auto = bool(getattr(self, "_auto_scroll_enabled", True))
-            self._auto_scroll_enabled = (scrollbar.maximum() - value) <= AUTO_SCROLL_BOTTOM_THRESHOLD_PX
+            self._auto_scroll_enabled = (
+                scrollbar.maximum() - value
+            ) <= AUTO_SCROLL_BOTTOM_THRESHOLD_PX
             # 当用户从“上滑查看历史”回到底部时，裁剪旧消息以恢复滚动性能
             if self._auto_scroll_enabled and not prev_auto:
                 self._schedule_trim_rendered_messages(force=False)
@@ -4827,7 +5347,7 @@ class LightChatWindow(LightFramelessWindow):
         # 如果滚动到顶部（阈值：距离顶部小于100像素）
         if value < 100:
             # 检查是否还有更多消息
-            if not hasattr(self, '_loaded_message_count') or not self.current_contact:
+            if not hasattr(self, "_loaded_message_count") or not self.current_contact:
                 return
 
             loaded_count = self._loaded_message_count.get(self.current_contact, 0)
@@ -4934,9 +5454,7 @@ class LightChatWindow(LightFramelessWindow):
 
         new_layout = QVBoxLayout(new_widget)
         try:
-            new_layout.setContentsMargins(
-                0, CharacterStatusIsland.COLLAPSED_HEIGHT + 20, 0, 16
-            )
+            new_layout.setContentsMargins(0, CharacterStatusIsland.COLLAPSED_HEIGHT + 20, 0, 16)
         except Exception:
             new_layout.setContentsMargins(0, 20, 0, 16)
         new_layout.setSpacing(8)
@@ -5172,14 +5690,15 @@ class LightChatWindow(LightFramelessWindow):
         except Exception:
             current_theme = "mint"
 
-        current_data_dir = _norm_path(getattr(runtime_settings, "data_dir", "./data") if runtime_settings else "./data")
+        current_data_dir = _norm_path(
+            getattr(runtime_settings, "data_dir", "./data") if runtime_settings else "./data"
+        )
 
-        # 读取最新 config.yaml（保存后文件已更新）
+        # 读取最新配置（config.user.yaml + config.dev.yaml，兼容 legacy config.yaml）
         try:
-            import yaml
+            from src.config.config_files import load_merged_config
 
-            config_path = Path("config.yaml")
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+            raw, _user_path, _dev_path, _legacy_used = load_merged_config()
             config = raw if isinstance(raw, dict) else {}
         except Exception:
             config = {}
@@ -5220,7 +5739,9 @@ class LightChatWindow(LightFramelessWindow):
 
         if runtime_settings is not None:
             try:
-                current_log_level = str(getattr(runtime_settings, "log_level", "INFO") or "INFO").upper()
+                current_log_level = str(
+                    getattr(runtime_settings, "log_level", "INFO") or "INFO"
+                ).upper()
                 new_log_level = str(config.get("log_level", current_log_level) or "INFO").upper()
                 current_log_dir = _norm_path(getattr(runtime_settings, "log_dir", "logs") or "logs")
                 new_log_dir = _norm_path(config.get("log_dir", current_log_dir) or current_log_dir)
@@ -5338,18 +5859,43 @@ class LightChatWindow(LightFramelessWindow):
 
     def _on_logout_clicked(self):
         """退出登录按钮点击 - 带平滑动画"""
-        from PyQt6.QtWidgets import QMessageBox
+        try:
+            from PyQt6.QtWidgets import QDialog
+            from src.gui.widgets.confirm_dialog import ConfirmDialog, ConfirmDialogTexts
 
-        # 确认对话框
-        reply = QMessageBox.question(
-            self,
-            "退出登录",
-            "确定要退出登录吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
+            logger.info("Logout requested: showing confirm dialog")
+            dialog = ConfirmDialog(
+                ConfirmDialogTexts(
+                    title="退出登录",
+                    message="确定要退出登录吗？",
+                    confirm="退出登录",
+                    cancel="取消",
+                ),
+                parent=self,
+                icon_ligature="logout",
+                size_ratio=0.5,
+                default_to_cancel=True,
+                background_key="logout_confirm",
+            )
 
-        if reply == QMessageBox.StandardButton.Yes:
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        except Exception as e:
+            logger.error("Logout confirm dialog failed: %s", e, exc_info=True)
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+
+                reply = QMessageBox.question(
+                    self,
+                    "退出登录",
+                    "确定要退出登录吗？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                accepted = reply == QMessageBox.StandardButton.Yes
+            except Exception:
+                accepted = False
+
+        if accepted:
             # 清除会话文件
             try:
                 from src.config.settings import settings
@@ -5587,7 +6133,11 @@ class LightChatWindow(LightFramelessWindow):
 
             def _on_finished() -> None:
                 try:
-                    if (not bool(collapsed)) and panel is not None and hasattr(panel, "apply_expanded_constraints"):
+                    if (
+                        (not bool(collapsed))
+                        and panel is not None
+                        and hasattr(panel, "apply_expanded_constraints")
+                    ):
                         panel.apply_expanded_constraints()
                 except Exception:
                     pass
@@ -5617,7 +6167,9 @@ class LightChatWindow(LightFramelessWindow):
         try:
             blur_overlay = getattr(self, "_edge_blur_overlay", None)
             if blur_overlay is not None:
-                blur_overlay.setGeometry(viewport.rect())
+                rect = viewport.rect()
+                if blur_overlay.geometry() != rect:
+                    blur_overlay.setGeometry(rect)
                 blur_overlay.raise_()
         except Exception:
             pass
@@ -5636,10 +6188,12 @@ class LightChatWindow(LightFramelessWindow):
                 return
             if target_w < 260 and available >= 260:
                 target_w = 260
-            island.setFixedWidth(target_w)
+            if int(island.width() or 0) != int(target_w):
+                island.setFixedWidth(int(target_w))
             x = max(0, (int(viewport.width()) - target_w) // 2)
             y = max(0, int(margin_top))
-            island.move(x, y)
+            if island.pos() != QPoint(int(x), int(y)):
+                island.move(int(x), int(y))
             island.raise_()
         except Exception:
             pass
@@ -5743,6 +6297,27 @@ class LightChatWindow(LightFramelessWindow):
             if hasattr(self, "_fps_timer") and self._fps_timer:
                 self._fps_timer.stop()
 
+            # Live2D lipsync: stop GUI timer and reset state (prevents stray ticks during shutdown).
+            try:
+                timer = getattr(self, "_lipsync_timer", None)
+                if timer is not None:
+                    timer.stop()
+            except Exception:
+                pass
+            try:
+                self._lipsync_active = False
+                self._lipsync_env = []
+                self._lipsync_last_level = 0.0
+                self._lipsync_last_idx = -1
+            except Exception:
+                pass
+            try:
+                gl_any = self._get_live2d_gl_any()
+                if gl_any is not None:
+                    gl_any.set_lipsync_level(0.0)
+            except Exception:
+                pass
+
             # 2. 停止正在运行的聊天线程 (v2.46.1: 增强清理逻辑)
             if self.current_chat_thread is not None:
                 try:
@@ -5771,7 +6346,7 @@ class LightChatWindow(LightFramelessWindow):
                             logger.info("聊天线程已正常结束")
 
                     # v2.46.1: 清理线程资源
-                    if hasattr(self.current_chat_thread, 'cleanup'):
+                    if hasattr(self.current_chat_thread, "cleanup"):
                         self.current_chat_thread.cleanup()
 
                     # v2.46.1: 标记为待删除
@@ -5933,7 +6508,7 @@ class LightChatWindow(LightFramelessWindow):
             if self.agent is not None:
                 logger.info("清理 Agent 资源...")
                 try:
-                    if hasattr(self.agent, 'close'):
+                    if hasattr(self.agent, "close"):
                         self.agent.close()
                 except Exception as e:
                     logger.warning("关闭 Agent 时出错: %s", e)
@@ -5967,7 +6542,7 @@ class LightChatWindow(LightFramelessWindow):
                     remaining_tasks.append(worker)
 
                 self.tts_workers = remaining_tasks
-            
+
             # 清理TTS队列和状态
             if hasattr(self, "tts_queue"):
                 self.tts_queue.clear()
@@ -6156,7 +6731,6 @@ class LightChatWindow(LightFramelessWindow):
             timer.setTimerType(Qt.TimerType.PreciseTimer)
             timer.setInterval(int(idle_ms))
             timer.timeout.connect(self._on_lipsync_tick)
-            timer.start()
             self._lipsync_timer = timer
 
         player = getattr(self, "audio_player", None)
@@ -6176,7 +6750,15 @@ class LightChatWindow(LightFramelessWindow):
         except Exception:
             pass
 
-    def _emit_lipsync_playback_started(self, envelope: list[float], step_s: float, start_monotonic: float) -> None:
+    def _get_live2d_gl_any(self):
+        panel = getattr(self, "live2d_panel", None)
+        if panel is None:
+            return None
+        return getattr(panel, "gl", None)
+
+    def _emit_lipsync_playback_started(
+        self, envelope: list[float], step_s: float, start_monotonic: float
+    ) -> None:
         """Audio thread callback -> emit a queued signal to the GUI thread."""
         if bool(getattr(self, "_closing", False)):
             return
@@ -6185,7 +6767,9 @@ class LightChatWindow(LightFramelessWindow):
         except Exception:
             pass
 
-    def _on_lipsync_playback_started(self, envelope: object, step_s: float, start_monotonic: float) -> None:
+    def _on_lipsync_playback_started(
+        self, envelope: object, step_s: float, start_monotonic: float
+    ) -> None:
         """GUI thread: store envelope + wake the lipsync timer immediately."""
         if bool(getattr(self, "_closing", False)):
             return
@@ -6219,6 +6803,11 @@ class LightChatWindow(LightFramelessWindow):
         if timer is not None:
             try:
                 timer.setInterval(int(getattr(self, "_lipsync_active_interval_ms", 16)))
+            except Exception:
+                pass
+            try:
+                if not timer.isActive():
+                    timer.start()
             except Exception:
                 pass
         self._on_lipsync_tick()
@@ -6262,25 +6851,25 @@ class LightChatWindow(LightFramelessWindow):
         active_ms = int(getattr(self, "_lipsync_active_interval_ms", 16))
 
         gl = self._get_live2d_gl_for_lipsync()
+        gl_any = self._get_live2d_gl_any()
 
         env = getattr(self, "_lipsync_env", []) or []
         active = bool(getattr(self, "_lipsync_active", False)) and bool(env)
 
         if not active:
-            try:
-                if timer is not None and timer.interval() != idle_ms:
-                    timer.setInterval(idle_ms)
-            except Exception:
-                pass
-
             last = float(getattr(self, "_lipsync_last_level", 0.0) or 0.0)
-            if gl is not None and last > 0.01:
+            if gl_any is not None and last > 0.01:
                 try:
-                    gl.set_lipsync_level(0.0)
+                    gl_any.set_lipsync_level(0.0)
                 except Exception:
                     pass
             self._lipsync_last_level = 0.0
             self._lipsync_last_idx = -1
+            try:
+                if timer is not None and timer.isActive():
+                    timer.stop()
+            except Exception:
+                pass
             return
 
         try:
@@ -6301,16 +6890,16 @@ class LightChatWindow(LightFramelessWindow):
             self._lipsync_env = []
             self._lipsync_last_level = 0.0
             self._lipsync_last_idx = -1
-            try:
-                if timer is not None and timer.interval() != idle_ms:
-                    timer.setInterval(idle_ms)
-            except Exception:
-                pass
-            if gl is not None:
+            if gl_any is not None:
                 try:
-                    gl.set_lipsync_level(0.0)
+                    gl_any.set_lipsync_level(0.0)
                 except Exception:
                     pass
+            try:
+                if timer is not None and timer.isActive():
+                    timer.stop()
+            except Exception:
+                pass
             return
 
         try:

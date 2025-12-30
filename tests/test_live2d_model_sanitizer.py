@@ -127,3 +127,70 @@ def test_live2d_sanitizer_copies_core_assets_when_source_path_has_unicode(tmp_pa
     refs = data["FileReferences"]
     assert ".." not in str(refs.get("Moc", ""))
     assert (out.parent / refs["Moc"]).exists()
+
+
+def test_live2d_sanitizer_copies_unicode_texture_names(tmp_path: Path) -> None:
+    model_dir = tmp_path / "model3"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    _write_text(model_dir / "model.moc3", "x")
+    _write_text(model_dir / "贴图.png", "x")
+
+    model_json = model_dir / "model.model3.json"
+    model_json.write_text(
+        json.dumps(
+            {
+                "Version": 3,
+                "FileReferences": {"Moc": "model.moc3", "Textures": ["贴图.png"]},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    out = _sanitize_model3_json_for_cubism(model_json, cache_base=tmp_path / "cache")
+    assert out.exists()
+    out.read_bytes().decode("ascii")
+
+    data = json.loads(out.read_text(encoding="utf-8"))
+    tex = data["FileReferences"]["Textures"][0]
+    assert isinstance(tex, str) and tex.startswith("assets/")
+    assert (out.parent / tex).exists()
+
+
+def test_live2d_sanitizer_includes_extra_expression_files(tmp_path: Path) -> None:
+    model_dir = tmp_path / "model4"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    _write_text(model_dir / "model.moc3", "x")
+    _write_text(model_dir / "tex.png", "x")
+    _write_text(model_dir / "哭哭.exp3.json", "{}")
+    _write_text(model_dir / "脸红.exp3.json", "{}")
+
+    model_json = model_dir / "model.model3.json"
+    model_json.write_text(
+        json.dumps(
+            {
+                "Version": 3,
+                "FileReferences": {
+                    "Moc": "model.moc3",
+                    "Textures": ["tex.png"],
+                    "Expressions": [{"Name": "Cry", "File": "哭哭.exp3.json"}],
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    out = _sanitize_model3_json_for_cubism(model_json, cache_base=tmp_path / "cache")
+    assert out.exists()
+
+    data = json.loads(out.read_text(encoding="utf-8"))
+    exprs = data["FileReferences"]["Expressions"]
+    assert len(exprs) == 2
+
+    out_files = [e.get("File") for e in exprs if isinstance(e, dict)]
+    assert all(isinstance(f, str) and f.startswith("expressions/") for f in out_files)
+    for f in out_files:
+        assert (out.parent / f).exists()

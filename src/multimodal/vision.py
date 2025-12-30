@@ -37,7 +37,7 @@ class VisionProcessor:
             max_size: 图像最大尺寸（像素），默认从配置读取
         """
         try:
-            self.max_size = max_size or getattr(settings, 'max_image_size', 1024)
+            self.max_size = max_size or getattr(settings, "max_image_size", 1024)
         except Exception as e:
             logger.warning("无法从配置读取 max_image_size，使用默认值 1024: %s", e)
             self.max_size = 1024
@@ -198,7 +198,9 @@ class VisionProcessor:
         try:
             # 加载图像
             image = self.load_image(image_path)
-            image_data = self._prepare_image_for_llm_from_image(image, format=format, max_size=max_size)
+            image_data = self._prepare_image_for_llm_from_image(
+                image, format=format, max_size=max_size
+            )
             logger.info("图像已准备用于 LLM: %s (%s)", image_path, format)
             return image_data
 
@@ -292,11 +294,11 @@ class VisionProcessor:
         """
         try:
             # 转换为RGB模式（如果是RGBA或其他模式）
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
+            if image.mode != "RGB":
+                image = image.convert("RGB")
 
             # 转换为灰度图
-            image = image.convert('L')
+            image = image.convert("L")
 
             # 增强对比度
             enhancer = ImageEnhance.Contrast(image)
@@ -350,6 +352,7 @@ class VisionProcessor:
             # 否则尝试使用 pytesseract（如果已安装）
             try:
                 import pytesseract
+
                 image = self.load_image(image_path)
 
                 # v2.30.0: 应用OCR预处理
@@ -357,7 +360,7 @@ class VisionProcessor:
                     image = self.preprocess_for_ocr(image)
 
                 # 使用中英文混合识别
-                text = pytesseract.image_to_string(image, lang='chi_sim+eng')
+                text = pytesseract.image_to_string(image, lang="chi_sim+eng")
 
                 if text.strip():
                     logger.info("OCR 提取成功: %s 个字符", len(text))

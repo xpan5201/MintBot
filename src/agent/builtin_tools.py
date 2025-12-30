@@ -63,8 +63,10 @@ except Exception:  # pragma: no cover - 兼容不同 LangChain 版本/最小依�
     try:
         from langchain.tools import tool  # type: ignore
     except Exception:  # pragma: no cover
+
         def tool(func):  # type: ignore[misc]
             return func
+
 
 from src.utils.logger import get_logger
 from src.utils.async_loop_thread import AsyncLoopThread
@@ -75,28 +77,26 @@ logger = get_logger(__name__)
 
 # ==================== 配置和工具函数 ====================
 def load_config() -> Dict[str, Any]:
-    """加载 config.yaml 配置文件"""
+    """加载合并配置（config.user.yaml + config.dev.yaml，兼容 legacy config.yaml）。"""
     try:
-        import yaml  # 延迟导入：避免模块导入阶段引入额外依赖/解析开销
+        from src.config.config_files import load_merged_config
+
+        merged, _user_path, _dev_path, _legacy_used = load_merged_config()
+        return merged if isinstance(merged, dict) else {}
     except Exception:
         return {}
-
-    config_path = Path(__file__).parent.parent.parent / "config.yaml"
-    if config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
-    return {}
 
 
 _config: Optional[Dict[str, Any]] = None
 
 
 def _get_config() -> Dict[str, Any]:
-    """惰性加载配置，避免模块导入阶段读取/解析 config.yaml。"""
+    """惰性加载配置，避免模块导入阶段读取/解析配置文件。"""
     global _config
     if _config is None:
         _config = load_config()
     return _config
+
 
 # 性能统计 (v2.30.25 增强：添加延迟百分位统计)
 _tool_stats = {
@@ -104,8 +104,8 @@ _tool_stats = {
     "total_time": {},
     "error_count": {},
     "retry_count": {},  # v2.30.23: 新增重试统计
-    "latencies": {},    # v2.30.25: 新增延迟列表（用于计算 P50/P95/P99）
-    "cache_hits": {},   # v2.30.25: 新增缓存命中统计
+    "latencies": {},  # v2.30.25: 新增延迟列表（用于计算 P50/P95/P99）
+    "cache_hits": {},  # v2.30.25: 新增缓存命中统计
 }
 _tool_stats_lock = threading.Lock()
 
@@ -113,6 +113,7 @@ _tool_stats_lock = threading.Lock()
 # ==================== 错误分类 (v2.30.23) ====================
 class ErrorType(Enum):
     """错误类型枚举"""
+
     NETWORK_ERROR = "网络错误"
     API_ERROR = "API错误"
     PARAM_ERROR = "参数错误"
@@ -122,6 +123,7 @@ class ErrorType(Enum):
 
 class ToolError(Exception):
     """工具错误基类"""
+
     def __init__(self, error_type: ErrorType, message: str):
         self.error_type = error_type
         self.message = message
@@ -324,7 +326,7 @@ class ConnectionPool:
                 "status": "未创建",
                 "total_sessions": total_sessions,
                 "total_connections": 0,
-                "active_connections": 0
+                "active_connections": 0,
             }
 
         connector = session.connector
@@ -333,7 +335,9 @@ class ConnectionPool:
             "total_sessions": total_sessions,
             "total_connections": connector.limit if connector else 0,
             "limit_per_host": connector.limit_per_host if connector else 0,
-            "active_connections": len(connector._conns) if connector and hasattr(connector, '_conns') else 0
+            "active_connections": (
+                len(connector._conns) if connector and hasattr(connector, "_conns") else 0
+            ),
         }
 
     @classmethod
@@ -368,6 +372,7 @@ class ConnectionPool:
 # ==================== TTL 缓存 (v2.30.23) ====================
 class TTLCache:
     """基于时间的缓存（Time-To-Live Cache）"""
+
     def __init__(self, ttl_seconds: int = 300, maxsize: int = 100):
         self.ttl_seconds = ttl_seconds
         self.maxsize = maxsize
@@ -428,6 +433,7 @@ async def warmup_cache():
     try:
         # 预热天气缓存
         from src.agent.builtin_tools import _amap_api_call
+
         tasks = []
         for city in common_cities:
             params = {"city": city, "extensions": "base"}
@@ -451,8 +457,13 @@ def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0, max_delay:
         base_delay: 基础延迟（秒）
         max_delay: 最大延迟（秒）
     """
+
     def decorator(func):
-        func_name = getattr(func, "name", None) or getattr(func, "__name__", None) or func.__class__.__name__
+        func_name = (
+            getattr(func, "name", None)
+            or getattr(func, "__name__", None)
+            or func.__class__.__name__
+        )
 
         @wraps(func)
         async def wrapper(*args, **kwargs):
@@ -464,16 +475,18 @@ def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0, max_delay:
                     last_error = e
                     if attempt < max_retries:
                         # 指数退避：delay = base_delay * (2 ^ attempt)
-                        delay = min(base_delay * (2 ** attempt), max_delay)
+                        delay = min(base_delay * (2**attempt), max_delay)
                         logger.warning(
                             f"{func_name} 第 {attempt + 1} 次失败，{delay:.1f}秒后重试: {e}"
                         )
                         await asyncio.sleep(delay)
 
                         # 更新重试统计
-                        tool_name = kwargs.get('_tool_name', func_name)
+                        tool_name = kwargs.get("_tool_name", func_name)
                         with _tool_stats_lock:
-                            _tool_stats["retry_count"][tool_name] = _tool_stats["retry_count"].get(tool_name, 0) + 1
+                            _tool_stats["retry_count"][tool_name] = (
+                                _tool_stats["retry_count"].get(tool_name, 0) + 1
+                            )
                     else:
                         logger.error(f"{func_name} 已达最大重试次数 ({max_retries}): {e}")
                         raise ToolError(ErrorType.NETWORK_ERROR, f"网络请求失败: {str(e)}")
@@ -484,7 +497,9 @@ def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0, max_delay:
 
             # 理论上不会到这里
             raise last_error
+
         return wrapper
+
     return decorator
 
 
@@ -510,11 +525,12 @@ def async_to_sync(async_func):
     - 修复 event loop closed 错误
     - 使用全局 event loop 避免重复创建
     - 支持 nest_asyncio 嵌套调用
-    
+
     v3.3.3 修复:
     - 添加线程安全保护
     - 改进异常处理
     """
+
     @wraps(async_func)
     def wrapper(*args, **kwargs):
         timeout_s = get_current_tool_timeout_s()
@@ -541,10 +557,13 @@ def async_to_sync(async_func):
                 return loop.run_until_complete(coro)
             except Exception:
                 # fallback：避免 re-entrancy/版本差异导致的异常
-                return _get_async_runtime().run(async_func(*args, **kwargs), timeout=runtime_timeout)
+                return _get_async_runtime().run(
+                    async_func(*args, **kwargs), timeout=runtime_timeout
+                )
         except RuntimeError:
             # 常见路径：同步/线程池环境下，统一在后台 event loop 执行，保证线程安全与 aiohttp 会话复用
             return _get_async_runtime().run(async_func(*args, **kwargs), timeout=runtime_timeout)
+
     return wrapper
 
 
@@ -562,7 +581,9 @@ def shutdown_builtin_tools_runtime(timeout_s: float = 2.0) -> None:
 
     try:
         # aiohttp ClientSession 必须在创建它的 loop 中关闭
-        runtime.run(ConnectionPool.close_all(timeout_s=timeout_s), timeout=max(0.1, float(timeout_s)))
+        runtime.run(
+            ConnectionPool.close_all(timeout_s=timeout_s), timeout=max(0.1, float(timeout_s))
+        )
     except Exception as exc:
         logger.debug("关闭 builtin_tools 连接池失败（可忽略）: %s", exc)
     finally:
@@ -575,6 +596,7 @@ def shutdown_builtin_tools_runtime(timeout_s: float = 2.0) -> None:
 
 def track_performance(tool_name: str):
     """性能监控装饰器（v2.30.25 增强：添加延迟百分位统计）"""
+
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -585,8 +607,12 @@ def track_performance(tool_name: str):
 
                 # 更新统计
                 with _tool_stats_lock:
-                    _tool_stats["call_count"][tool_name] = _tool_stats["call_count"].get(tool_name, 0) + 1
-                    _tool_stats["total_time"][tool_name] = _tool_stats["total_time"].get(tool_name, 0) + execution_time
+                    _tool_stats["call_count"][tool_name] = (
+                        _tool_stats["call_count"].get(tool_name, 0) + 1
+                    )
+                    _tool_stats["total_time"][tool_name] = (
+                        _tool_stats["total_time"].get(tool_name, 0) + execution_time
+                    )
 
                     # v2.30.25: 记录延迟（用于计算 P50/P95/P99）
                     if tool_name not in _tool_stats["latencies"]:
@@ -595,16 +621,22 @@ def track_performance(tool_name: str):
 
                     # 限制延迟列表大小（最多保留最近 1000 次）
                     if len(_tool_stats["latencies"][tool_name]) > 1000:
-                        _tool_stats["latencies"][tool_name] = _tool_stats["latencies"][tool_name][-1000:]
+                        _tool_stats["latencies"][tool_name] = _tool_stats["latencies"][tool_name][
+                            -1000:
+                        ]
 
                 logger.debug(f"工具 {tool_name} 执行成功，耗时: {execution_time:.3f}秒")
                 return result
             except Exception as e:
                 with _tool_stats_lock:
-                    _tool_stats["error_count"][tool_name] = _tool_stats["error_count"].get(tool_name, 0) + 1
+                    _tool_stats["error_count"][tool_name] = (
+                        _tool_stats["error_count"].get(tool_name, 0) + 1
+                    )
                 logger.error(f"工具 {tool_name} 执行失败: {e}")
                 raise
+
         return wrapper
+
     return decorator
 
 
@@ -613,7 +645,10 @@ def get_tool_stats() -> Dict[str, Any]:
     import numpy as np
 
     with _tool_stats_lock:
-        snapshot = {key: dict(value) if isinstance(value, dict) else value for key, value in _tool_stats.items()}
+        snapshot = {
+            key: dict(value) if isinstance(value, dict) else value
+            for key, value in _tool_stats.items()
+        }
 
     stats = {}
     for tool_name in snapshot["call_count"]:
@@ -641,15 +676,21 @@ def get_tool_stats() -> Dict[str, Any]:
             "error_count": error_count,
             "retry_count": retry_count,
             "cache_hits": cache_hits,  # v2.30.25: 新增
-            "cache_hit_rate": f"{cache_hits / call_count * 100:.1f}%" if call_count > 0 else "0%",  # v2.30.25: 新增
-            "success_rate": f"{(call_count - error_count) / call_count * 100:.1f}%" if call_count > 0 else "0%"
+            "cache_hit_rate": (
+                f"{cache_hits / call_count * 100:.1f}%" if call_count > 0 else "0%"
+            ),  # v2.30.25: 新增
+            "success_rate": (
+                f"{(call_count - error_count) / call_count * 100:.1f}%" if call_count > 0 else "0%"
+            ),
         }
     return stats
 
 
 # ==================== Bing 搜索工具 (v2.30.23 优化) ====================
 @retry_with_backoff(max_retries=3, base_delay=1.0)
-async def _bing_search_async(query: str, count: int = 5, _tool_name: str = "bing_web_search") -> List[Dict[str, str]]:
+async def _bing_search_async(
+    query: str, count: int = 5, _tool_name: str = "bing_web_search"
+) -> List[Dict[str, str]]:
     """
     异步 Bing 搜索（内部实现）
 
@@ -669,15 +710,17 @@ async def _bing_search_async(query: str, count: int = 5, _tool_name: str = "bing
         return cached_result
 
     headers = {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     }
 
     url = f"https://cn.bing.com/search?q={query}&count={count}"
 
     # 使用全局连接池
     session = await ConnectionPool.get_session()
-    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+    async with session.get(
+        url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
+    ) as response:
         if response.status != 200:
             raise ToolError(ErrorType.API_ERROR, f"Bing 搜索返回状态码 {response.status}")
 
@@ -690,24 +733,22 @@ async def _bing_search_async(query: str, count: int = 5, _tool_name: str = "bing
         results = []
 
         # 查找搜索结果（Bing 的结果在 li.b_algo 中）
-        for item in soup.select('li.b_algo')[:count]:
+        for item in soup.select("li.b_algo")[:count]:
             try:
                 # 提取标题
-                title_elem = item.select_one('h2 a')
+                title_elem = item.select_one("h2 a")
                 title = title_elem.get_text(strip=True) if title_elem else "无标题"
 
                 # 提取链接
-                link = title_elem.get('href', '') if title_elem else ''
+                link = title_elem.get("href", "") if title_elem else ""
 
                 # 提取描述
-                desc_elem = item.select_one('.b_caption p, .b_caption .b_algoSlug')
+                desc_elem = item.select_one(".b_caption p, .b_caption .b_algoSlug")
                 description = desc_elem.get_text(strip=True) if desc_elem else "无描述"
 
-                results.append({
-                    "title": title,
-                    "link": link,
-                    "description": description[:200]  # 限制描述长度
-                })
+                results.append(
+                    {"title": title, "link": link, "description": description[:200]}  # 限制描述长度
+                )
             except Exception as e:
                 logger.debug(f"解析搜索结果项失败: {e}")
                 continue
@@ -775,7 +816,9 @@ async def bing_web_search(query: str, count: int = 5) -> str:
 
 # ==================== 高德地图工具 (v2.30.23 优化) ====================
 @retry_with_backoff(max_retries=3, base_delay=0.5)
-async def _amap_api_call(endpoint: str, params: Dict[str, Any], _tool_name: str = "amap_api") -> Dict[str, Any]:
+async def _amap_api_call(
+    endpoint: str, params: Dict[str, Any], _tool_name: str = "amap_api"
+) -> Dict[str, Any]:
     """
     高德 API 异步调用（内部函数）
 
@@ -854,23 +897,24 @@ async def amap_poi_search(keywords: str, city: str = "全国", limit: int = 5) -
         return "抱歉主人，搜索结果数量应在 1-50 之间喵~"
 
     try:
-        data = await _amap_api_call("place/text", {
-            "keywords": keywords,
-            "city": city
-        }, _tool_name="amap_poi_search")
+        data = await _amap_api_call(
+            "place/text", {"keywords": keywords, "city": city}, _tool_name="amap_poi_search"
+        )
 
         if data.get("pois"):
             pois = data["pois"][:limit]
             results = []
             for poi in pois:
-                results.append({
-                    "name": poi.get("name"),
-                    "address": poi.get("address"),
-                    "location": poi.get("location"),
-                    "type": poi.get("type"),
-                    "tel": poi.get("tel", ""),
-                    "distance": poi.get("distance", "")
-                })
+                results.append(
+                    {
+                        "name": poi.get("name"),
+                        "address": poi.get("address"),
+                        "location": poi.get("location"),
+                        "type": poi.get("type"),
+                        "tel": poi.get("tel", ""),
+                        "distance": poi.get("distance", ""),
+                    }
+                )
 
             logger.info(f"高德 POI 搜索成功: {keywords} in {city}，找到 {len(results)} 条结果")
             return json.dumps(results, ensure_ascii=False, indent=2)
@@ -933,7 +977,7 @@ async def amap_geocode(address: str, city: str = "") -> str:
                 "level": geocode.get("level"),
                 "province": geocode.get("province"),
                 "city": geocode.get("city"),
-                "district": geocode.get("district")
+                "district": geocode.get("district"),
             }
 
             logger.info(f"高德地理编码成功: {address}")
@@ -987,10 +1031,9 @@ async def amap_regeo(location: str, radius: int = 1000) -> str:
         return "抱歉主人，搜索半径应在 0-3000 米之间喵~"
 
     try:
-        data = await _amap_api_call("geocode/regeo", {
-            "location": location,
-            "radius": radius
-        }, _tool_name="amap_regeo")
+        data = await _amap_api_call(
+            "geocode/regeo", {"location": location, "radius": radius}, _tool_name="amap_regeo"
+        )
 
         if data.get("regeocode"):
             regeocode = data["regeocode"]
@@ -1003,7 +1046,7 @@ async def amap_regeo(location: str, radius: int = 1000) -> str:
                 "district": addressComponent.get("district"),
                 "township": addressComponent.get("township"),
                 "street": addressComponent.get("streetNumber", {}).get("street"),
-                "number": addressComponent.get("streetNumber", {}).get("number")
+                "number": addressComponent.get("streetNumber", {}).get("number"),
             }
 
             logger.info(f"高德逆地理编码成功: {location}")
@@ -1028,7 +1071,9 @@ async def amap_regeo(location: str, radius: int = 1000) -> str:
 @tool
 @track_performance("amap_route_plan")
 @async_to_sync
-async def amap_route_plan(origin: str, destination: str, strategy: int = 0, waypoints: str = "") -> str:
+async def amap_route_plan(
+    origin: str, destination: str, strategy: int = 0, waypoints: str = ""
+) -> str:
     """
     高德地图路线规划（驾车）
 
@@ -1061,11 +1106,7 @@ async def amap_route_plan(origin: str, destination: str, strategy: int = 0, wayp
         return "抱歉主人，路线策略应在 0-10 之间喵~"
 
     try:
-        params = {
-            "origin": origin,
-            "destination": destination,
-            "strategy": strategy
-        }
+        params = {"origin": origin, "destination": destination, "strategy": strategy}
         if waypoints:
             params["waypoints"] = waypoints
 
@@ -1081,19 +1122,21 @@ async def amap_route_plan(origin: str, destination: str, strategy: int = 0, wayp
                 # 提取关键步骤
                 steps = []
                 for step in path.get("steps", [])[:10]:  # 最多10步
-                    steps.append({
-                        "instruction": step.get("instruction"),
-                        "road": step.get("road"),
-                        "distance": f"{int(step.get('distance', 0))}米",
-                        "duration": f"{int(step.get('duration', 0)) // 60}分钟"
-                    })
+                    steps.append(
+                        {
+                            "instruction": step.get("instruction"),
+                            "road": step.get("road"),
+                            "distance": f"{int(step.get('distance', 0))}米",
+                            "duration": f"{int(step.get('duration', 0)) // 60}分钟",
+                        }
+                    )
 
                 result = {
                     "distance": f"{float(path.get('distance', 0)) / 1000:.1f}公里",
                     "duration": f"{int(path.get('duration', 0)) // 60}分钟",
                     "tolls": f"{path.get('tolls', 0)}元",
                     "traffic_lights": f"{path.get('traffic_lights', 0)}个红绿灯",
-                    "steps": steps
+                    "steps": steps,
                 }
 
                 logger.info(f"高德路线规划成功: {origin} -> {destination}")
@@ -1147,10 +1190,11 @@ async def amap_weather(city: str, extensions: str = "base") -> str:
         return "抱歉主人，查询类型应为 'base' 或 'all' 喵~"
 
     try:
-        data = await _amap_api_call("weather/weatherInfo", {
-            "city": city,
-            "extensions": extensions
-        }, _tool_name="amap_weather")
+        data = await _amap_api_call(
+            "weather/weatherInfo",
+            {"city": city, "extensions": extensions},
+            _tool_name="amap_weather",
+        )
 
         if extensions == "base" and data.get("lives"):
             # 实况天气
@@ -1162,7 +1206,7 @@ async def amap_weather(city: str, extensions: str = "base") -> str:
                 "humidity": f"{live.get('humidity')}%",
                 "wind_direction": live.get("winddirection"),
                 "wind_power": f"{live.get('windpower')}级",
-                "report_time": live.get("reporttime")
+                "report_time": live.get("reporttime"),
             }
         elif extensions == "all" and data.get("forecasts"):
             # 预报天气
@@ -1178,10 +1222,10 @@ async def amap_weather(city: str, extensions: str = "base") -> str:
                         "dayweather": cast.get("dayweather"),
                         "nightweather": cast.get("nightweather"),
                         "daytemp": f"{cast.get('daytemp')}°C",
-                        "nighttemp": f"{cast.get('nighttemp')}°C"
+                        "nighttemp": f"{cast.get('nighttemp')}°C",
                     }
                     for cast in casts
-                ]
+                ],
             }
         else:
             return f"未找到城市'{city}'的天气信息喵~"
@@ -1226,7 +1270,7 @@ def get_time_in_timezone(timezone_name: str = "Asia/Shanghai") -> str:
             "date": now.strftime("%Y-%m-%d"),
             "time": now.strftime("%H:%M:%S"),
             "day_of_week": now.strftime("%A"),
-            "is_dst": bool(now.dst())
+            "is_dst": bool(now.dst()),
         }
 
         logger.info(f"获取时区时间成功: {timezone_name}")
@@ -1268,7 +1312,7 @@ def convert_timezone(time_str: str, from_tz: str, to_tz: str) -> str:
             "original_timezone": from_tz,
             "converted_time": converted_dt.isoformat(),
             "converted_timezone": to_tz,
-            "time_difference": str(converted_dt.utcoffset() - dt_with_tz.utcoffset())
+            "time_difference": str(converted_dt.utcoffset() - dt_with_tz.utcoffset()),
         }
 
         logger.info(f"时区转换成功: {from_tz} -> {to_tz}")
@@ -1329,26 +1373,24 @@ async def amap_batch_geocode(addresses: str, city: str = "") -> str:
         results = []
         for i, data in enumerate(results_data):
             if isinstance(data, Exception):
-                results.append({
-                    "address": address_list[i],
-                    "status": "error",
-                    "message": str(data)
-                })
+                results.append(
+                    {"address": address_list[i], "status": "error", "message": str(data)}
+                )
             elif data.get("geocodes"):
                 geocode = data["geocodes"][0]
-                results.append({
-                    "address": address_list[i],
-                    "status": "success",
-                    "location": geocode.get("location"),
-                    "formatted_address": geocode.get("formatted_address"),
-                    "level": geocode.get("level")
-                })
+                results.append(
+                    {
+                        "address": address_list[i],
+                        "status": "success",
+                        "location": geocode.get("location"),
+                        "formatted_address": geocode.get("formatted_address"),
+                        "level": geocode.get("level"),
+                    }
+                )
             else:
-                results.append({
-                    "address": address_list[i],
-                    "status": "not_found",
-                    "message": "未找到地理编码"
-                })
+                results.append(
+                    {"address": address_list[i], "status": "not_found", "message": "未找到地理编码"}
+                )
 
         success_count = sum(1 for r in results if r.get("status") == "success")
         logger.info(f"批量地理编码完成: {success_count}/{len(address_list)} 成功")
@@ -1394,10 +1436,9 @@ async def amap_batch_route_plan(routes: str, strategy: int = 0) -> str:
         parts = route.split(",")
         if len(parts) != 4:
             return "抱歉主人，路线格式应为'起点经度,起点纬度,终点经度,终点纬度'喵~"
-        route_list.append({
-            "origin": f"{parts[0]},{parts[1]}",
-            "destination": f"{parts[2]},{parts[3]}"
-        })
+        route_list.append(
+            {"origin": f"{parts[0]},{parts[1]}", "destination": f"{parts[2]},{parts[3]}"}
+        )
 
     if not route_list:
         return "抱歉主人，没有有效的路线喵~"
@@ -1411,9 +1452,11 @@ async def amap_batch_route_plan(routes: str, strategy: int = 0) -> str:
             params = {
                 "origin": route["origin"],
                 "destination": route["destination"],
-                "strategy": strategy
+                "strategy": strategy,
             }
-            tasks.append(_amap_api_call("direction/driving", params, _tool_name="amap_batch_route_plan"))
+            tasks.append(
+                _amap_api_call("direction/driving", params, _tool_name="amap_batch_route_plan")
+            )
 
         # 等待所有任务完成
         results_data = await asyncio.gather(*tasks, return_exceptions=True)
@@ -1423,29 +1466,35 @@ async def amap_batch_route_plan(routes: str, strategy: int = 0) -> str:
         for i, data in enumerate(results_data):
             route_info = route_list[i]
             if isinstance(data, Exception):
-                results.append({
-                    "origin": route_info["origin"],
-                    "destination": route_info["destination"],
-                    "status": "error",
-                    "message": str(data)
-                })
+                results.append(
+                    {
+                        "origin": route_info["origin"],
+                        "destination": route_info["destination"],
+                        "status": "error",
+                        "message": str(data),
+                    }
+                )
             elif data.get("route") and data["route"].get("paths"):
                 path = data["route"]["paths"][0]
-                results.append({
-                    "origin": route_info["origin"],
-                    "destination": route_info["destination"],
-                    "status": "success",
-                    "distance": f"{float(path.get('distance', 0)) / 1000:.1f}公里",
-                    "duration": f"{int(path.get('duration', 0)) // 60}分钟",
-                    "tolls": f"{path.get('tolls', 0)}元"
-                })
+                results.append(
+                    {
+                        "origin": route_info["origin"],
+                        "destination": route_info["destination"],
+                        "status": "success",
+                        "distance": f"{float(path.get('distance', 0)) / 1000:.1f}公里",
+                        "duration": f"{int(path.get('duration', 0)) // 60}分钟",
+                        "tolls": f"{path.get('tolls', 0)}元",
+                    }
+                )
             else:
-                results.append({
-                    "origin": route_info["origin"],
-                    "destination": route_info["destination"],
-                    "status": "not_found",
-                    "message": "未找到路线"
-                })
+                results.append(
+                    {
+                        "origin": route_info["origin"],
+                        "destination": route_info["destination"],
+                        "status": "not_found",
+                        "message": "未找到路线",
+                    }
+                )
 
         success_count = sum(1 for r in results if r.get("status") == "success")
         logger.info(f"批量路线规划完成: {success_count}/{len(route_list)} 成功")
@@ -1496,7 +1545,9 @@ async def amap_batch_weather(cities: str, extensions: str = "base") -> str:
         tasks = []
         for city in city_list:
             params = {"city": city, "extensions": extensions}
-            tasks.append(_amap_api_call("weather/weatherInfo", params, _tool_name="amap_batch_weather"))
+            tasks.append(
+                _amap_api_call("weather/weatherInfo", params, _tool_name="amap_batch_weather")
+            )
 
         # 等待所有任务完成
         results_data = await asyncio.gather(*tasks, return_exceptions=True)
@@ -1506,37 +1557,33 @@ async def amap_batch_weather(cities: str, extensions: str = "base") -> str:
         for i, data in enumerate(results_data):
             city = city_list[i]
             if isinstance(data, Exception):
-                results.append({
-                    "city": city,
-                    "status": "error",
-                    "message": str(data)
-                })
+                results.append({"city": city, "status": "error", "message": str(data)})
             elif data.get("lives"):
                 # 实况天气
                 live = data["lives"][0]
-                results.append({
-                    "city": city,
-                    "status": "success",
-                    "weather": live.get("weather"),
-                    "temperature": f"{live.get('temperature')}℃",
-                    "humidity": f"{live.get('humidity')}%",
-                    "wind_direction": live.get("winddirection"),
-                    "wind_power": f"{live.get('windpower')}级"
-                })
+                results.append(
+                    {
+                        "city": city,
+                        "status": "success",
+                        "weather": live.get("weather"),
+                        "temperature": f"{live.get('temperature')}℃",
+                        "humidity": f"{live.get('humidity')}%",
+                        "wind_direction": live.get("winddirection"),
+                        "wind_power": f"{live.get('windpower')}级",
+                    }
+                )
             elif data.get("forecasts"):
                 # 预报天气
                 forecast = data["forecasts"][0]
-                results.append({
-                    "city": city,
-                    "status": "success",
-                    "forecast": forecast.get("casts", [])[:3]  # 只返回前3天
-                })
+                results.append(
+                    {
+                        "city": city,
+                        "status": "success",
+                        "forecast": forecast.get("casts", [])[:3],  # 只返回前3天
+                    }
+                )
             else:
-                results.append({
-                    "city": city,
-                    "status": "not_found",
-                    "message": "未找到天气信息"
-                })
+                results.append({"city": city, "status": "not_found", "message": "未找到天气信息"})
 
         success_count = sum(1 for r in results if r.get("status") == "success")
         logger.info(f"批量天气查询完成: {success_count}/{len(city_list)} 成功")
@@ -1598,33 +1645,29 @@ async def amap_batch_poi_search(keywords_list: str, city: str = "全国", limit:
         for i, data in enumerate(results_data):
             keyword = keywords[i]
             if isinstance(data, Exception):
-                results.append({
-                    "keyword": keyword,
-                    "status": "error",
-                    "message": str(data)
-                })
+                results.append({"keyword": keyword, "status": "error", "message": str(data)})
             elif data.get("pois"):
                 pois = data["pois"][:limit]
                 poi_list = []
                 for poi in pois:
-                    poi_list.append({
-                        "name": poi.get("name"),
-                        "address": poi.get("address"),
-                        "location": poi.get("location"),
-                        "type": poi.get("type")
-                    })
-                results.append({
-                    "keyword": keyword,
-                    "status": "success",
-                    "count": len(poi_list),
-                    "results": poi_list
-                })
+                    poi_list.append(
+                        {
+                            "name": poi.get("name"),
+                            "address": poi.get("address"),
+                            "location": poi.get("location"),
+                            "type": poi.get("type"),
+                        }
+                    )
+                results.append(
+                    {
+                        "keyword": keyword,
+                        "status": "success",
+                        "count": len(poi_list),
+                        "results": poi_list,
+                    }
+                )
             else:
-                results.append({
-                    "keyword": keyword,
-                    "status": "not_found",
-                    "message": "未找到 POI"
-                })
+                results.append({"keyword": keyword, "status": "not_found", "message": "未找到 POI"})
 
         success_count = sum(1 for r in results if r.get("status") == "success")
         logger.info(f"批量 POI 搜索完成: {success_count}/{len(keywords)} 成功")
@@ -1639,20 +1682,17 @@ async def amap_batch_poi_search(keywords_list: str, city: str = "全国", limit:
 BUILTIN_TOOLS = [
     # 搜索工具
     bing_web_search,
-
     # 高德地图工具
     amap_poi_search,
     amap_geocode,
     amap_regeo,
     amap_route_plan,
     amap_weather,
-
     # 批量操作工具 (v2.30.24-v2.30.25)
     amap_batch_geocode,
     amap_batch_route_plan,
-    amap_batch_weather,      # v2.30.25 新增
-    amap_batch_poi_search,   # v2.30.25 新增
-
+    amap_batch_weather,  # v2.30.25 新增
+    amap_batch_poi_search,  # v2.30.25 新增
     # 时间工具
     get_time_in_timezone,
     convert_timezone,
@@ -1698,7 +1738,8 @@ def generate_performance_report(output_path: Optional[str] = None) -> str:
     """
     try:
         import matplotlib
-        matplotlib.use('Agg')  # 使用非交互式后端
+
+        matplotlib.use("Agg")  # 使用非交互式后端
         import matplotlib.pyplot as plt
         import numpy as np
         from datetime import datetime
@@ -1710,12 +1751,12 @@ def generate_performance_report(output_path: Optional[str] = None) -> str:
             return "暂无性能数据"
 
         # 设置中文字体
-        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS']
-        plt.rcParams['axes.unicode_minus'] = False
+        plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS"]
+        plt.rcParams["axes.unicode_minus"] = False
 
         # 创建图表
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-        fig.suptitle('内置工具系统性能监控报告', fontsize=16, fontweight='bold')
+        fig.suptitle("内置工具系统性能监控报告", fontsize=16, fontweight="bold")
 
         # 准备数据
         tool_names = []
@@ -1728,115 +1769,140 @@ def generate_performance_report(output_path: Optional[str] = None) -> str:
 
         for tool_name, tool_stats in stats.items():
             tool_names.append(tool_name)
-            call_counts.append(tool_stats.get('call_count', 0))
+            call_counts.append(tool_stats.get("call_count", 0))
 
             # 解析时间字符串（去掉 's' 后缀）
-            p50_str = tool_stats.get('p50_latency', '0s').replace('s', '')
+            p50_str = tool_stats.get("p50_latency", "0s").replace("s", "")
             p50_latencies.append(float(p50_str))
 
-            p95_str = tool_stats.get('p95_latency', '0s').replace('s', '')
+            p95_str = tool_stats.get("p95_latency", "0s").replace("s", "")
             p95_latencies.append(float(p95_str))
 
-            p99_str = tool_stats.get('p99_latency', '0s').replace('s', '')
+            p99_str = tool_stats.get("p99_latency", "0s").replace("s", "")
             p99_latencies.append(float(p99_str))
 
             # 解析缓存命中率（去掉 '%' 后缀）
-            cache_hit_rate_str = tool_stats.get('cache_hit_rate', '0%').replace('%', '')
+            cache_hit_rate_str = tool_stats.get("cache_hit_rate", "0%").replace("%", "")
             cache_hit_rates.append(float(cache_hit_rate_str))
 
             # 计算错误率
-            call_count = tool_stats.get('call_count', 0)
-            error_count = tool_stats.get('error_count', 0)
+            call_count = tool_stats.get("call_count", 0)
+            error_count = tool_stats.get("error_count", 0)
             error_rate = (error_count / call_count * 100) if call_count > 0 else 0
             error_rates.append(error_rate)
 
         # 图表1: 调用次数柱状图
         ax1 = axes[0, 0]
-        bars1 = ax1.bar(range(len(tool_names)), call_counts, color='skyblue', edgecolor='navy')
-        ax1.set_xlabel('工具名称', fontsize=12)
-        ax1.set_ylabel('调用次数', fontsize=12)
-        ax1.set_title('工具调用次数统计', fontsize=14, fontweight='bold')
+        bars1 = ax1.bar(range(len(tool_names)), call_counts, color="skyblue", edgecolor="navy")
+        ax1.set_xlabel("工具名称", fontsize=12)
+        ax1.set_ylabel("调用次数", fontsize=12)
+        ax1.set_title("工具调用次数统计", fontsize=14, fontweight="bold")
         ax1.set_xticks(range(len(tool_names)))
-        ax1.set_xticklabels(tool_names, rotation=45, ha='right', fontsize=9)
-        ax1.grid(axis='y', alpha=0.3)
+        ax1.set_xticklabels(tool_names, rotation=45, ha="right", fontsize=9)
+        ax1.grid(axis="y", alpha=0.3)
 
         # 在柱状图上显示数值
         for i, bar in enumerate(bars1):
             height = bar.get_height()
-            ax1.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{int(height)}',
-                    ha='center', va='bottom', fontsize=8)
+            ax1.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height,
+                f"{int(height)}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
 
         # 图表2: P50/P95/P99 延迟对比
         ax2 = axes[0, 1]
         x = np.arange(len(tool_names))
         width = 0.25
 
-        ax2.bar(x - width, p50_latencies, width, label='P50', color='lightgreen', edgecolor='green')
-        ax2.bar(x, p95_latencies, width, label='P95', color='orange', edgecolor='darkorange')
-        ax2.bar(x + width, p99_latencies, width, label='P99', color='salmon', edgecolor='red')
+        ax2.bar(x - width, p50_latencies, width, label="P50", color="lightgreen", edgecolor="green")
+        ax2.bar(x, p95_latencies, width, label="P95", color="orange", edgecolor="darkorange")
+        ax2.bar(x + width, p99_latencies, width, label="P99", color="salmon", edgecolor="red")
 
-        ax2.set_xlabel('工具名称', fontsize=12)
-        ax2.set_ylabel('延迟 (秒)', fontsize=12)
-        ax2.set_title('延迟百分位统计 (P50/P95/P99)', fontsize=14, fontweight='bold')
+        ax2.set_xlabel("工具名称", fontsize=12)
+        ax2.set_ylabel("延迟 (秒)", fontsize=12)
+        ax2.set_title("延迟百分位统计 (P50/P95/P99)", fontsize=14, fontweight="bold")
         ax2.set_xticks(x)
-        ax2.set_xticklabels(tool_names, rotation=45, ha='right', fontsize=9)
+        ax2.set_xticklabels(tool_names, rotation=45, ha="right", fontsize=9)
         ax2.legend(fontsize=10)
-        ax2.grid(axis='y', alpha=0.3)
+        ax2.grid(axis="y", alpha=0.3)
 
         # 图表3: 缓存命中率
         ax3 = axes[1, 0]
-        colors = ['green' if rate >= 50 else 'orange' if rate >= 20 else 'red' for rate in cache_hit_rates]
-        bars3 = ax3.bar(range(len(tool_names)), cache_hit_rates, color=colors, edgecolor='black', alpha=0.7)
-        ax3.set_xlabel('工具名称', fontsize=12)
-        ax3.set_ylabel('缓存命中率 (%)', fontsize=12)
-        ax3.set_title('缓存命中率统计', fontsize=14, fontweight='bold')
+        colors = [
+            "green" if rate >= 50 else "orange" if rate >= 20 else "red" for rate in cache_hit_rates
+        ]
+        bars3 = ax3.bar(
+            range(len(tool_names)), cache_hit_rates, color=colors, edgecolor="black", alpha=0.7
+        )
+        ax3.set_xlabel("工具名称", fontsize=12)
+        ax3.set_ylabel("缓存命中率 (%)", fontsize=12)
+        ax3.set_title("缓存命中率统计", fontsize=14, fontweight="bold")
         ax3.set_xticks(range(len(tool_names)))
-        ax3.set_xticklabels(tool_names, rotation=45, ha='right', fontsize=9)
-        ax3.axhline(y=50, color='green', linestyle='--', alpha=0.5, label='良好 (≥50%)')
-        ax3.axhline(y=20, color='orange', linestyle='--', alpha=0.5, label='一般 (≥20%)')
+        ax3.set_xticklabels(tool_names, rotation=45, ha="right", fontsize=9)
+        ax3.axhline(y=50, color="green", linestyle="--", alpha=0.5, label="良好 (≥50%)")
+        ax3.axhline(y=20, color="orange", linestyle="--", alpha=0.5, label="一般 (≥20%)")
         ax3.legend(fontsize=10)
-        ax3.grid(axis='y', alpha=0.3)
+        ax3.grid(axis="y", alpha=0.3)
 
         # 在柱状图上显示数值
         for i, bar in enumerate(bars3):
             height = bar.get_height()
-            ax3.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.1f}%',
-                    ha='center', va='bottom', fontsize=8)
+            ax3.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height,
+                f"{height:.1f}%",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
 
         # 图表4: 错误率统计
         ax4 = axes[1, 1]
-        colors4 = ['green' if rate == 0 else 'orange' if rate < 5 else 'red' for rate in error_rates]
-        bars4 = ax4.bar(range(len(tool_names)), error_rates, color=colors4, edgecolor='black', alpha=0.7)
-        ax4.set_xlabel('工具名称', fontsize=12)
-        ax4.set_ylabel('错误率 (%)', fontsize=12)
-        ax4.set_title('错误率统计', fontsize=14, fontweight='bold')
+        colors4 = [
+            "green" if rate == 0 else "orange" if rate < 5 else "red" for rate in error_rates
+        ]
+        bars4 = ax4.bar(
+            range(len(tool_names)), error_rates, color=colors4, edgecolor="black", alpha=0.7
+        )
+        ax4.set_xlabel("工具名称", fontsize=12)
+        ax4.set_ylabel("错误率 (%)", fontsize=12)
+        ax4.set_title("错误率统计", fontsize=14, fontweight="bold")
         ax4.set_xticks(range(len(tool_names)))
-        ax4.set_xticklabels(tool_names, rotation=45, ha='right', fontsize=9)
-        ax4.axhline(y=5, color='orange', linestyle='--', alpha=0.5, label='警告 (≥5%)')
+        ax4.set_xticklabels(tool_names, rotation=45, ha="right", fontsize=9)
+        ax4.axhline(y=5, color="orange", linestyle="--", alpha=0.5, label="警告 (≥5%)")
         ax4.legend(fontsize=10)
-        ax4.grid(axis='y', alpha=0.3)
+        ax4.grid(axis="y", alpha=0.3)
 
         # 在柱状图上显示数值
         for i, bar in enumerate(bars4):
             height = bar.get_height()
             if height > 0:
-                ax4.text(bar.get_x() + bar.get_width()/2., height,
-                        f'{height:.1f}%',
-                        ha='center', va='bottom', fontsize=8)
+                ax4.text(
+                    bar.get_x() + bar.get_width() / 2.0,
+                    height,
+                    f"{height:.1f}%",
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                )
 
         # 调整布局
         plt.tight_layout()
 
         # 保存图表
         if output_path is None:
-            output_path = Path("logs") / f"performance_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            output_path = (
+                Path("logs") / f"performance_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            )
         else:
             output_path = Path(output_path)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
         plt.close()
 
         logger.info(f"性能监控报告已生成: {output_path}")

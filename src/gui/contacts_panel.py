@@ -19,9 +19,19 @@ v2.18.0 优化内容：
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QLineEdit, QDialog, QPushButton,
-    QMenu, QInputDialog, QMessageBox, QFileDialog
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QLineEdit,
+    QDialog,
+    QPushButton,
+    QMenu,
+    QInputDialog,
+    QMessageBox,
+    QFileDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve, pyqtProperty
 from PyQt6.QtGui import QFont, QPainter, QColor, QBrush, QAction, QPainterPath, QPixmap
@@ -30,9 +40,12 @@ from pathlib import Path
 
 from .material_design_light import MD3_LIGHT_COLORS, MD3_RADIUS, MD3_DURATION, MD3_STATE_LAYERS
 from .material_design_enhanced import (
-    MD3_ENHANCED_COLORS, MD3_ENHANCED_SPACING, MD3_ENHANCED_RADIUS,
-    MD3_ENHANCED_DURATION, MD3_ENHANCED_EASING,
-    get_typography_css
+    MD3_ENHANCED_COLORS,
+    MD3_ENHANCED_SPACING,
+    MD3_ENHANCED_RADIUS,
+    MD3_ENHANCED_DURATION,
+    MD3_ENHANCED_EASING,
+    get_typography_css,
 )
 from .material_icons import MaterialIconButton, MATERIAL_ICONS
 from src.auth.user_session import user_session
@@ -111,14 +124,16 @@ def _create_contact_avatar_label(avatar_text: str, size: int) -> QLabel:
         avatar_label.setText(avatar_text if avatar_text else "👤")
 
     # 设置样式
-    avatar_label.setStyleSheet(f"""
+    avatar_label.setStyleSheet(
+        f"""
         QLabel {{
             background: {MD3_LIGHT_COLORS['gradient_mint_cyan']};
             border-radius: {size // 2}px;
             font-size: {size // 2}px;
             color: {MD3_LIGHT_COLORS['on_primary']};
         }}
-    """)
+    """
+    )
 
     return avatar_label
 
@@ -216,7 +231,8 @@ class ContactItem(QWidget):
         menu = QMenu(self)
 
         # 设置菜单样式 - Material Design 3
-        menu.setStyleSheet(f"""
+        menu.setStyleSheet(
+            f"""
             QMenu {{
                 background: {MD3_ENHANCED_COLORS['surface_container_high']};
                 color: {MD3_ENHANCED_COLORS['on_surface']};
@@ -239,7 +255,8 @@ class ContactItem(QWidget):
                 background: {MD3_ENHANCED_COLORS['outline_variant']};
                 margin: {MD3_ENHANCED_SPACING['1']} {MD3_ENHANCED_SPACING['2']};
             }}
-        """)
+        """
+        )
 
         # 重命名操作
         rename_action = QAction("✏️ 重命名", self)
@@ -260,11 +277,7 @@ class ContactItem(QWidget):
     def rename_contact(self):
         """重命名联系人"""
         new_name, ok = QInputDialog.getText(
-            self,
-            "重命名联系人",
-            "请输入新名称：",
-            QLineEdit.EchoMode.Normal,
-            self.contact_name
+            self, "重命名联系人", "请输入新名称：", QLineEdit.EchoMode.Normal, self.contact_name
         )
 
         if ok and new_name and new_name != self.contact_name:
@@ -277,7 +290,7 @@ class ContactItem(QWidget):
             "删除联系人",
             f"确定要删除联系人 '{self.contact_name}' 吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
@@ -293,7 +306,7 @@ class ContactItem(QWidget):
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
             # 使用薄荷绿色作为悬停颜色
-            hover_color = QColor(MD3_LIGHT_COLORS['primary'])
+            hover_color = QColor(MD3_LIGHT_COLORS["primary"])
             hover_color.setAlphaF(self.hover_opacity)
 
             painter.setBrush(QBrush(hover_color))
@@ -316,38 +329,44 @@ class ContactItem(QWidget):
 
         # 名称
         name_label = QLabel(name)
-        name_label.setStyleSheet(f"""
+        name_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface']};
                 font-size: 14px;
                 font-weight: 500;
                 background: transparent;
             }}
-        """)
+        """
+        )
         info_layout.addWidget(name_label)
 
         # 状态
         status_label = QLabel(f"● {status}")
-        status_label.setStyleSheet(f"""
+        status_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
                 font-size: 12px;
                 background: transparent;
             }}
-        """)
+        """
+        )
         info_layout.addWidget(status_label)
 
         layout.addLayout(info_layout)
         layout.addStretch()
 
         # 设置背景
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             ContactItem {{
                 background: transparent;
                 border-radius: {MD3_RADIUS['large']};
                 padding: 4px;
             }}
-        """)
+        """
+        )
 
 
 class AddContactDialog(QDialog):
@@ -412,12 +431,14 @@ class AddContactDialog(QDialog):
         """设置 UI"""
         # 主容器
         container = QWidget(self)
-        container.setStyleSheet(f"""
+        container.setStyleSheet(
+            f"""
             QWidget {{
                 background: {MD3_LIGHT_COLORS['surface']};
                 border-radius: {MD3_RADIUS['extra_large']};
             }}
-        """)
+        """
+        )
 
         layout = QVBoxLayout(container)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -425,30 +446,35 @@ class AddContactDialog(QDialog):
 
         # 标题
         title_label = QLabel("添加联系人")
-        title_label.setStyleSheet(f"""
+        title_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface']};
                 font-size: 20px;
                 font-weight: 600;
                 background: transparent;
             }}
-        """)
+        """
+        )
         layout.addWidget(title_label)
 
         # 名称输入
         name_label = QLabel("联系人名称")
-        name_label.setStyleSheet(f"""
+        name_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
                 font-size: 12px;
                 background: transparent;
             }}
-        """)
+        """
+        )
         layout.addWidget(name_label)
 
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("请输入联系人名称")
-        self.name_input.setStyleSheet(f"""
+        self.name_input.setStyleSheet(
+            f"""
             QLineEdit {{
                 background: {MD3_LIGHT_COLORS['surface_container']};
                 border: 1px solid {MD3_LIGHT_COLORS['outline']};
@@ -463,18 +489,21 @@ class AddContactDialog(QDialog):
             QLineEdit::placeholder {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
             }}
-        """)
+        """
+        )
         layout.addWidget(self.name_input)
 
         # 头像选择 - v2.23.1 优化：添加图片上传功能
         avatar_label = QLabel("选择头像")
-        avatar_label.setStyleSheet(f"""
+        avatar_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
                 font-size: 12px;
                 background: transparent;
             }}
-        """)
+        """
+        )
         layout.addWidget(avatar_label)
 
         # 头像选项
@@ -489,7 +518,8 @@ class AddContactDialog(QDialog):
             btn = QPushButton(avatar)
             btn.setFixedSize(48, 48)
             btn.setCheckable(True)
-            btn.setStyleSheet(f"""
+            btn.setStyleSheet(
+                f"""
                 QPushButton {{
                     background: {MD3_LIGHT_COLORS['surface_container']};
                     border: 2px solid {MD3_LIGHT_COLORS['outline']};
@@ -503,7 +533,8 @@ class AddContactDialog(QDialog):
                     background: {MD3_LIGHT_COLORS['primary_container']};
                     border: 2px solid {MD3_LIGHT_COLORS['primary']};
                 }}
-            """)
+            """
+            )
             btn.clicked.connect(lambda checked, b=btn: self.on_avatar_selected(b))
             avatar_layout.addWidget(btn)
             self.avatar_buttons.append(btn)
@@ -512,7 +543,8 @@ class AddContactDialog(QDialog):
         upload_btn = QPushButton("📸")
         upload_btn.setFixedSize(48, 48)
         upload_btn.setToolTip("上传自定义头像")
-        upload_btn.setStyleSheet(f"""
+        upload_btn.setStyleSheet(
+            f"""
             QPushButton {{
                 background: {MD3_LIGHT_COLORS['tertiary_container']};
                 border: 2px solid {MD3_LIGHT_COLORS['outline']};
@@ -522,7 +554,8 @@ class AddContactDialog(QDialog):
             QPushButton:hover {{
                 background: {MD3_LIGHT_COLORS['tertiary']};
             }}
-        """)
+        """
+        )
         upload_btn.clicked.connect(self.on_upload_avatar)
         avatar_layout.addWidget(upload_btn)
 
@@ -537,7 +570,8 @@ class AddContactDialog(QDialog):
         # 取消按钮
         cancel_btn = QPushButton("取消")
         cancel_btn.setFixedHeight(40)
-        cancel_btn.setStyleSheet(f"""
+        cancel_btn.setStyleSheet(
+            f"""
             QPushButton {{
                 background: transparent;
                 border: 1px solid {MD3_LIGHT_COLORS['outline']};
@@ -550,14 +584,16 @@ class AddContactDialog(QDialog):
             QPushButton:hover {{
                 background: {MD3_LIGHT_COLORS['surface_container_high']};
             }}
-        """)
+        """
+        )
         cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(cancel_btn)
 
         # 确认按钮
         confirm_btn = QPushButton("添加")
         confirm_btn.setFixedHeight(40)
-        confirm_btn.setStyleSheet(f"""
+        confirm_btn.setStyleSheet(
+            f"""
             QPushButton {{
                 background: {MD3_LIGHT_COLORS['gradient_mint_cyan']};
                 border: none;
@@ -570,7 +606,8 @@ class AddContactDialog(QDialog):
             QPushButton:hover {{
                 background: {MD3_LIGHT_COLORS['primary']};
             }}
-        """)
+        """
+        )
         confirm_btn.clicked.connect(self.on_confirm)
         button_layout.addWidget(confirm_btn)
 
@@ -598,10 +635,7 @@ class AddContactDialog(QDialog):
     def on_upload_avatar(self):
         """上传自定义头像 - v2.23.1 新增"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择头像图片",
-            "",
-            "图片文件 (*.png *.jpg *.jpeg *.gif *.bmp *.webp)"
+            self, "选择头像图片", "", "图片文件 (*.png *.jpg *.jpeg *.gif *.bmp *.webp)"
         )
 
         if file_path:
@@ -619,7 +653,8 @@ class AddContactDialog(QDialog):
         name = self.name_input.text().strip()
         if not name:
             # 显示错误提示
-            self.name_input.setStyleSheet(f"""
+            self.name_input.setStyleSheet(
+                f"""
                 QLineEdit {{
                     background: {MD3_LIGHT_COLORS['surface_container']};
                     border: 2px solid {MD3_LIGHT_COLORS['error']};
@@ -628,7 +663,8 @@ class AddContactDialog(QDialog):
                     font-size: 14px;
                     padding: 12px 16px;
                 }}
-            """)
+            """
+            )
             return
 
         # 获取选中的头像
@@ -717,19 +753,22 @@ class ContactsPanel(QWidget):
         search_icon_font = QFont("Material Symbols Outlined")
         search_icon_font.setPixelSize(20)
         search_icon.setFont(search_icon_font)
-        search_icon.setStyleSheet(f"""
+        search_icon.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
                 background: transparent;
             }}
-        """)
+        """
+        )
         search_container_layout.addWidget(search_icon)
 
         # 搜索输入框
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("搜索联系人")
         self.search_input.textChanged.connect(self.filter_contacts)  # 实时搜索
-        self.search_input.setStyleSheet(f"""
+        self.search_input.setStyleSheet(
+            f"""
             QLineEdit {{
                 background: transparent;
                 border: none;
@@ -740,17 +779,20 @@ class ContactsPanel(QWidget):
             QLineEdit::placeholder {{
                 color: {MD3_LIGHT_COLORS['on_surface_variant']};
             }}
-        """)
+        """
+        )
         search_container_layout.addWidget(self.search_input)
 
-        search_container.setStyleSheet(f"""
+        search_container.setStyleSheet(
+            f"""
             QWidget {{
                 background: {MD3_ENHANCED_COLORS['surface_container_high']};
                 border: 2px solid {MD3_ENHANCED_COLORS['outline_variant']};
                 border-radius: {MD3_ENHANCED_RADIUS['xl']};
                 padding: 8px 0px;
             }}
-        """)
+        """
+        )
         search_layout.addWidget(search_container)
 
         # 添加按钮
@@ -763,7 +805,8 @@ class ContactsPanel(QWidget):
 
         # 联系人列表
         self.contact_list = QListWidget()
-        self.contact_list.setStyleSheet(f"""
+        self.contact_list.setStyleSheet(
+            f"""
             QListWidget {{
                 background: transparent;
                 border: none;
@@ -784,11 +827,13 @@ class ContactsPanel(QWidget):
                 );
                 border-radius: {MD3_ENHANCED_RADIUS['lg']};
             }}
-        """)
+        """
+        )
         layout.addWidget(self.contact_list)
 
         # 设置背景 - 使用渐变背景，增强视觉效果
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             ContactsPanel {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:0, y2:1,
@@ -798,7 +843,8 @@ class ContactsPanel(QWidget):
                 );
                 border-right: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
             }}
-        """)
+        """
+        )
 
     def load_user_contacts(self):
         """从数据库加载用户的联系人"""
@@ -811,10 +857,10 @@ class ContactsPanel(QWidget):
             contacts = user_session.get_contacts()
             for contact in contacts:
                 self.add_contact(
-                    contact['name'],
-                    contact.get('avatar', '👤'),
-                    contact.get('status', '在线'),
-                    save_to_db=False  # 已经在数据库中，不需要再保存
+                    contact["name"],
+                    contact.get("avatar", "👤"),
+                    contact.get("status", "在线"),
+                    save_to_db=False,  # 已经在数据库中，不需要再保存
                 )
         else:
             # 未登录时添加示例联系人
@@ -832,7 +878,9 @@ class ContactsPanel(QWidget):
         for avatar, name, status in demo_contacts:
             self.add_contact(name, avatar, status, save_to_db=False)
 
-    def add_contact(self, name: str, avatar: str = "👤", status: str = "在线", save_to_db: bool = True):
+    def add_contact(
+        self, name: str, avatar: str = "👤", status: str = "在线", save_to_db: bool = True
+    ):
         """添加联系人
 
         Args:
@@ -855,11 +903,7 @@ class ContactsPanel(QWidget):
                 return
 
         # 添加到数据
-        self.contacts.append({
-            "name": name,
-            "avatar": avatar,
-            "status": status
-        })
+        self.contacts.append({"name": name, "avatar": avatar, "status": status})
 
         # 添加到列表
         item = QListWidgetItem(self.contact_list)
@@ -937,7 +981,7 @@ class ContactsPanel(QWidget):
                     self,
                     "重命名失败",
                     f"联系人 '{new_name}' 已存在！",
-                    QMessageBox.StandardButton.Ok
+                    QMessageBox.StandardButton.Ok,
                 )
                 return
 
@@ -946,10 +990,7 @@ class ContactsPanel(QWidget):
             success = user_session.update_contact(old_name, new_name)
             if not success:
                 QMessageBox.warning(
-                    self,
-                    "重命名失败",
-                    "更新数据库失败！",
-                    QMessageBox.StandardButton.Ok
+                    self, "重命名失败", "更新数据库失败！", QMessageBox.StandardButton.Ok
                 )
                 return
 

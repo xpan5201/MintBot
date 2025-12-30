@@ -58,4 +58,3 @@ async def _run_disk_cache_get_uses_executor() -> None:
 
 def test_ttsmanager_disk_cache_get_runs_in_executor() -> None:
     asyncio.run(_run_disk_cache_get_uses_executor())
-

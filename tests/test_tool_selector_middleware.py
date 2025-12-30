@@ -95,4 +95,3 @@ def test_tool_selector_keeps_all_on_unparseable_output() -> None:
     )
     selected = middleware.wrap_model_call(request, _handler)
     assert selected == ["calculator", "get_weather"]
-

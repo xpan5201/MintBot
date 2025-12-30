@@ -137,7 +137,7 @@ class PerformanceMonitor:
                 logger.info(f"  最小耗时: {data['min']:.4f} 秒")
                 logger.info(f"  最大耗时: {data['max']:.4f} 秒")
                 logger.info(f"  总耗时: {data['total']:.4f} 秒")
-                if data['errors'] > 0:
+                if data["errors"] > 0:
                     logger.error(f"  错误次数: {data['errors']}")
 
         logger.info("\n" + "=" * 60)
@@ -230,7 +230,7 @@ class BatchProcessor:
         total = len(items)
 
         for i in range(0, total, batch_size):
-            batch = items[i:i + batch_size]
+            batch = items[i : i + batch_size]
             batch_results = [process_func(item) for item in batch]
             results.extend(batch_results)
 
@@ -265,10 +265,8 @@ class BatchProcessor:
         total = len(items)
 
         for i in range(0, total, batch_size):
-            batch = items[i:i + batch_size]
-            batch_results = await asyncio.gather(
-                *[process_func(item) for item in batch]
-            )
+            batch = items[i : i + batch_size]
+            batch_results = await asyncio.gather(*[process_func(item) for item in batch])
             results.extend(batch_results)
 
             if show_progress:

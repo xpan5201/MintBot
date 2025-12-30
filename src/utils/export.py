@@ -228,8 +228,7 @@ class ConversationExporter:
                     "border-bottom: 2px solid #333; padding-bottom: 20px; }\n"
                 )
                 f.write(
-                    "        .message { margin: 20px 0; padding: 15px; "
-                    "border-radius: 10px; }\n"
+                    "        .message { margin: 20px 0; padding: 15px; " "border-radius: 10px; }\n"
                 )
                 f.write("        .user { background-color: #e3f2fd; }\n")
                 f.write("        .assistant { background-color: #f3e5f5; }\n")
@@ -243,7 +242,9 @@ class ConversationExporter:
                 # 头部信息
                 f.write("    <div class='header'>\n")
                 f.write(f"        <h1>{title}</h1>\n")
-                f.write(f"        <p>导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>\n")
+                f.write(
+                    f"        <p>导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>\n"
+                )
                 f.write(f"        <p>对话数量: {len(conversations)}</p>\n")
                 f.write("    </div>\n\n")
 

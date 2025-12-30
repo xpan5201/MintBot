@@ -117,8 +117,12 @@ class RmsVad:
 
         if not self._speech_started:
             # Update noise floor estimate before speech starts.
-            if self.threshold_mode == "auto" and (self.noise_calibration_ms <= 0 or self._calibrated_ms < self.noise_calibration_ms):
-                self._noise_rms = (1.0 - self._ema_alpha) * self._noise_rms + self._ema_alpha * float(rms)
+            if self.threshold_mode == "auto" and (
+                self.noise_calibration_ms <= 0 or self._calibrated_ms < self.noise_calibration_ms
+            ):
+                self._noise_rms = (
+                    1.0 - self._ema_alpha
+                ) * self._noise_rms + self._ema_alpha * float(rms)
                 self._calibrated_ms += chunk_ms
                 threshold = self.current_threshold()
 

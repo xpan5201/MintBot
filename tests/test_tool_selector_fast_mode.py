@@ -20,4 +20,3 @@ def test_tool_selector_skipped_in_fast_mode(monkeypatch) -> None:
     agent.tool_registry = ExplodingRegistry()  # type: ignore[assignment]
 
     assert agent._build_tool_selector_middleware() is None
-

@@ -44,14 +44,20 @@ from PyQt6.QtWidgets import (
 )
 
 from src.auth.user_session import user_session
-from src.gui.material_design_enhanced import MD3_ENHANCED_COLORS, MD3_ENHANCED_RADIUS, get_typography_css
+from src.gui.material_design_enhanced import (
+    MD3_ENHANCED_COLORS,
+    MD3_ENHANCED_RADIUS,
+    get_typography_css,
+)
 from src.gui.notifications import Toast, show_toast
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-_RGBA_RE = re.compile(r"rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)(?:\\s*,\\s*([0-9.]+))?\\s*\\)")
+_RGBA_RE = re.compile(
+    r"rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)(?:\\s*,\\s*([0-9.]+))?\\s*\\)"
+)
 
 
 def _parse_color(value: str, *, fallback: str = "#FFFFFF") -> QColor:
@@ -93,7 +99,14 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 class ToggleSwitch(QAbstractButton):
     """A small, smooth toggle switch (iOS-like), implemented in pure paint for performance."""
 
-    def __init__(self, parent: QWidget | None = None, *, checked: bool = False, width: int = 56, height: int = 30):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        checked: bool = False,
+        width: int = 56,
+        height: int = 30,
+    ):
         super().__init__(parent)
         self.setCheckable(True)
         self.setChecked(bool(checked))
@@ -146,7 +159,9 @@ class ToggleSwitch(QAbstractButton):
         self._press_t = max(0.0, min(1.0, float(value)))
         self.update()
 
-    def _start_anim(self, anim: QPropertyAnimation, end_value: float, start_value: float | None = None) -> None:
+    def _start_anim(
+        self, anim: QPropertyAnimation, end_value: float, start_value: float | None = None
+    ) -> None:
         anim.stop()
         if start_value is not None:
             anim.setStartValue(float(start_value))
@@ -218,11 +233,15 @@ class ToggleSwitch(QAbstractButton):
         shadow = QColor(0, 0, 0, int(30 * (1.0 - self._press_t)))
         painter.setBrush(shadow)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(QPointF(x + thumb_d / 2.0, y + thumb_d / 2.0 + 0.8), thumb_d / 2.0, thumb_d / 2.0)
+        painter.drawEllipse(
+            QPointF(x + thumb_d / 2.0, y + thumb_d / 2.0 + 0.8), thumb_d / 2.0, thumb_d / 2.0
+        )
 
         painter.setBrush(thumb)
         painter.setPen(QPen(outline, 1.0))
-        painter.drawEllipse(QPointF(x + thumb_d / 2.0, y + thumb_d / 2.0), thumb_d / 2.0, thumb_d / 2.0)
+        painter.drawEllipse(
+            QPointF(x + thumb_d / 2.0, y + thumb_d / 2.0), thumb_d / 2.0, thumb_d / 2.0
+        )
 
 
 @dataclass(frozen=True)
@@ -276,7 +295,9 @@ class SettingsPanel(QWidget):
         # 性能：减少滚动/内容变化时的无效重绘
         try:
             if hasattr(self.scroll_area, "setViewportUpdateMode"):
-                self.scroll_area.setViewportUpdateMode(QAbstractScrollArea.ViewportUpdateMode.MinimalViewportUpdate)
+                self.scroll_area.setViewportUpdateMode(
+                    QAbstractScrollArea.ViewportUpdateMode.MinimalViewportUpdate
+                )
         except Exception:
             pass
         self.scroll_area.setStyleSheet(
@@ -429,7 +450,9 @@ class SettingsPanel(QWidget):
         rows.append((_RowSpec("角色名", "AI 在聊天中展示的名字"), self.role_name_input))
 
         self.user_name_input = self._build_line_edit(placeholder="例如：主人 / 你的昵称")
-        rows.append((_RowSpec("我的称呼", "AI 将如何称呼你（更沉浸的角色扮演）"), self.user_name_input))
+        rows.append(
+            (_RowSpec("我的称呼", "AI 将如何称呼你（更沉浸的角色扮演）"), self.user_name_input)
+        )
 
         self.ai_avatar_input = self._build_line_edit(placeholder="emoji 或图片路径")
         rows.append((_RowSpec("AI 头像", "支持 emoji / 本地图片路径"), self.ai_avatar_input))
@@ -438,10 +461,14 @@ class SettingsPanel(QWidget):
         rows.append((_RowSpec("情绪系统", "让角色拥有心情变化（更真实的互动）"), self.mood_switch))
 
         self.emotion_memory_switch = ToggleSwitch(checked=True)
-        rows.append((_RowSpec("情绪记忆", "记住你们的互动温度（影响好感度）"), self.emotion_memory_switch))
+        rows.append(
+            (_RowSpec("情绪记忆", "记住你们的互动温度（影响好感度）"), self.emotion_memory_switch)
+        )
 
         self.long_memory_switch = ToggleSwitch(checked=True)
-        rows.append((_RowSpec("长期记忆", "让角色记住你们的故事（建议开启）"), self.long_memory_switch))
+        rows.append(
+            (_RowSpec("长期记忆", "让角色记住你们的故事（建议开启）"), self.long_memory_switch)
+        )
 
         self.tts_switch = ToggleSwitch(checked=False)
         rows.append((_RowSpec("语音回复", "开启后可使用 TTS 让角色“说话”"), self.tts_switch))
@@ -461,7 +488,13 @@ class SettingsPanel(QWidget):
             self.ai_avatar_input,
         ):
             w.textChanged.connect(self._mark_unsaved_changes)
-        for sw in (self.mood_switch, self.emotion_memory_switch, self.long_memory_switch, self.tts_switch, self.asr_switch):
+        for sw in (
+            self.mood_switch,
+            self.emotion_memory_switch,
+            self.long_memory_switch,
+            self.tts_switch,
+            self.asr_switch,
+        ):
             sw.toggled.connect(lambda _checked, _sw=sw: self._mark_unsaved_changes())
 
         return card
@@ -469,8 +502,12 @@ class SettingsPanel(QWidget):
     def _build_service_card(self) -> QWidget:
         card, layout = self._build_card()
 
-        self.llm_api_input = self._build_line_edit(placeholder="例如：http://127.0.0.1:8001", fixed_width=420)
-        layout.addWidget(self._row("服务器地址", "连接到 LLM 服务的地址（仅保留最核心项）", self.llm_api_input))
+        self.llm_api_input = self._build_line_edit(
+            placeholder="例如：http://127.0.0.1:8001", fixed_width=420
+        )
+        layout.addWidget(
+            self._row("服务器地址", "连接到 LLM 服务的地址（仅保留最核心项）", self.llm_api_input)
+        )
 
         self.llm_api_input.textChanged.connect(self._mark_unsaved_changes)
         return card
@@ -688,12 +725,25 @@ class SettingsPanel(QWidget):
 
     @staticmethod
     def _read_config_file() -> dict[str, Any]:
-        config_path = Path("config.yaml")
-        if not config_path.exists():
+        try:
+            from src.config.config_files import (
+                DEFAULT_USER_CONFIG_PATH,
+                read_yaml_file,
+                resolve_config_paths,
+            )
+
+            user_path, _dev_path, _legacy_used = resolve_config_paths(
+                user_config_path=DEFAULT_USER_CONFIG_PATH,
+                dev_config_path="",
+                allow_legacy=True,
+            )
+        except Exception:
+            return {}
+
+        if not user_path.exists():
             return {}
         try:
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            return raw if isinstance(raw, dict) else {}
+            return read_yaml_file(user_path)
         except Exception:
             return {}
 
@@ -738,7 +788,9 @@ class SettingsPanel(QWidget):
 
             try:
                 self.mood_switch.setChecked(bool(agent_cfg.get("mood_system_enabled", True)))
-                self.emotion_memory_switch.setChecked(bool(agent_cfg.get("emotion_memory_enabled", True)))
+                self.emotion_memory_switch.setChecked(
+                    bool(agent_cfg.get("emotion_memory_enabled", True))
+                )
                 self.long_memory_switch.setChecked(bool(agent_cfg.get("long_memory", True)))
             except Exception:
                 pass
@@ -793,11 +845,15 @@ class SettingsPanel(QWidget):
 
         agent_cfg["char"] = str(role_name_input.text() if role_name_input is not None else "")
         agent_cfg["user"] = str(user_name_input.text() if user_name_input is not None else "")
-        agent_cfg["mood_system_enabled"] = bool(mood_switch.isChecked() if mood_switch is not None else True)
+        agent_cfg["mood_system_enabled"] = bool(
+            mood_switch.isChecked() if mood_switch is not None else True
+        )
         agent_cfg["emotion_memory_enabled"] = bool(
             emotion_memory_switch.isChecked() if emotion_memory_switch is not None else True
         )
-        agent_cfg["long_memory"] = bool(long_memory_switch.isChecked() if long_memory_switch is not None else True)
+        agent_cfg["long_memory"] = bool(
+            long_memory_switch.isChecked() if long_memory_switch is not None else True
+        )
 
         llm_cfg["api"] = str(llm_api_input.text() if llm_api_input is not None else "")
         tts_cfg["enabled"] = bool(tts_switch.isChecked() if tts_switch is not None else False)
@@ -827,18 +883,27 @@ class SettingsPanel(QWidget):
             except Exception:
                 pass
 
-            # write config.yaml atomically
-            config_path = Path("config.yaml")
-            tmp_path = config_path.with_name(config_path.name + ".tmp")
+            # write config.user.yaml atomically
             try:
-                tmp_path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
-                tmp_path.replace(config_path)
-            finally:
+                from src.config.config_files import DEFAULT_USER_CONFIG_PATH, write_yaml_atomic
+
+                write_yaml_atomic(DEFAULT_USER_CONFIG_PATH, config)
+            except Exception:
+                # fallback to legacy behavior
+                config_path = Path("config.user.yaml")
+                tmp_path = config_path.with_name(config_path.name + ".tmp")
                 try:
-                    if tmp_path.exists():
-                        tmp_path.unlink()
-                except Exception:
-                    pass
+                    tmp_path.write_text(
+                        yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
+                        encoding="utf-8",
+                    )
+                    tmp_path.replace(config_path)
+                finally:
+                    try:
+                        if tmp_path.exists():
+                            tmp_path.unlink()
+                    except Exception:
+                        pass
 
             self._config_data = config
             self._set_unsaved(False)
@@ -1007,7 +1072,10 @@ class SettingsPanel(QWidget):
     def event(self, event):  # noqa: N802 - Qt API naming
         try:
             if event.type() == QEvent.Type.KeyPress:
-                if event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_S:
+                if (
+                    event.modifiers() & Qt.KeyboardModifier.ControlModifier
+                    and event.key() == Qt.Key.Key_S
+                ):
                     self.save_settings(show_feedback=True)
                     return True
         except Exception:

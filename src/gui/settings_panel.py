@@ -11,4 +11,3 @@ from __future__ import annotations
 from .roleplay_settings_panel import SettingsPanel
 
 __all__ = ["SettingsPanel"]
-

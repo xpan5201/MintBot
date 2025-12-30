@@ -25,7 +25,9 @@ class TestVisionProcessor:
         expected_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp"]
         assert processor.SUPPORTED_FORMATS == expected_formats
 
-    def test_smart_analyze_auto_falls_back_when_pytesseract_missing(self, sample_image_path, monkeypatch):
+    def test_smart_analyze_auto_falls_back_when_pytesseract_missing(
+        self, sample_image_path, monkeypatch
+    ):
         """auto 模式下无 pytesseract 时应回退到 describe（避免只返回 OCR 缺依赖提示）。"""
         import builtins
 
@@ -48,7 +50,9 @@ class TestVisionProcessor:
         processor = VisionProcessor()
 
         # JPG 格式应该有效
-        assert sample_image_path.suffix.lower() in [f".{fmt}" for fmt in processor.SUPPORTED_FORMATS]
+        assert sample_image_path.suffix.lower() in [
+            f".{fmt}" for fmt in processor.SUPPORTED_FORMATS
+        ]
 
     def test_validate_image_format_invalid(self, temp_dir):
         """测试无效图片格式验证"""
@@ -90,7 +94,9 @@ class TestAudioProcessor:
         processor = AudioProcessor()
 
         # MP3 格式应该有效
-        assert sample_audio_path.suffix.lower() in [f".{fmt}" for fmt in processor.SUPPORTED_FORMATS]
+        assert sample_audio_path.suffix.lower() in [
+            f".{fmt}" for fmt in processor.SUPPORTED_FORMATS
+        ]
 
     def test_validate_audio_format_invalid(self, temp_dir):
         """测试无效音频格式验证"""

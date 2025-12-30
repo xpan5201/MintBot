@@ -17,4 +17,3 @@ def test_memory_deduplicator_max_seen_hashes_eviction():
     assert dedup.add_memory("four") is True
     assert len(dedup.seen_hashes) == 3
     assert dedup.contains_hash(h1) is False
-

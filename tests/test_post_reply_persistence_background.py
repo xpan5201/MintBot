@@ -28,7 +28,9 @@ def test_save_interaction_to_memory_schedules_background_tasks(monkeypatch) -> N
             raise AssertionError("daily summary should be scheduled in background")
 
     class DummyLore:
-        def learn_from_conversation(self, *_args: object, **_kwargs: object) -> None:  # pragma: no cover
+        def learn_from_conversation(
+            self, *_args: object, **_kwargs: object
+        ) -> None:  # pragma: no cover
             raise AssertionError("lore learning should be scheduled in background")
 
     submitted: list[str] = []
@@ -73,7 +75,9 @@ def test_save_stream_interaction_schedules_background_tasks(monkeypatch) -> None
             raise AssertionError("daily summary should be scheduled in background")
 
     class DummyLore:
-        def learn_from_conversation(self, *_args: object, **_kwargs: object) -> None:  # pragma: no cover
+        def learn_from_conversation(
+            self, *_args: object, **_kwargs: object
+        ) -> None:  # pragma: no cover
             raise AssertionError("lore learning should be scheduled in background")
 
     submitted: list[str] = []
@@ -91,4 +95,3 @@ def test_save_stream_interaction_schedules_background_tasks(monkeypatch) -> None
 
     assert [name for name, _ in calls] == ["memory.add_interaction"]
     assert submitted == ["post-persist"]
-

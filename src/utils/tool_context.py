@@ -22,8 +22,8 @@ tool_timeout_s_var: contextvars.ContextVar[Optional[float]] = contextvars.Contex
     default=None,
 )
 
-tool_trace_recorder_var: contextvars.ContextVar[Optional["ToolTraceRecorder"]] = contextvars.ContextVar(
-    "mintchat_tool_trace_recorder", default=None
+tool_trace_recorder_var: contextvars.ContextVar[Optional["ToolTraceRecorder"]] = (
+    contextvars.ContextVar("mintchat_tool_trace_recorder", default=None)
 )
 
 

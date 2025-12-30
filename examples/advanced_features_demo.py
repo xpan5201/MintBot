@@ -30,21 +30,9 @@ def demo_core_memory():
 
     # 添加核心记忆
     print("\n1. 添加核心记忆...")
-    agent.add_core_memory(
-        "主人最喜欢吃草莓蛋糕",
-        category="preferences",
-        importance=0.9
-    )
-    agent.add_core_memory(
-        "主人的生日是3月15日",
-        category="personal_info",
-        importance=1.0
-    )
-    agent.add_core_memory(
-        "主人每天晚上10点睡觉",
-        category="habits",
-        importance=0.7
-    )
+    agent.add_core_memory("主人最喜欢吃草莓蛋糕", category="preferences", importance=0.9)
+    agent.add_core_memory("主人的生日是3月15日", category="personal_info", importance=1.0)
+    agent.add_core_memory("主人每天晚上10点睡觉", category="habits", importance=0.7)
 
     # 测试核心记忆检索
     print("\n2. 测试核心记忆检索...")
@@ -99,21 +87,21 @@ def demo_lore_book():
         title="小雪糕的猫耳",
         content="小雪糕的猫耳是粉白相间的，非常可爱。当她开心时，猫耳会竖起来；害羞时会微微垂下。",
         category="character",
-        keywords=["猫耳", "外观", "表情"]
+        keywords=["猫耳", "外观", "表情"],
     )
 
     agent.add_lore(
         title="温馨小屋",
         content="主人和小雪糕居住的温馨小屋，有暖黄色的吊灯，铺着绒垫的猫窝，靠窗的书桌。",
         category="location",
-        keywords=["小屋", "家", "环境"]
+        keywords=["小屋", "家", "环境"],
     )
 
     agent.add_lore(
         title="小铃铛",
         content="小雪糕女仆装袖口上别着的小铃铛，走动时会发出清脆的响声。",
         category="item",
-        keywords=["铃铛", "装饰", "声音"]
+        keywords=["铃铛", "装饰", "声音"],
     )
 
     # 测试知识库检索
@@ -177,16 +165,14 @@ def demo_integrated_features():
     # 设置背景知识
     print("\n1. 设置背景知识...")
     agent.add_core_memory(
-        "主人是一名程序员，喜欢编程和阅读",
-        category="personal_info",
-        importance=0.9
+        "主人是一名程序员，喜欢编程和阅读", category="personal_info", importance=0.9
     )
 
     agent.add_lore(
         title="编程语言Python",
         content="Python是主人最喜欢的编程语言，简洁优雅，功能强大。",
         category="knowledge",
-        keywords=["编程", "Python", "技术"]
+        keywords=["编程", "Python", "技术"],
     )
 
     # 进行对话
@@ -211,7 +197,9 @@ def demo_integrated_features():
     print(f"情感状态: {agent.get_emotion_status()}")
     print(f"情绪状态: {agent.get_mood_status()}")
     print("\n高级记忆系统:")
-    print(f"  - 核心记忆: {'启用' if stats['advanced_memory']['core_memory_enabled'] else '未启用'}")
+    print(
+        f"  - 核心记忆: {'启用' if stats['advanced_memory']['core_memory_enabled'] else '未启用'}"
+    )
     print(f"  - 日记功能: {'启用' if stats['advanced_memory']['diary_enabled'] else '未启用'}")
     print(f"  - 知识库: {'启用' if stats['advanced_memory']['lore_books_enabled'] else '未启用'}")
 

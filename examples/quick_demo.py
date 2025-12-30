@@ -57,10 +57,7 @@ def demo_emotion_system():
 
         # 显示情感状态
         emotion = agent.emotion_engine.current_emotion
-        print(
-            f"\n💭 情感变化: {emotion.emotion_type.value} "
-            f"(强度: {emotion.intensity:.2f})"
-        )
+        print(f"\n💭 情感变化: {emotion.emotion_type.value} " f"(强度: {emotion.intensity:.2f})")
         time.sleep(1)
 
 

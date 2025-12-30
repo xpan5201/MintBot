@@ -33,9 +33,10 @@ def main():
         return 1
     
     # 检查配置文件
-    config_file = Path("config.yaml")
-    if not config_file.exists():
-        print("[错误] config.yaml 文件不存在")
+    config_file = Path("config.user.yaml")
+    legacy_file = Path("config.yaml")
+    if not config_file.exists() and not legacy_file.exists():
+        print("[错误] config.user.yaml 文件不存在")
         print()
         print("请先运行以下命令创建配置文件:")
         if sys.platform == "win32":
@@ -45,9 +46,9 @@ def main():
         print()
         print("或手动复制:")
         if sys.platform == "win32":
-            print("  copy config.yaml.example config.yaml")
+            print("  copy config.user.yaml.example config.user.yaml")
         else:
-            print("  cp config.yaml.example config.yaml")
+            print("  cp config.user.yaml.example config.user.yaml")
         print()
         return 1
     

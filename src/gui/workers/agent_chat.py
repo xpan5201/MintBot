@@ -84,7 +84,11 @@ class ChatThread(QThread):
                 for chunk in stream_iter:
                     if self.isInterruptionRequested() and not self._cancel_event.is_set():
                         self._cancel_event.set()
-                    if (not self._is_running) or self._cancel_event.is_set() or self.isInterruptionRequested():
+                    if (
+                        (not self._is_running)
+                        or self._cancel_event.is_set()
+                        or self.isInterruptionRequested()
+                    ):
                         drain_on_exit = True
                         break
 
@@ -194,4 +198,3 @@ class AgentInitThread(QThread):
         except Exception as exc:
             logger.error("初始化 Agent 失败: %s", exc, exc_info=True)
             self.error.emit(str(exc))
-

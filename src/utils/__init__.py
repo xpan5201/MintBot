@@ -25,4 +25,3 @@ __all__ = [
     "clear_context",
     "log_context",
 ]
-

@@ -70,9 +70,7 @@ class AsyncVectorSearch:
 
         return results
 
-    def _search_sync(
-        self, query: str, k: int, filter_dict: Optional[Dict]
-    ) -> List[Dict[str, Any]]:
+    def _search_sync(self, query: str, k: int, filter_dict: Optional[Dict]) -> List[Dict[str, Any]]:
         """
         同步向量检索（在线程池中执行）
 
@@ -124,6 +122,7 @@ class AsyncVectorSearch:
         Returns:
             检索结果列表的列表
         """
+
         # 使用批量执行器并发执行所有查询
         async def create_task(query: str):
             return await self.search_async(query, k, filter_dict)
@@ -152,9 +151,7 @@ class AsyncVectorSearch:
 
         # 2. 异步计算嵌入
         loop = asyncio.get_running_loop()  # Python 3.7+ 推荐方式
-        embedding = await loop.run_in_executor(
-            self.executor, self._get_embedding_sync, text
-        )
+        embedding = await loop.run_in_executor(self.executor, self._get_embedding_sync, text)
 
         # 3. 存入缓存
         if embedding:

@@ -17,7 +17,9 @@ from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation
 from PyQt6.QtGui import QColor, QPixmap
 
 from .material_design_enhanced import (
-    MD3_ENHANCED_COLORS, MD3_ENHANCED_RADIUS, MD3_ENHANCED_DURATION,
+    MD3_ENHANCED_COLORS,
+    MD3_ENHANCED_RADIUS,
+    MD3_ENHANCED_DURATION,
     MD3_ENHANCED_EASING,
 )
 from .qss_utils import qss_rgba
@@ -37,8 +39,9 @@ class MD3TextField(QLineEdit):
     - 平滑的状态转换动画
     """
 
-    def __init__(self, placeholder: str = "", is_password: bool = False,
-                 max_length: int = None, parent=None):
+    def __init__(
+        self, placeholder: str = "", is_password: bool = False, max_length: int = None, parent=None
+    ):
         super().__init__(parent)
         self.setPlaceholderText(placeholder)
         self._is_password = is_password
@@ -62,18 +65,19 @@ class MD3TextField(QLineEdit):
         """更新样式 - 根据状态动态调整"""
         # 确定边框颜色和背景色
         if self._has_error:
-            border_color = MD3_ENHANCED_COLORS['error']
-            border_color_focus = MD3_ENHANCED_COLORS['error']
-            background = MD3_ENHANCED_COLORS['error_container']
-            background_focus = MD3_ENHANCED_COLORS['error_container']
+            border_color = MD3_ENHANCED_COLORS["error"]
+            border_color_focus = MD3_ENHANCED_COLORS["error"]
+            background = MD3_ENHANCED_COLORS["error_container"]
+            background_focus = MD3_ENHANCED_COLORS["error_container"]
         else:
-            border_color = MD3_ENHANCED_COLORS['outline']
-            border_color_focus = MD3_ENHANCED_COLORS['primary']
-            background = MD3_ENHANCED_COLORS['surface_container_highest']
-            background_focus = MD3_ENHANCED_COLORS['surface_container_high']
+            border_color = MD3_ENHANCED_COLORS["outline"]
+            border_color_focus = MD3_ENHANCED_COLORS["primary"]
+            background = MD3_ENHANCED_COLORS["surface_container_highest"]
+            background_focus = MD3_ENHANCED_COLORS["surface_container_high"]
 
         # 应用样式
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             QLineEdit {{
                 background: {background};
                 color: {MD3_ENHANCED_COLORS['on_surface']};
@@ -98,7 +102,8 @@ class MD3TextField(QLineEdit):
                 color: {MD3_ENHANCED_COLORS['on_surface_variant']};
                 border: 2px solid {MD3_ENHANCED_COLORS['outline_variant']};
             }}
-        """)
+        """
+        )
 
     def _on_text_changed(self, text: str):
         """文本改变时的处理"""
@@ -188,7 +193,8 @@ class MD3Button(QPushButton):
         """更新样式 - 符合 MD3 规范"""
         if self.is_primary:
             # 填充按钮（Filled Button）
-            self.setStyleSheet(f"""
+            self.setStyleSheet(
+                f"""
                 QPushButton {{
                     background: {MD3_ENHANCED_COLORS['primary']};
                     color: {MD3_ENHANCED_COLORS['on_primary']};
@@ -210,12 +216,14 @@ class MD3Button(QPushButton):
                     background: {MD3_ENHANCED_COLORS['surface_container_highest']};
                     color: {MD3_ENHANCED_COLORS['on_surface_variant']};
                 }}
-            """)
+            """
+            )
         else:
             # 轮廓按钮（Outlined Button）
             hover_bg = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.08)
             pressed_bg = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.16)
-            self.setStyleSheet(f"""
+            self.setStyleSheet(
+                f"""
                 QPushButton {{
                     background: transparent;
                     color: {MD3_ENHANCED_COLORS['primary']};
@@ -239,7 +247,8 @@ class MD3Button(QPushButton):
                     color: {MD3_ENHANCED_COLORS['on_surface_variant']};
                     border: 2px solid {MD3_ENHANCED_COLORS['outline_variant']};
                 }}
-            """)
+            """
+            )
 
     def set_loading(self, loading: bool):
         """设置加载状态
@@ -269,7 +278,8 @@ class MD3TextButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         hover_bg = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.08)
         pressed_bg = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.12)
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             QPushButton {{
                 background: transparent;
                 color: {MD3_ENHANCED_COLORS['primary']};
@@ -286,7 +296,8 @@ class MD3TextButton(QPushButton):
             QPushButton:pressed {{
                 background: {pressed_bg};
             }}
-        """)
+        """
+        )
 
 
 class IllustrationPanel(QWidget):
@@ -309,7 +320,8 @@ class IllustrationPanel(QWidget):
     def setup_ui(self):
         """设置 UI"""
         # 设置面板背景渐变
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             IllustrationPanel {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:1,
@@ -321,7 +333,8 @@ class IllustrationPanel(QWidget):
                 border-top-left-radius: 16px;
                 border-bottom-left-radius: 16px;
             }}
-        """)
+        """
+        )
 
         # ========== 添加阴影效果（层次感） ==========
         from PyQt6.QtWidgets import QGraphicsDropShadowEffect
@@ -329,8 +342,8 @@ class IllustrationPanel(QWidget):
 
         self.shadow_effect = QGraphicsDropShadowEffect(self)
         self.shadow_effect.setBlurRadius(24)  # 阴影模糊半径
-        self.shadow_effect.setXOffset(4)      # 向右偏移 4px
-        self.shadow_effect.setYOffset(0)      # 垂直不偏移
+        self.shadow_effect.setXOffset(4)  # 向右偏移 4px
+        self.shadow_effect.setYOffset(0)  # 垂直不偏移
         self.shadow_effect.setColor(QColor(0, 0, 0, 60))  # 黑色，透明度 60
         self.setGraphicsEffect(self.shadow_effect)
 
@@ -340,17 +353,23 @@ class IllustrationPanel(QWidget):
         self.illustration_label.setScaledContents(False)  # 不使用自动缩放
         # 让标签扩展以填充可用空间
         from PyQt6.QtWidgets import QSizePolicy
-        self.illustration_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        self.illustration_label.setStyleSheet("""
+
+        self.illustration_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored
+        )
+        self.illustration_label.setStyleSheet(
+            """
             QLabel {
                 background: transparent;
             }
-        """)
+        """
+        )
 
         # 欢迎文本（在默认显示时显示，叠加在插画标签上方）
         self.welcome_text = QLabel(self)
         self.welcome_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.welcome_text.setStyleSheet(f"""
+        self.welcome_text.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['primary_70']};
                 font-size: 20px;
@@ -359,7 +378,8 @@ class IllustrationPanel(QWidget):
                 background: transparent;
                 letter-spacing: 0.5px;
             }}
-        """)
+        """
+        )
         # 初始时隐藏欢迎文本
         self.welcome_text.hide()
 
@@ -374,10 +394,11 @@ class IllustrationPanel(QWidget):
         try:
             super().showEvent(event)
             # 只在第一次显示时启动动画
-            if hasattr(self, '_animation_pending') and self._animation_pending:
+            if hasattr(self, "_animation_pending") and self._animation_pending:
                 self._animation_pending = False
                 # 延迟一帧启动动画，确保布局已完成
                 from PyQt6.QtCore import QTimer
+
                 QTimer.singleShot(50, self._setup_slide_in_animation)
         except Exception as e:
             logger.error(f"显示事件处理失败: {e}")
@@ -483,7 +504,8 @@ class IllustrationPanel(QWidget):
         self.original_pixmap = None
         self.illustration_label.clear()
         self.illustration_label.setText("🐱\n\nMintChat")
-        self.illustration_label.setStyleSheet(f"""
+        self.illustration_label.setStyleSheet(
+            f"""
             QLabel {{
                 color: {MD3_ENHANCED_COLORS['primary_60']};
                 font-size: 80px;
@@ -491,7 +513,8 @@ class IllustrationPanel(QWidget):
                 background: transparent;
                 letter-spacing: 2px;
             }}
-        """)
+        """
+        )
         self.illustration_label.show()
         # 显示欢迎文本
         self.welcome_text.show()
@@ -515,26 +538,30 @@ class IllustrationPanel(QWidget):
                 scaled_pixmap = self.original_pixmap.scaled(
                     panel_size,
                     Qt.AspectRatioMode.KeepAspectRatioByExpanding,  # 填充整个区域
-                    Qt.TransformationMode.SmoothTransformation
+                    Qt.TransformationMode.SmoothTransformation,
                 )
 
                 logger.debug(f"缩放后图片尺寸: {scaled_pixmap.width()}x{scaled_pixmap.height()}")
 
                 # 如果缩放后的图片比面板大，需要裁剪
-                if scaled_pixmap.width() > panel_size.width() or scaled_pixmap.height() > panel_size.height():
+                if (
+                    scaled_pixmap.width() > panel_size.width()
+                    or scaled_pixmap.height() > panel_size.height()
+                ):
                     # 计算裁剪位置（居中裁剪）
                     x = (scaled_pixmap.width() - panel_size.width()) // 2
                     y = (scaled_pixmap.height() - panel_size.height()) // 2
                     scaled_pixmap = scaled_pixmap.copy(
-                        x, y,
-                        panel_size.width(),
-                        panel_size.height()
+                        x, y, panel_size.width(), panel_size.height()
                     )
-                    logger.debug(f"裁剪后图片尺寸: {scaled_pixmap.width()}x{scaled_pixmap.height()}")
+                    logger.debug(
+                        f"裁剪后图片尺寸: {scaled_pixmap.width()}x{scaled_pixmap.height()}"
+                    )
 
                 # ========== 应用圆角遮罩 ==========
                 # 创建一个新的 pixmap 用于绘制圆角图片
                 from PyQt6.QtGui import QPainter, QPainterPath
+
                 rounded_pixmap = QPixmap(panel_size)
                 rounded_pixmap.fill(Qt.GlobalColor.transparent)
 
@@ -546,11 +573,7 @@ class IllustrationPanel(QWidget):
                 # 创建圆角路径（左上角和左下角有圆角）
                 path = QPainterPath()
                 radius = 16  # 圆角半径
-                path.addRoundedRect(
-                    0, 0,
-                    panel_size.width(), panel_size.height(),
-                    radius, radius
-                )
+                path.addRoundedRect(0, 0, panel_size.width(), panel_size.height(), radius, radius)
 
                 # 设置裁剪路径
                 painter.setClipPath(path)
@@ -583,7 +606,7 @@ class IllustrationPanel(QWidget):
         Args:
             text: 欢迎文本
         """
-        if hasattr(self, 'welcome_text'):
+        if hasattr(self, "welcome_text"):
             self.welcome_text.setText(text)
 
     def show_welcome_text(self, show: bool = True):
@@ -592,7 +615,7 @@ class IllustrationPanel(QWidget):
         Args:
             show: True 显示，False 隐藏
         """
-        if hasattr(self, 'welcome_text'):
+        if hasattr(self, "welcome_text"):
             if show:
                 self.welcome_text.show()
             else:

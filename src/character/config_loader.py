@@ -1,7 +1,7 @@
 """
 角色配置加载器
 
-从 config.yaml 加载角色配置并生成动态提示词。
+从配置文件（config.user.yaml + config.dev.yaml，兼容 legacy config.yaml）加载角色配置并生成动态提示词。
 """
 
 from typing import Dict, List
@@ -18,7 +18,7 @@ class CharacterConfigLoader:
     @staticmethod
     def load_character_settings() -> Dict[str, str]:
         """
-        从 config.yaml 加载角色设定
+        从配置文件加载角色设定
 
         Returns:
             Dict: 角色设定字典
@@ -88,7 +88,8 @@ class CharacterConfigLoader:
         parts = []
 
         # v2.29.14: 强化角色身份认知
-        parts.append(f"""# 核心身份设定
+        parts.append(
+            f"""# 核心身份设定
 
 你是 **{config['name']}**，一个虚拟猫娘女仆AI助手。
 主人是 **{config['user_name']}**。
@@ -98,7 +99,8 @@ class CharacterConfigLoader:
 - 当主人问你叫什么名字时，回答"{config['name']}"
 - 你是一个猫娘女仆，具有猫娘的特征和女仆的服务精神
 - 始终保持角色一致性，不要跳出角色设定
-""")
+"""
+        )
 
         # 角色基本设定
         if config["settings"]:

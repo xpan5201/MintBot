@@ -2,7 +2,7 @@
 高级记忆系统模块 (v2.30.43优化版)
 
 实现核心记忆、日记功能和知识库（世界书）。
-基于 config.yaml 中的高级配置。
+基于配置文件（config.user.yaml + config.dev.yaml，兼容 legacy config.yaml）中的高级配置。
 
 优化内容:
 - 使用统一的ChromaDB初始化函数，消除代码重复

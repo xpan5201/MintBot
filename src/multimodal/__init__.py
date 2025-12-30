@@ -33,9 +33,13 @@ __all__ = [
     "is_tts_available",
     # ASR
     "init_asr",
+    "init_asr_streaming",
     "get_asr_model_instance",
     "get_asr_model_lock",
+    "get_asr_streaming_model_instance",
+    "get_asr_streaming_model_lock",
     "is_asr_available",
+    "is_asr_streaming_available",
 ]
 
 
@@ -94,22 +98,34 @@ def __getattr__(name: str) -> Any:  # pragma: no cover - 仅用于 import 懒加
 
     if name in {
         "init_asr",
+        "init_asr_streaming",
         "get_asr_model_instance",
         "get_asr_model_lock",
         "is_asr_available",
+        "get_asr_streaming_model_instance",
+        "get_asr_streaming_model_lock",
+        "is_asr_streaming_available",
     }:
         from .asr_initializer import (
             get_asr_model_instance,
             get_asr_model_lock,
+            get_asr_streaming_model_instance,
+            get_asr_streaming_model_lock,
             init_asr,
+            init_asr_streaming,
             is_asr_available,
+            is_asr_streaming_available,
         )
 
         mapping = {
             "init_asr": init_asr,
+            "init_asr_streaming": init_asr_streaming,
             "get_asr_model_instance": get_asr_model_instance,
             "get_asr_model_lock": get_asr_model_lock,
+            "get_asr_streaming_model_instance": get_asr_streaming_model_instance,
+            "get_asr_streaming_model_lock": get_asr_streaming_model_lock,
             "is_asr_available": is_asr_available,
+            "is_asr_streaming_available": is_asr_streaming_available,
         }
         return mapping[name]
 

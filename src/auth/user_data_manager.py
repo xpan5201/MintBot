@@ -711,12 +711,9 @@ class UserDataManager:
                     # 如果消息ID未见过，添加到结果
                     if msg_id not in seen_ids:
                         seen_ids.add(msg_id)
-                        messages.append({
-                            "role": row[0],
-                            "content": row[1],
-                            "timestamp": row[2],
-                            "id": msg_id
-                        })
+                        messages.append(
+                            {"role": row[0], "content": row[1], "timestamp": row[2], "id": msg_id}
+                        )
 
                         # v2.30.13: 达到limit后停止
                         if len(messages) >= limit:
@@ -1060,7 +1057,9 @@ class UserDataManager:
             # 导出每个联系人的聊天历史
             for contact in data["contacts"]:
                 contact_name = contact["name"]
-                data["chat_history"][contact_name] = self.get_chat_history_all(user_id, contact_name)
+                data["chat_history"][contact_name] = self.get_chat_history_all(
+                    user_id, contact_name
+                )
 
             # 写入文件
             with open(filepath, "w", encoding="utf-8") as f:
@@ -1266,7 +1265,9 @@ class UserDataManager:
             logger.error(f"获取自定义表情包失败: {e}", exc_info=True)
             return []
 
-    def update_custom_sticker_caption(self, user_id: int, sticker_id: str, caption: str | None) -> bool:
+    def update_custom_sticker_caption(
+        self, user_id: int, sticker_id: str, caption: str | None
+    ) -> bool:
         """更新自定义表情包说明标签（通常由视觉模型生成）。"""
         try:
             with self._get_connection() as conn:

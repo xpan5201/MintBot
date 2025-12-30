@@ -25,29 +25,29 @@ logger = get_logger(__name__)
 
 class AudioWaveform(QWidget):
     """音频波形可视化 (v2.38.0)"""
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(120)
-        
+
         # 波形数据
         self.waveform_data: List[float] = [0.0] * 50  # 50个采样点
         self.current_volume = 0.0
         self.is_playing = False
-        
+
         # 更新定时器
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self._update_waveform)
         self.update_timer.setInterval(50)  # 20fps
-        
+
         self.setup_ui()
-    
+
     def setup_ui(self):
         """设置UI"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(8)
-        
+
         # 标题
         title_label = QLabel("🎵 音频波形")
         title_font = QFont()
@@ -55,40 +55,42 @@ class AudioWaveform(QWidget):
         title_font.setBold(True)
         title_label.setFont(title_font)
         layout.addWidget(title_label)
-        
+
         # 分隔线
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setFrameShadow(QFrame.Shadow.Sunken)
         separator.setStyleSheet("background: rgba(255, 255, 255, 0.1);")
         layout.addWidget(separator)
-        
+
         # 波形画布
         self.canvas = QWidget()
         self.canvas.setMinimumHeight(60)
         layout.addWidget(self.canvas)
-        
+
         # 音量标签
         self.volume_label = QLabel("音量: 0%")
         self.volume_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.volume_label.setStyleSheet("color: white; font-size: 9pt;")
         layout.addWidget(self.volume_label)
-        
+
         # 设置面板样式
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             AudioWaveform {
                 background: rgba(0, 0, 0, 0.3);
                 border: 1px solid rgba(255, 255, 255, 0.1);
                 border-radius: 12px;
             }
-        """)
-    
+        """
+        )
+
     def start(self):
         """开始显示波形 (v2.38.0)"""
         self.is_playing = True
         self.update_timer.start()
         logger.debug("波形显示已启动")
-    
+
     def stop(self):
         """停止显示波形 (v2.38.0)"""
         self.is_playing = False
@@ -109,7 +111,7 @@ class AudioWaveform(QWidget):
         """
         try:
             # 解析WAV数据
-            with wave.open(io.BytesIO(audio_data), 'rb') as wav_file:
+            with wave.open(io.BytesIO(audio_data), "rb") as wav_file:
                 # 获取参数
                 n_channels = wav_file.getnchannels()
                 sample_width = wav_file.getsampwidth()
@@ -121,12 +123,13 @@ class AudioWaveform(QWidget):
 
                 # 转换为整数数组
                 import struct
+
                 if sample_width == 2:  # 16-bit
                     # 每个样本2字节
                     sample_count = len(frames) // 2
-                    audio_array = struct.unpack(f'{sample_count}h', frames)
+                    audio_array = struct.unpack(f"{sample_count}h", frames)
                 elif sample_width == 1:  # 8-bit
-                    audio_array = struct.unpack(f'{len(frames)}B', frames)
+                    audio_array = struct.unpack(f"{len(frames)}B", frames)
                 else:
                     logger.warning(f"不支持的样本宽度: {sample_width}")
                     return
@@ -136,7 +139,7 @@ class AudioWaveform(QWidget):
                     mono_array = []
                     for i in range(0, len(audio_array), 2):
                         if i + 1 < len(audio_array):
-                            mono_array.append((audio_array[i] + audio_array[i+1]) / 2)
+                            mono_array.append((audio_array[i] + audio_array[i + 1]) / 2)
                     audio_array = mono_array
 
                 # 计算振幅（归一化到0-1）
@@ -156,21 +159,23 @@ class AudioWaveform(QWidget):
                     self.current_volume = sum(amplitude) / len(amplitude)
                     self.volume_label.setText(f"音量: {int(self.current_volume * 100)}%")
 
-                logger.debug(f"音频数据已更新: {len(audio_array)} samples, {n_channels} channels, {framerate} Hz")
+                logger.debug(
+                    f"音频数据已更新: {len(audio_array)} samples, {n_channels} channels, {framerate} Hz"
+                )
 
         except Exception as e:
             logger.error(f"音频数据处理失败: {e}")
-    
+
     def set_volume(self, volume: float):
         """
         设置音量 (v2.38.0)
-        
+
         Args:
             volume: 音量 (0.0-1.0)
         """
         self.current_volume = max(0.0, min(1.0, volume))
         self.volume_label.setText(f"音量: {int(self.current_volume * 100)}%")
-    
+
     def _update_waveform(self):
         """
         更新波形数据 (v2.39.0)
@@ -183,42 +188,38 @@ class AudioWaveform(QWidget):
 
         # 更新显示
         self.update()
-    
+
     def paintEvent(self, event):
         """绘制波形 (v2.38.0)"""
         super().paintEvent(event)
-        
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
+
         # 获取画布区域
         canvas_rect = self.canvas.geometry()
         x = canvas_rect.x()
         y = canvas_rect.y()
         width = canvas_rect.width()
         height = canvas_rect.height()
-        
+
         # 绘制背景
         painter.fillRect(x, y, width, height, QColor(0, 0, 0, 50))
-        
+
         # 绘制波形
         if len(self.waveform_data) > 0:
             bar_width = width / len(self.waveform_data)
-            
+
             for i, value in enumerate(self.waveform_data):
                 bar_height = value * height * 0.8
                 bar_x = x + i * bar_width
                 bar_y = y + (height - bar_height) / 2
-                
+
                 # 渐变色
                 gradient = QLinearGradient(bar_x, bar_y, bar_x, bar_y + bar_height)
                 gradient.setColorAt(0, QColor(255, 107, 157, 200))
                 gradient.setColorAt(1, QColor(192, 108, 132, 200))
-                
+
                 painter.fillRect(
-                    int(bar_x + 1),
-                    int(bar_y),
-                    int(bar_width - 2),
-                    int(bar_height),
-                    gradient
+                    int(bar_x + 1), int(bar_y), int(bar_width - 2), int(bar_height), gradient
                 )
