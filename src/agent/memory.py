@@ -10,6 +10,7 @@ from collections import deque, OrderedDict
 import math
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock
@@ -25,6 +26,7 @@ logger = get_logger(__name__)
 
 # 轻量消息结构：避免短期记忆依赖 LangChain 消息类型，提升启动速度与兼容性
 _ChatRole = Literal["user", "assistant", "system"]
+_VALID_CHAT_ROLES: set[_ChatRole] = {"user", "assistant", "system"}
 
 
 class _ChatMessage(TypedDict):
@@ -111,10 +113,10 @@ class ShortTermMemory:
         初始化短期记忆
 
         Args:
-            k: 保留的最近消息数量
+            k: 保留的最近交互次数（每次交互为 user+assistant 两条消息）。
         """
         self.k = max(0, int(k))
-        # 每轮对话包含用户和助手消息：默认容量为 k * 2；k<=0 时不限制（向后兼容）。
+        # 每轮对话包含用户和助手消息：默认容量为 2*k；k<=0 时不限制（向后兼容）。
         limit = self.k * 2
         maxlen = limit if limit > 0 else None
         self.messages: Deque[_ChatMessage] = deque(maxlen=maxlen)
@@ -122,7 +124,12 @@ class ShortTermMemory:
         self._version = 0
         self._cached_pairs_version = -1
         self._cached_pairs: Optional[tuple[tuple[_ChatRole, str], ...]] = None
-        logger.info("短期记忆初始化完成，保留最近 %d 条消息", k)
+        if self.k > 0:
+            logger.info(
+                "短期记忆初始化完成，保留最近 %d 轮对话（最多 %d 条消息）", self.k, self.k * 2
+            )
+        else:
+            logger.info("短期记忆初始化完成（不限制消息条数）")
 
     @property
     def version(self) -> int:
@@ -142,7 +149,7 @@ class ShortTermMemory:
             role: 消息角色 (user/assistant/system)
             content: 消息内容
         """
-        if role not in {"user", "assistant", "system"}:
+        if role not in _VALID_CHAT_ROLES:
             logger.warning("未知的消息角色: %s", role)
             return
 
@@ -152,15 +159,35 @@ class ShortTermMemory:
         """批量添加消息（减少锁竞争，并保证同一轮对话的原子性）。"""
         pending: list[_ChatMessage] = []
         for role, content in messages:
-            if role not in {"user", "assistant", "system"}:
+            if role not in _VALID_CHAT_ROLES:
                 logger.warning("未知的消息角色: %s", role)
                 continue
-            pending.append({"role": role, "content": content})
+            if content is None:  # type: ignore[comparison-overlap]
+                content_text = ""
+            else:
+                content_text = str(content)
+            pending.append({"role": role, "content": content_text})
         if not pending:
             return
 
         with self._lock:
             self.messages.extend(pending)
+            self._version += 1
+            self._cached_pairs_version = -1
+            self._cached_pairs = None
+
+    def set_k(self, k: int) -> None:
+        """更新短期记忆容量（按交互次数），并在必要时裁剪旧消息。"""
+        new_k = max(0, int(k))
+        limit = new_k * 2
+        maxlen = limit if limit > 0 else None
+
+        with self._lock:
+            if new_k == self.k and self.messages.maxlen == maxlen:
+                return
+            existing = list(self.messages)
+            self.k = new_k
+            self.messages = deque(existing, maxlen=maxlen)
             self._version += 1
             self._cached_pairs_version = -1
             self._cached_pairs = None
@@ -556,8 +583,10 @@ class LongTermMemory:
                 logger.warning("长期记忆向量库不支持导出（缺少 _collection）")
                 return {"collection_name": self.collection_name, "count": 0, "items": []}
 
-            total = int(collection.count())
-            include = ["documents", "metadatas", "ids"]
+            with self._vectorstore_lock:
+                total = int(collection.count())
+            # Chroma get() always returns ids; don't include "ids" (strict include validation).
+            include = ["documents", "metadatas"]
             if include_embeddings:
                 include.append("embeddings")
 
@@ -566,11 +595,12 @@ class LongTermMemory:
             now_unix = time.time()
 
             for offset in range(0, total, batch_size):
-                chunk = collection.get(
-                    include=include,
-                    limit=batch_size,
-                    offset=offset,
-                )
+                with self._vectorstore_lock:
+                    chunk = collection.get(
+                        include=include,
+                        limit=batch_size,
+                        offset=offset,
+                    )
 
                 ids = chunk.get("ids") or []
                 documents = chunk.get("documents") or []
@@ -601,7 +631,8 @@ class LongTermMemory:
                 collection = getattr(self.vectorstore, "_collection", None)
                 if collection is None:
                     return {"collection_name": self.collection_name, "count": 0, "items": []}
-                chunk = collection.get(include=["documents", "metadatas", "ids"])
+                with self._vectorstore_lock:
+                    chunk = collection.get(include=["documents", "metadatas", "ids"])
                 ids = chunk.get("ids") or []
                 documents = chunk.get("documents") or []
                 metadatas = chunk.get("metadatas") or []
@@ -775,18 +806,22 @@ class LongTermMemory:
             cutoff_unix = now_unix - float(max_age_days) * 86400.0
 
         def _iter_id_meta() -> Iterable[tuple[str, Dict[str, Any]]]:
-            include = ["metadatas", "ids"]
+            # Chroma get() always returns ids; don't include "ids" (strict include validation).
+            include = ["metadatas"]
             try:
-                total = int(collection.count())
+                with self._vectorstore_lock:
+                    total = int(collection.count())
                 step = max(1, int(batch_size))
                 for offset in range(0, total, step):
-                    chunk = collection.get(include=include, limit=step, offset=offset)
+                    with self._vectorstore_lock:
+                        chunk = collection.get(include=include, limit=step, offset=offset)
                     ids = chunk.get("ids") or []
                     metadatas = chunk.get("metadatas") or []
                     for doc_id, meta in zip(ids, metadatas):
                         yield str(doc_id), dict(meta or {})
             except TypeError:
-                chunk = collection.get(include=include)
+                with self._vectorstore_lock:
+                    chunk = collection.get(include=include)
                 ids = chunk.get("ids") or []
                 metadatas = chunk.get("metadatas") or []
                 for doc_id, meta in zip(ids, metadatas):
@@ -879,6 +914,119 @@ class LongTermMemory:
             "would_delete": len(ids_to_delete),
             "would_delete_ids": sorted(ids_to_delete)[:200],
         }
+
+    def get_memories_time_range(
+        self,
+        *,
+        start_unix: float,
+        end_unix: float,
+        limit: int = 20,
+        batch_size: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """按时间范围获取长期记忆（不依赖语义相似度，适用于“今天/刚才/1小时前”等时间类查询）。"""
+        if self.vectorstore is None:
+            return []
+
+        try:
+            start_unix_f = float(start_unix)
+            end_unix_f = float(end_unix)
+        except Exception:
+            return []
+
+        if start_unix_f > end_unix_f:
+            start_unix_f, end_unix_f = end_unix_f, start_unix_f
+
+        limit = max(1, int(limit))
+        batch_size = max(1, int(batch_size))
+
+        collection = getattr(self.vectorstore, "_collection", None)
+        if collection is None or not hasattr(collection, "get"):
+            return []
+
+        # Chroma get() always returns ids; don't include "ids" (strict versions validate include).
+        include = ["documents", "metadatas"]
+
+        def _iter_chunk(chunk: Dict[str, Any]) -> Iterable[tuple[str, Dict[str, Any]]]:
+            documents = chunk.get("documents") or []
+            metadatas = chunk.get("metadatas") or []
+            for content, metadata in zip(documents, metadatas):
+                if not content:
+                    continue
+                yield str(content), dict(metadata or {})
+
+        now_unix = time.time()
+        heap: list[tuple[float, str, Dict[str, Any]]] = []
+
+        def _maybe_add(content: str, meta: Dict[str, Any]) -> None:
+            if not content:
+                return
+            meta.setdefault("content_hash", self._compute_content_hash(content))
+            self._ensure_timestamp_unix(meta, fallback_unix=now_unix)
+            ts_unix_raw = meta.get("timestamp_unix")
+            try:
+                ts_unix = float(ts_unix_raw)
+            except (TypeError, ValueError):
+                return
+            if not (start_unix_f <= ts_unix <= end_unix_f):
+                return
+
+            import heapq
+
+            if len(heap) < limit:
+                heapq.heappush(heap, (ts_unix, content, meta))
+                return
+            if ts_unix > heap[0][0]:
+                heapq.heapreplace(heap, (ts_unix, content, meta))
+
+        chunk: Optional[Dict[str, Any]] = None
+        # Prefer server-side filtering when available.
+        # Fallback scan handles stores/records missing numeric timestamp_unix.
+        try:
+            where = {"timestamp_unix": {"$gte": start_unix_f, "$lte": end_unix_f}}
+            with self._vectorstore_lock:
+                chunk = collection.get(where=where, include=include)
+        except Exception:
+            chunk = None
+
+        try:
+            has_any = False
+            if chunk is not None:
+                for content, meta in _iter_chunk(chunk):
+                    has_any = True
+                    _maybe_add(content, meta)
+
+            # Fallback scan: handle stores that don't support where filtering,
+            # or records missing timestamp_unix.
+            if not has_any:
+                include_all = include
+                if hasattr(collection, "count"):
+                    try:
+                        with self._vectorstore_lock:
+                            total = int(collection.count())
+                        for offset in range(0, total, batch_size):
+                            with self._vectorstore_lock:
+                                part = collection.get(
+                                    include=include_all,
+                                    limit=batch_size,
+                                    offset=offset,
+                                )
+                            for content, meta in _iter_chunk(part):
+                                _maybe_add(content, meta)
+                    except TypeError:
+                        with self._vectorstore_lock:
+                            part = collection.get(include=include_all)
+                        for content, meta in _iter_chunk(part):
+                            _maybe_add(content, meta)
+                else:
+                    with self._vectorstore_lock:
+                        part = collection.get(include=include_all)
+                    for content, meta in _iter_chunk(part):
+                        _maybe_add(content, meta)
+        except Exception:
+            return []
+
+        heap.sort(key=lambda item: item[0], reverse=True)
+        return [{"content": content, "metadata": meta} for _, content, meta in heap]
 
     def search_memories(
         self,
@@ -1013,6 +1161,8 @@ class LongTermMemory:
                                 cached_score = float(cached[0])
                                 character_consistency = float(min(max(cached_score, 0.0), 1.0))
                                 metadata["character_consistency"] = character_consistency
+                                # Cache hit: keep `existing` in sync.
+                                existing = character_consistency
                                 if cache_version:
                                     metadata["character_consistency_version"] = cache_version
                                 self._character_score_cache.move_to_end(content_hash)
@@ -1042,7 +1192,8 @@ class LongTermMemory:
                             logger.debug("角色一致性评分失败: %s", e)
                             character_consistency = 0.5
                     else:
-                        character_consistency = float(existing)
+                        if isinstance(existing, (int, float)):
+                            character_consistency = float(existing)
                     character_consistency = float(min(max(character_consistency, 0.0), 1.0))
                     use_character_weight = True
 
@@ -1112,7 +1263,8 @@ class LongTermMemory:
 
         try:
             collection = self.vectorstore._collection
-            return collection.count()
+            with self._vectorstore_lock:
+                return collection.count()
         except (AttributeError, RuntimeError) as e:
             logger.debug("无法获取记忆数量: %s", e)
             return 0
@@ -1471,13 +1623,15 @@ class MemoryManager:
 
         k = k or settings.long_term_memory_top_k
 
+        time_range = self._parse_time_query_unix_range(query)
+
         # v3.3: 智能缓存键（考虑语义相似性）
         # 将长期记忆写入版本纳入 key，避免写入后命中旧缓存导致“找不到新记忆”
         lt_version = getattr(getattr(self, "long_term", None), "write_version", 0)
         cache_key = f"{query.strip().lower()[:100]}|v{lt_version}"  # 标准化查询
 
         # v3.2.1: 优化性能 - 先检查缓存
-        if self.optimizer and self.optimizer.cache:
+        if time_range is None and self.optimizer and self.optimizer.cache:
             cached_result = self.optimizer.cache.get_query_result(cache_key)
             if cached_result is not None:
                 self.optimizer.stats["cache_hits"] += 1
@@ -1485,8 +1639,19 @@ class MemoryManager:
                 return [mem["content"] for mem in cached_result[:k]]
             self.optimizer.stats["cache_misses"] += 1
 
-        # v3.3: 执行增强的向量搜索
-        memories = self.long_term.search_memories(query, k=k)
+        # v3.3: 执行增强检索
+        if time_range is not None:
+            start_unix, end_unix = time_range
+            time_k = max(int(k), 8)
+            memories = self.long_term.get_memories_time_range(
+                start_unix=float(start_unix),
+                end_unix=float(end_unix),
+                limit=time_k,
+            )
+            if not memories:
+                memories = self.long_term.search_memories(query, k=k)
+        else:
+            memories = self.long_term.search_memories(query, k=k)
 
         # v3.3: 记忆去重（基于内容相似度）
         if memories and len(memories) > 1:
@@ -1552,7 +1717,7 @@ class MemoryManager:
 
         # v3.2.1: 缓存结果
         # 允许缓存空结果：cache_key 已包含 long_term.write_version，因此写入后会自动失效
-        if self.optimizer and self.optimizer.cache is not None:
+        if time_range is None and self.optimizer and self.optimizer.cache is not None:
             memory_dicts = [
                 {
                     "content": content,
@@ -1564,6 +1729,82 @@ class MemoryManager:
             self.optimizer.cache.set_query_result(cache_key, memory_dicts)
 
         return enhanced_memories
+
+    @staticmethod
+    def _parse_time_query_unix_range(query: str) -> Optional[tuple[float, float]]:
+        """将“今天/昨天/刚才/1小时前”等时间表达解析成 unix 时间范围（闭区间）。"""
+        text = (query or "").strip()
+        if not text:
+            return None
+
+        now_dt = datetime.now()
+        now_unix = time.time()
+
+        chinese_digit: Dict[str, int] = {
+            "零": 0,
+            "〇": 0,
+            "一": 1,
+            "二": 2,
+            "两": 2,
+            "三": 3,
+            "四": 4,
+            "五": 5,
+            "六": 6,
+            "七": 7,
+            "八": 8,
+            "九": 9,
+        }
+
+        def parse_int(value: str) -> Optional[int]:
+            v = (value or "").strip()
+            if not v:
+                return None
+            if v.isdigit():
+                return int(v)
+            if v in chinese_digit:
+                return chinese_digit[v]
+            if v == "十":
+                return 10
+            if v.startswith("十"):
+                return 10 + chinese_digit.get(v[1:], 0)
+            if "十" in v:
+                left, right = v.split("十", 1)
+                tens = chinese_digit.get(left)
+                if tens is None:
+                    return None
+                ones = chinese_digit.get(right, 0) if right else 0
+                return tens * 10 + ones
+            return None
+
+        if any(token in text for token in ("刚才", "刚刚", "方才")):
+            return now_unix - 3600.0, now_unix
+
+        match = re.search(r"([0-9]+|[一二两三四五六七八九十]+)\s*(?:个)?\s*小时(?:前|之前)", text)
+        if match:
+            hours = parse_int(match.group(1))
+            if hours is not None and hours > 0:
+                return now_unix - float(hours) * 3600.0, now_unix
+
+        match = re.search(r"([0-9]+|[一二两三四五六七八九十]+)\s*(?:个)?\s*分钟(?:前|之前)", text)
+        if match:
+            minutes = parse_int(match.group(1))
+            if minutes is not None and minutes > 0:
+                return now_unix - float(minutes) * 60.0, now_unix
+
+        today_start = datetime(now_dt.year, now_dt.month, now_dt.day).timestamp()
+        if any(token in text for token in ("今天", "今日")):
+            return float(today_start), now_unix
+
+        if any(token in text for token in ("昨天", "昨日")):
+            start = datetime(now_dt.year, now_dt.month, now_dt.day).timestamp() - 86400.0
+            return float(start), float(today_start)
+
+        if "前天" in text:
+            start = datetime(now_dt.year, now_dt.month, now_dt.day).timestamp() - 2 * 86400.0
+            end = datetime(now_dt.year, now_dt.month, now_dt.day).timestamp() - 86400.0
+            return float(start), float(end)
+
+        return None
 
     def _get_time_description(self, mem_time: datetime) -> str:
         """
@@ -1727,9 +1968,7 @@ class MemoryManager:
 
         if self.long_term and self.long_term.vectorstore:
             try:
-                # 尝试获取长期记忆数量
-                collection = self.long_term.vectorstore._collection
-                stats["long_term_count"] = collection.count()
+                stats["long_term_count"] = self.long_term.get_memory_count()
 
                 # v3.3.2: 批量缓冲区状态
                 stats["batch_buffer_size"] = len(self.long_term._batch_buffer)

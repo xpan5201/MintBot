@@ -177,3 +177,18 @@ class ChatWindowOptimizer:
         logger.info("已添加性能监控")
 
         logger.info("聊天窗口优化完成")
+
+    def close(self) -> None:
+        """释放优化器资源（幂等）。"""
+        try:
+            batch = getattr(self, "batch_renderer", None)
+            if batch is not None and hasattr(batch, "close"):
+                batch.close()
+        except Exception:
+            pass
+
+        try:
+            self.scroll_pending = False
+            self._force_scroll_next = False
+        except Exception:
+            pass

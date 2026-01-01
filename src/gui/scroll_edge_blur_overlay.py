@@ -144,7 +144,9 @@ class ScrollEdgeBlurOverlay(QWidget):
 
         try:
             # If the content changes size, the viewport needs new samples.
-            self._scroll_area.widgetResizableChanged.connect(lambda _=None: self.schedule_update(immediate=True))  # type: ignore[attr-defined]
+            self._scroll_area.widgetResizableChanged.connect(  # type: ignore[attr-defined]
+                lambda _=None: self.schedule_update(immediate=True)
+            )
         except Exception:
             pass
 

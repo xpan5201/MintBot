@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QLineEdit,
     QFileDialog,
+    QMenu,
 )
 from PyQt6.QtCore import (
     Qt,
@@ -1707,7 +1708,14 @@ class EmojiPicker(QWidget):
                 parent,
                 "选择表情包图片",
                 "",
-                "图片文件 (*.gif *.png *.jpg *.jpeg *.webp);;GIF动图 (*.gif);;PNG图片 (*.png);;JPG图片 (*.jpg *.jpeg);;WEBP图片 (*.webp);;所有文件 (*.*)",
+                (
+                    "图片文件 (*.gif *.png *.jpg *.jpeg *.webp);;"
+                    "GIF动图 (*.gif);;"
+                    "PNG图片 (*.png);;"
+                    "JPG图片 (*.jpg *.jpeg);;"
+                    "WEBP图片 (*.webp);;"
+                    "所有文件 (*.*)"
+                ),
             )
 
             logger.info(f"选择的文件: {file_path}")

@@ -134,15 +134,27 @@ def _get_openai_embedding_function(model: str, api_base: str, api_key: str) -> "
             "OpenAIEmbeddings 依赖未就绪，请安装 `langchain-openai`（或升级/安装 langchain）"
         ) from (_OPENAI_EMBEDDINGS_IMPORT_ERROR or _OPENAI_EMBEDDINGS_IMPORT_ERROR_FALLBACK)
 
+    from src.llm.factory import _normalize_openai_base_url
+
     embeddings_kwargs = {
         "model": model,
         "api_key": api_key,
     }
 
-    # 如果不是 OpenAI 官方 API，设置 base_url；空字符串不应传入 base_url
-    if api_base and "openai.com" not in api_base.lower():
-        embeddings_kwargs["base_url"] = api_base
-    return OpenAIEmbeddings(**embeddings_kwargs)
+    normalized_base_url = _normalize_openai_base_url(api_base)
+    if normalized_base_url:
+        embeddings_kwargs["base_url"] = normalized_base_url
+
+    try:
+        return OpenAIEmbeddings(**embeddings_kwargs)
+    except TypeError:
+        if "base_url" in embeddings_kwargs:
+            fallback_kwargs = dict(embeddings_kwargs)
+            base = fallback_kwargs.pop("base_url", None)
+            if base:
+                fallback_kwargs["openai_api_base"] = base
+            return OpenAIEmbeddings(**fallback_kwargs)
+        raise
 
 
 def create_chroma_vectorstore(

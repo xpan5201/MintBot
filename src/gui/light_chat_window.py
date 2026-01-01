@@ -145,33 +145,36 @@ GUI_ANIMATIONS_ENABLED = os.getenv(
     "off",
 }
 
-from .light_frameless_window import LightFramelessWindow
-from .light_sidebar import LightIconSidebar
-from .light_message_bubble import (
+from .light_frameless_window import LightFramelessWindow  # noqa: E402
+from .light_sidebar import LightIconSidebar  # noqa: E402
+from .light_message_bubble import (  # noqa: E402
     LightMessageBubble,
     LightStreamingMessageBubble,
     LightTypingIndicator,
     LightImageMessageBubble,
 )
-from .material_design_enhanced import (
+from .material_design_enhanced import (  # noqa: E402
     MD3_ENHANCED_COLORS,
     MD3_ENHANCED_RADIUS,
     get_typography_css,
 )
-from .qss_utils import qss_rgba
-from .enhanced_rich_input import EnhancedInputWidget, ChatComposerIconButton
-from .notifications import show_toast, Toast
-from .contacts_panel import ContactsPanel
-from src.utils.logger import get_logger
-from src.auth.user_session import user_session
-from src.auth.session_store import delete_session_token_file, write_session_token_file
-from src.utils.gui_optimizer import throttle
-from .chat_window_optimizer import ChatWindowOptimizer
-from .workers.chat_history_loader import ChatHistoryLoaderThread, ChatHistoryLoadRequest
-from .workers.agent_chat import AgentInitThread, ChatThread
-from .workers.tts_synthesis import TTSSynthesisTask
-from .workers.vision_analysis import VisionAnalyzeTask
-from .workers.vision_batch import BatchImageRecognitionThread
+from .qss_utils import qss_rgba  # noqa: E402
+from .enhanced_rich_input import EnhancedInputWidget, ChatComposerIconButton  # noqa: E402
+from .notifications import show_toast, Toast  # noqa: E402
+from .contacts_panel import ContactsPanel  # noqa: E402
+from src.utils.logger import get_logger  # noqa: E402
+from src.auth.user_session import user_session  # noqa: E402
+from src.auth.session_store import delete_session_token_file, write_session_token_file  # noqa: E402
+from src.utils.gui_optimizer import throttle  # noqa: E402
+from .chat_window_optimizer import ChatWindowOptimizer  # noqa: E402
+from .workers.chat_history_loader import (  # noqa: E402
+    ChatHistoryLoaderThread,
+    ChatHistoryLoadRequest,
+)
+from .workers.agent_chat import AgentInitThread, ChatThread, invalidate_agent_cache  # noqa: E402
+from .workers.tts_synthesis import TTSSynthesisTask  # noqa: E402
+from .workers.vision_analysis import VisionAnalyzeTask  # noqa: E402
+from .workers.vision_batch import BatchImageRecognitionThread  # noqa: E402
 
 logger = get_logger(__name__)
 
@@ -792,7 +795,8 @@ class CharacterStatusIsland(QWidget):
             pass
 
         try:
-            # Ensure bar labels are computed using the final layout width (fonts/HiDPI can change it).
+            # Ensure bar labels use the final layout width.
+            # (Fonts/HiDPI can change it.)
             QTimer.singleShot(0, lambda: self._update_bar_formats(force=True))
         except Exception:
             pass
@@ -825,7 +829,8 @@ class CharacterStatusIsland(QWidget):
             except Exception:
                 pass
             try:
-                # Delay showing details until the island has grown a bit; avoids layout jitter at start.
+                # Delay showing details until the island has grown a bit.
+                # (Avoids layout jitter at start.)
                 self.details.setMaximumHeight(0)
                 self.details.setVisible(False)
             except Exception:
@@ -1369,12 +1374,15 @@ class LightChatWindow(LightFramelessWindow):
                         fallback.setMaximumWidth(560)
                     except Exception:
                         pass
+                    c = MD3_ENHANCED_COLORS
+                    r = MD3_ENHANCED_RADIUS
+                    fallback_bg = c.get("surface_container_low", "#FFF7FB")
                     fallback.setStyleSheet(
                         f"""
                         QWidget#live2dFallbackPanel {{
-                            background: {MD3_ENHANCED_COLORS.get('surface_container_low', '#FFF7FB')};
-                            border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
-                            border-radius: {MD3_ENHANCED_RADIUS['extra_large']};
+                            background: {fallback_bg};
+                            border: 1px solid {c['outline_variant']};
+                            border-radius: {r['extra_large']};
                         }}
                         """
                     )
@@ -1565,6 +1573,18 @@ class LightChatWindow(LightFramelessWindow):
 
     def _init_agent_async(self) -> None:
         """后台初始化 Agent，避免启动卡顿；初始化完成后再允许发送。"""
+        current_agent = getattr(self, "agent", None)
+        expected_user_id = getattr(self, "_agent_user_id", None)
+        try:
+            if (
+                current_agent is not None
+                and getattr(current_agent, "user_id", None) == expected_user_id
+                and not getattr(self, "_agent_init_failed", False)
+            ):
+                return
+        except Exception:
+            pass
+
         try:
             thread = getattr(self, "_agent_init_thread", None)
             if thread is not None and thread.isRunning():
@@ -2867,8 +2887,8 @@ class LightChatWindow(LightFramelessWindow):
             now_ms = time.monotonic() * 1000.0
             last_ms = float(getattr(self, "_live2d_last_state_ms", 0.0) or 0.0)
             last_event = str(getattr(self, "_live2d_last_state_event", "") or "")
-            # Only debounce the *same* event; allow different events to override quickly so we don't get
-            # "stuck" in an older expression during streaming.
+            # Only debounce the *same* event.
+            # Different events can override quickly (avoid "stuck" expressions during streaming).
             if (
                 debounce_ms
                 and last_event
@@ -4112,13 +4132,17 @@ class LightChatWindow(LightFramelessWindow):
             "mode": results[0].get("mode", "auto"),
             "description": "\n\n".join(
                 [
-                    f"图片{i+1}: {r.get('description', '')}"
+                    f"图片{i + 1}: {r.get('description', '')}"
                     for i, r in enumerate(results)
                     if r.get("description")
                 ]
             ),
             "text": "\n\n".join(
-                [f"图片{i+1}: {r.get('text', '')}" for i, r in enumerate(results) if r.get("text")]
+                [
+                    f"图片{i + 1}: {r.get('text', '')}"
+                    for i, r in enumerate(results)
+                    if r.get("text")
+                ]
             ),
             "success": all(r.get("success", False) for r in results),
             "image_count": len(results),
@@ -5588,8 +5612,15 @@ class LightChatWindow(LightFramelessWindow):
 
         try:
             old_agent = getattr(self, "agent", None)
-            if old_agent is not None and hasattr(old_agent, "close"):
-                old_agent.close()
+            if old_agent is not None:
+                try:
+                    invalidate_agent_cache(
+                        getattr(old_agent, "user_id", getattr(self, "_agent_user_id", None))
+                    )
+                except Exception:
+                    pass
+                if hasattr(old_agent, "close"):
+                    old_agent.close()
         except Exception:
             pass
 
@@ -6504,10 +6535,28 @@ class LightChatWindow(LightFramelessWindow):
             if hasattr(self, "_message_cache"):
                 self._message_cache.clear()
 
+            # 6.5 清理 GUI 性能优化器（批量滚动/计时器等）
+            try:
+                po = getattr(self, "performance_optimizer", None)
+                if po is not None and hasattr(po, "close"):
+                    po.close()
+            except Exception:
+                pass
+            try:
+                self.performance_optimizer = None
+            except Exception:
+                pass
+
             # 7. 清理 Agent 资源
             if self.agent is not None:
                 logger.info("清理 Agent 资源...")
                 try:
+                    try:
+                        invalidate_agent_cache(
+                            getattr(self.agent, "user_id", getattr(self, "_agent_user_id", None))
+                        )
+                    except Exception:
+                        pass
                     if hasattr(self.agent, "close"):
                         self.agent.close()
                 except Exception as e:

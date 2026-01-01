@@ -5,7 +5,6 @@
 """
 
 import pytest
-from pathlib import Path
 from src.multimodal.vision import VisionProcessor
 from src.multimodal.audio import AudioProcessor
 

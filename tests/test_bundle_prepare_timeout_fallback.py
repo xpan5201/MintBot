@@ -31,19 +31,7 @@ async def test_build_agent_bundle_falls_back_when_prepare_times_out(monkeypatch)
         await never.wait()
         return []  # pragma: no cover
 
-    async def _noop_proactive(*_args, **_kwargs):  # noqa: ANN001
-        return None
-
     agent._prepare_messages_async = _hang_prepare  # type: ignore[assignment]
-    agent._maybe_inject_proactive_knowledge = _noop_proactive  # type: ignore[assignment]
-
-    class _DummyLoreBook:
-        pusher = None
-
-        def get_last_search_hit(self):  # noqa: ANN001
-            return None
-
-    agent.lore_book = _DummyLoreBook()  # type: ignore[assignment]
 
     started = time.monotonic()
     bundle = await agent._build_agent_bundle_async("hi")

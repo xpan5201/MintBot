@@ -148,7 +148,7 @@ class Snackbar(QWidget):
         self.setMaximumWidth(600)
 
     def paintEvent(self, event):  # noqa: N802 - Qt API naming
-        # Draw background/border ourselves: top-level translucent windows may not paint QSS reliably on some platforms.
+        # Draw background/border ourselves: translucent windows may not paint QSS reliably.
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)

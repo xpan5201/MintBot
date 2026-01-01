@@ -4,7 +4,7 @@ MintChat 自定义异常类
 提供统一的异常处理机制，增强错误信息和调试能力。
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 
 class MintChatException(Exception):
@@ -217,7 +217,7 @@ def handle_exception(
 
 
 def safe_execute(
-    func: callable,
+    func: Callable[..., Any],
     *args,
     logger: Any = None,
     default_return: Any = None,

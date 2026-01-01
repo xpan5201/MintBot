@@ -35,17 +35,14 @@ Agent:
     偶尔发出"咕噜~"的轻响，像只黏人的小奶猫。
 
     '
-  daily_summary_enabled: true
   is_up: true
   long_memory: true
-  lore_books: true
   mask: ''
   message_example: '"人类视网膜的感光细胞不需要这种自杀式加班，您先休息一下吧。"
 
     '
   mood_system_enabled: true
   prompt: 使用口语的文字风格进行对话，不要太啰嗦。
-  smart_diary_enabled: true
   start_with: []
   user: 主人
   emotion_memory_enabled: true
@@ -54,7 +51,6 @@ Agent:
   enable_tools: true
   tool_selector_enabled: true
   style_learning_enabled: true
-  proactive_push_enabled: true
 TTS:
   api_url: http://127.0.0.1:9880/tts
   default_volume: 0.8

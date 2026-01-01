@@ -8,9 +8,9 @@ import pytest
 pytest.importorskip("langchain")
 pytest.importorskip("langchain_core")
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage  # noqa: E402
 
-from src.agent.tool_selector_middleware import MintChatToolSelectorMiddleware
+from src.agent.tool_selector_middleware import MintChatToolSelectorMiddleware  # noqa: E402
 
 
 class _DummyTool:

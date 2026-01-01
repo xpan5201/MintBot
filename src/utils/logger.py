@@ -58,9 +58,6 @@ DEFAULT_QUIET_LIBS = [
     "chromadb",
     "posthog",
     "langchain",
-    "src.agent.hybrid_retriever",
-    "src.agent.knowledge_quality",
-    "src.agent.knowledge_graph",
     "src.agent.performance_optimizer",
 ]
 DEFAULT_QUIET_LEVEL = os.getenv("MINTCHAT_LOG_QUIET_LEVEL", "WARNING")
@@ -106,7 +103,8 @@ def _env_flag(name: str, default: bool) -> bool:
 
 def _configure_warning_filters() -> None:
     """Suppress known noisy warnings without hiding actionable errors."""
-    # pydub: ffmpeg/avconv missing warning is expected in our default setup; torchaudio will be used.
+    # pydub: ffmpeg/avconv missing warning is expected in our default setup.
+    # torchaudio will be used.
     warnings.filterwarnings(
         "ignore",
         message=r".*Couldn't find ffmpeg or avconv.*",
@@ -583,12 +581,16 @@ def _install_stdio_drop_filter(drop_keywords: List[str]) -> None:
         return
     try:
         if not isinstance(sys.stdout, _FilteringTextStream):
-            sys.stdout = _FilteringTextStream(_ORIG_STDOUT, drop_keywords)  # type: ignore[assignment]
+            sys.stdout = _FilteringTextStream(
+                _ORIG_STDOUT, drop_keywords
+            )  # type: ignore[assignment]
     except Exception:
         pass
     try:
         if not isinstance(sys.stderr, _FilteringTextStream):
-            sys.stderr = _FilteringTextStream(_ORIG_STDERR, drop_keywords)  # type: ignore[assignment]
+            sys.stderr = _FilteringTextStream(
+                _ORIG_STDERR, drop_keywords
+            )  # type: ignore[assignment]
     except Exception:
         pass
 
@@ -683,7 +685,10 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
     _ensure_context_filter()
     logging.basicConfig(
         level=numeric_level,
-        format="%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s %(context_str)s",
+        format=(
+            "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | "
+            "%(message)s %(context_str)s"
+        ),
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[logging.StreamHandler(_ORIG_STDERR)],
         force=True,
@@ -698,7 +703,10 @@ def setup_logger(config: Optional[LoggerConfig] = None, **overrides: Any) -> _Le
     file_handler.setLevel(numeric_level)
     file_handler.setFormatter(
         logging.Formatter(
-            "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s %(context_str)s",
+            (
+                "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | "
+                "%(message)s %(context_str)s"
+            ),
             datefmt="%Y-%m-%d %H:%M:%S",
         )
     )

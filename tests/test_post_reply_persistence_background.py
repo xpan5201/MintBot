@@ -1,97 +1,65 @@
 from __future__ import annotations
 
+from collections import deque
+from concurrent.futures import Future
+from threading import Lock
+
 from src.agent.core import MintChatAgent
-from src.config.settings import settings
 
 
-def test_save_interaction_to_memory_schedules_background_tasks(monkeypatch) -> None:
-    monkeypatch.setattr(settings.agent, "memory_fast_mode", False, raising=False)
-    monkeypatch.setattr(settings.agent, "lore_books", True, raising=False)
-    monkeypatch.setattr(settings.agent, "auto_learn_from_conversation", True, raising=False)
-
+def test_save_stream_interaction_defers_long_term_write() -> None:
     agent = MintChatAgent.__new__(MintChatAgent)
 
-    calls: list[tuple[str, object]] = []
+    short_term_calls: list[dict] = []
+    long_term_calls: list[dict] = []
+
+    class DummyLongTerm:
+        def __init__(self) -> None:
+            self.flush_calls = 0
+
+        def flush_batch(self) -> int:
+            self.flush_calls += 1
+            return 0
 
     class DummyMemory:
+        def __init__(self) -> None:
+            self.long_term = DummyLongTerm()
+
         def add_interaction(self, **kwargs: object) -> None:
-            calls.append(("memory.add_interaction", kwargs))
+            short_term_calls.append(dict(kwargs))
 
-    class DummyDiary:
-        vectorstore = object()
-        daily_summary_enabled = True
-
-        def add_diary_entry(self, _text: str) -> None:  # pragma: no cover
-            raise AssertionError("diary entry should be scheduled in background")
-
-        def generate_daily_summary(self) -> None:  # pragma: no cover
-            raise AssertionError("daily summary should be scheduled in background")
-
-    class DummyLore:
-        def learn_from_conversation(
-            self, *_args: object, **_kwargs: object
-        ) -> None:  # pragma: no cover
-            raise AssertionError("lore learning should be scheduled in background")
+        def add_interaction_long_term(self, **kwargs: object) -> bool:
+            long_term_calls.append(dict(kwargs))
+            return True
 
     submitted: list[str] = []
+    scheduled: list[tuple[callable, Future]] = []
 
     def submit_task(func, *, label: str):
         submitted.append(label)
-        # Do not run the task here; we only verify it is not executed synchronously.
-        return None
+        fut: Future = Future()
+        scheduled.append((func, fut))
+        return fut
 
-    agent.memory = DummyMemory()  # type: ignore[assignment]
-    agent.diary_memory = DummyDiary()  # type: ignore[assignment]
-    agent.lore_book = DummyLore()  # type: ignore[assignment]
+    memory = DummyMemory()
+    agent.memory = memory  # type: ignore[assignment]
     agent._submit_background_task = submit_task  # type: ignore[assignment]
+    agent._long_term_write_lock = Lock()  # type: ignore[assignment]
+    agent._pending_long_term_write = None  # type: ignore[assignment]
+    agent._long_term_write_buffer = deque()  # type: ignore[assignment]
+    agent._long_term_write_buffer_max = 256  # type: ignore[assignment]
 
-    agent._save_interaction_to_memory("hi", "ok", save_to_long_term=False)
+    agent._save_stream_interaction("u1", "a1", save_to_long_term=True)
+    agent._save_stream_interaction("u2", "a2", save_to_long_term=True)
 
-    assert [name for name, _ in calls] == ["memory.add_interaction"]
-    assert submitted == ["post-persist"]
+    assert len(short_term_calls) == 2
+    assert all(call.get("save_to_long_term") is False for call in short_term_calls)
+    assert submitted == ["long-term-write"]
+    assert len(scheduled) == 1
 
+    func, fut = scheduled[0]
+    func()
+    fut.set_result(None)
 
-def test_save_stream_interaction_schedules_background_tasks(monkeypatch) -> None:
-    monkeypatch.setattr(settings.agent, "memory_fast_mode", False, raising=False)
-    monkeypatch.setattr(settings.agent, "lore_books", True, raising=False)
-    monkeypatch.setattr(settings.agent, "auto_learn_from_conversation", True, raising=False)
-
-    agent = MintChatAgent.__new__(MintChatAgent)
-
-    calls: list[tuple[str, object]] = []
-
-    class DummyMemory:
-        def add_interaction(self, **kwargs: object) -> None:
-            calls.append(("memory.add_interaction", kwargs))
-
-    class DummyDiary:
-        vectorstore = object()
-        daily_summary_enabled = True
-
-        def add_diary_entry(self, _text: str) -> None:  # pragma: no cover
-            raise AssertionError("diary entry should be scheduled in background")
-
-        def generate_daily_summary(self) -> None:  # pragma: no cover
-            raise AssertionError("daily summary should be scheduled in background")
-
-    class DummyLore:
-        def learn_from_conversation(
-            self, *_args: object, **_kwargs: object
-        ) -> None:  # pragma: no cover
-            raise AssertionError("lore learning should be scheduled in background")
-
-    submitted: list[str] = []
-
-    def submit_task(func, *, label: str):
-        submitted.append(label)
-        return None
-
-    agent.memory = DummyMemory()  # type: ignore[assignment]
-    agent.diary_memory = DummyDiary()  # type: ignore[assignment]
-    agent.lore_book = DummyLore()  # type: ignore[assignment]
-    agent._submit_background_task = submit_task  # type: ignore[assignment]
-
-    agent._save_stream_interaction("hi", "ok", save_to_long_term=False)
-
-    assert [name for name, _ in calls] == ["memory.add_interaction"]
-    assert submitted == ["post-persist"]
+    assert [call.get("user_message") for call in long_term_calls] == ["u1", "u2"]
+    assert memory.long_term.flush_calls == 1

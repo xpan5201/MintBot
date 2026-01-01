@@ -159,7 +159,7 @@ class AudioExporter:
                     progress_callback(i + 1, total)
 
             except Exception as e:
-                logger.error(f"导出第{i+1}个音频失败: {e}")
+                logger.error(f"导出第{i + 1}个音频失败: {e}")
                 continue
 
         logger.info(f"批量导出完成: {len(exported_paths)}/{total}")

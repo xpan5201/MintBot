@@ -2,7 +2,7 @@
 MintChat 记忆检索优化模块
 
 v2.30.27 新增：并发记忆检索，提升性能到毫秒级
-- 并发检索多个记忆源（长期记忆、核心记忆、日记、知识库）
+- 并发检索多个记忆源（长期记忆、核心记忆）
 - 智能缓存和预热
 - 性能监控和优化
 
@@ -16,7 +16,7 @@ import asyncio
 import hashlib
 import time
 from dataclasses import dataclass
-from typing import List, Dict, Any, Awaitable
+from typing import Any, Awaitable, Dict, List, Optional, TypedDict
 from concurrent.futures import ThreadPoolExecutor
 
 from src.utils.logger import get_logger
@@ -24,6 +24,14 @@ from src.utils.cache_manager import cache_manager
 
 
 logger = get_logger(__name__)
+
+
+class _RetrieverStats(TypedDict):
+    total_retrievals: int
+    avg_time_ms: float
+    cache_hits: int
+    last_latency_ms: float
+    last_source_latency_ms: Dict[str, float]
 
 
 @dataclass(slots=True)
@@ -77,25 +85,18 @@ class ConcurrentMemoryRetriever:
     并发记忆检索器
 
     v2.30.27 性能优化: 并发检索多个记忆源
-    v2.48.5 性能优化: 使用类级常量优化时间关键词检测
+    v2.48.5 性能优化: 熔断与动态超时
     """
-
-    # v2.48.5: 类级常量 - 时间关键词（避免每次调用都创建列表）
-    TIME_KEYWORDS = ("昨天", "前天", "天前", "上周", "周前", "上个月", "月前")
 
     SOURCE_LABELS = {
         "long_term": "长期记忆",
         "core": "核心记忆",
-        "diary": "日记",
-        "lore": "知识库",
     }
 
     def __init__(
         self,
         long_term_memory,
         core_memory,
-        diary_memory,
-        lore_book,
         max_workers: int = 4,
         source_timeout_s: float = 0.0,
         breaker_threshold: int = 3,
@@ -107,17 +108,13 @@ class ConcurrentMemoryRetriever:
         Args:
             long_term_memory: 长期记忆管理器
             core_memory: 核心记忆管理器
-            diary_memory: 日记记忆管理器
-            lore_book: 知识库管理器
             max_workers: 最大并发工作线程数
             breaker_threshold: 熔断器阈值（连续失败次数）
             breaker_cooldown_s: 熔断器冷却时间（秒）
         """
         self.long_term_memory = long_term_memory
         self.core_memory = core_memory
-        self.diary_memory = diary_memory
-        self.lore_book = lore_book
-        self.executor = ThreadPoolExecutor(
+        self.executor: Optional[ThreadPoolExecutor] = ThreadPoolExecutor(
             max_workers=max(1, int(max_workers)),
             thread_name_prefix="mintchat-mem",
         )
@@ -127,18 +124,14 @@ class ConcurrentMemoryRetriever:
         self._breakers = {
             "long_term": _CircuitBreaker(self._breaker_threshold, self._breaker_cooldown_s),
             "core": _CircuitBreaker(self._breaker_threshold, self._breaker_cooldown_s),
-            "diary": _CircuitBreaker(self._breaker_threshold, self._breaker_cooldown_s),
-            "lore": _CircuitBreaker(self._breaker_threshold, self._breaker_cooldown_s),
         }
         self._source_stats = {
             "long_term": _SourceStats(),
             "core": _SourceStats(),
-            "diary": _SourceStats(),
-            "lore": _SourceStats(),
         }
 
         # 性能统计
-        self.stats = {
+        self.stats: _RetrieverStats = {
             "total_retrievals": 0,
             "avg_time_ms": 0.0,
             "cache_hits": 0,
@@ -146,8 +139,6 @@ class ConcurrentMemoryRetriever:
             "last_source_latency_ms": {
                 "long_term": 0.0,
                 "core": 0.0,
-                "diary": 0.0,
-                "lore": 0.0,
             },
         }
 
@@ -156,8 +147,6 @@ class ConcurrentMemoryRetriever:
         query: str,
         long_term_k: int = 5,
         core_k: int = 2,
-        diary_k: int = 2,
-        lore_k: int = 3,
         use_cache: bool = True,
     ) -> Dict[str, List[str]]:
         """
@@ -175,8 +164,6 @@ class ConcurrentMemoryRetriever:
             query: 查询文本
             long_term_k: 长期记忆返回数量
             core_k: 核心记忆返回数量
-            diary_k: 日记返回数量
-            lore_k: 知识库返回数量
             use_cache: 是否使用缓存
 
         Returns:
@@ -191,8 +178,15 @@ class ConcurrentMemoryRetriever:
             user_id = getattr(self.long_term_memory, "user_id", None)
             long_term_obj = getattr(self.long_term_memory, "long_term", None)
             lt_version = getattr(long_term_obj, "write_version", 0)
+            try:
+                core_version = int(getattr(self.core_memory, "write_version", 0) or 0)
+            except Exception:
+                core_version = 0
             cache_key_data = (
-                f"u={user_id}|ltv={lt_version}|{query}_{long_term_k}_{core_k}_{diary_k}_{lore_k}"
+                f"u={user_id}"
+                f"|ltv={lt_version}"
+                f"|cv={core_version}"
+                f"|{query}_{long_term_k}_{core_k}"
             )
             cache_key = hashlib.md5(cache_key_data.encode()).hexdigest()
             cached_result = cache_manager.memory_cache.get(cache_key)
@@ -200,25 +194,14 @@ class ConcurrentMemoryRetriever:
                 self.stats["cache_hits"] += 1
                 return cached_result
 
-        # v2.48.5: 使用类级常量检测时间查询（用于日记检索）
-        is_time_query = any(keyword in query for keyword in self.TIME_KEYWORDS)
-
         # 并发执行所有检索任务
         tasks = [
             self._retrieve_long_term_async(query, long_term_k),
             self._retrieve_core_async(query, core_k),
-            self._retrieve_diary_async(query, diary_k, is_time_query),
-            self._retrieve_lore_async(query, lore_k),
         ]
 
-        # 等待所有任务完成
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # 处理结果
-        long_term_memories = results[0] if not isinstance(results[0], Exception) else []
-        core_memories = results[1] if not isinstance(results[1], Exception) else []
-        diary_entries = results[2] if not isinstance(results[2], Exception) else []
-        lore_entries = results[3] if not isinstance(results[3], Exception) else []
+        # 等待所有任务完成（各 source 内部已做异常兜底，这里不需要 return_exceptions=True）
+        long_term_memories, core_memories = await asyncio.gather(*tasks)
 
         # 性能统计
         elapsed_ms = (time.perf_counter() - start_time) * 1000
@@ -230,19 +213,15 @@ class ConcurrentMemoryRetriever:
 
         # 记录详细日志
         logger.debug(
-            "并发记忆检索完成: %.1fms (长期:%d, 核心:%d, 日记:%d, 知识:%d)",
+            "并发记忆检索完成: %.1fms (长期:%d, 核心:%d)",
             elapsed_ms,
             len(long_term_memories),
             len(core_memories),
-            len(diary_entries),
-            len(lore_entries),
         )
 
         result = {
             "long_term": long_term_memories,
             "core": core_memories,
-            "diary": diary_entries,
-            "lore": lore_entries,
         }
 
         # v2.32.0: 缓存结果（复用已生成的缓存键）
@@ -256,9 +235,13 @@ class ConcurrentMemoryRetriever:
         if self._should_skip_source("long_term"):
             return []
 
+        executor = self.executor
+        if executor is None:
+            return []
+
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(
-            self.executor,
+            executor,
             self.long_term_memory.search_relevant_memories,
             query,
             k,
@@ -273,67 +256,18 @@ class ConcurrentMemoryRetriever:
         if self._should_skip_source("core"):
             return []
 
+        executor = self.executor
+        if executor is None:
+            return []
+
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(
-            self.executor,
+            executor,
             self.core_memory.search_core_memories,
             query,
             k,
         )
         results = await self._await_with_metrics("core", future)
-        if not results:
-            return []
-        return [entry.get("content", "") for entry in results if entry.get("content")]
-
-    async def _retrieve_diary_async(
-        self,
-        query: str,
-        k: int,
-        is_time_query: bool,
-    ) -> List[str]:
-        """异步检索日记"""
-        if not self.diary_memory.vectorstore:
-            return []
-
-        if self._should_skip_source("diary"):
-            return []
-
-        loop = asyncio.get_running_loop()
-        if is_time_query:
-            future = loop.run_in_executor(
-                self.executor,
-                self.diary_memory.search_by_time,
-                query,
-                k,
-            )
-        else:
-            future = loop.run_in_executor(
-                self.executor,
-                self.diary_memory.search_by_content,
-                query,
-                k,
-            )
-        results = await self._await_with_metrics("diary", future)
-        if not results:
-            return []
-        return [entry.get("content", "") for entry in results if entry.get("content")]
-
-    async def _retrieve_lore_async(self, query: str, k: int) -> List[str]:
-        """异步检索知识库"""
-        if not self.lore_book.vectorstore:
-            return []
-
-        if self._should_skip_source("lore"):
-            return []
-
-        loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(
-            self.executor,
-            self.lore_book.search_lore,
-            query,
-            k,
-        )
-        results = await self._await_with_metrics("lore", future)
         if not results:
             return []
         return [entry.get("content", "") for entry in results if entry.get("content")]
@@ -347,8 +281,8 @@ class ConcurrentMemoryRetriever:
 
     def close(self) -> None:
         """显式清理资源（推荐使用此方法而不是依赖 __del__）。"""
-        executor = getattr(self, "executor", None)
-        if not executor:
+        executor = self.executor
+        if executor is None:
             return
         try:
             executor.shutdown(wait=False, cancel_futures=True)
@@ -365,9 +299,10 @@ class ConcurrentMemoryRetriever:
 
     def __del__(self):
         """清理资源（备用方法，不推荐依赖）"""
-        if hasattr(self, "executor") and self.executor:
+        executor = getattr(self, "executor", None)
+        if executor is not None:
             try:
-                self.executor.shutdown(wait=False)
+                executor.shutdown(wait=False)
             except Exception:
                 pass
 

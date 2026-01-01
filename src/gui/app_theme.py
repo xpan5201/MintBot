@@ -22,7 +22,8 @@ def build_global_stylesheet() -> str:
     # Keep this QSS minimal: global styles should not fight with per-widget styles.
     qss = f"""
         QToolTip {{
-            /* Prefer palette-driven colors to stay readable across OS themes (esp. Windows dark mode). */
+            /* Prefer palette-driven colors to stay readable across OS themes
+               (esp. Windows dark mode). */
             border: 1px solid {c['outline_variant']};
             border-radius: {r['md']};
             padding: 8px 10px;
@@ -120,9 +121,10 @@ def apply_app_theme(app: QApplication) -> None:
 def _apply_tooltip_palette(app: QApplication | None = None) -> None:
     """Ensure tooltips stay readable across OS themes and widget styles.
 
-    Windows dark mode (and some platform styles) may render native-looking tooltip backgrounds that are
-    effectively dark, even when a custom palette is set. If we force a dark tooltip text color in that
-    scenario, tooltips can become unreadable ("black on black"). We therefore:
+    Windows dark mode (and some platform styles) may render native-looking tooltip backgrounds
+    that are effectively dark, even when a custom palette is set.
+    If we force a dark tooltip text color in that scenario, tooltips can become unreadable
+    ("black on black"). We therefore:
 
     - Detect whether the current tooltip base color is dark.
     - Choose a contrasting tooltip text color.
@@ -154,7 +156,8 @@ def _apply_tooltip_palette(app: QApplication | None = None) -> None:
         except Exception:
             sys_tip_bg = QColor("#000000")
 
-        # If the system tooltip base is dark, prefer a dark tooltip palette with a light text color to
+        # If the system tooltip base is dark, prefer a dark tooltip palette with a light text color
+        # to
         # guarantee readability even when the platform style ignores palette background overrides.
         if _luma(sys_tip_bg) < 0.42:
             tooltip_bg = QColor(c.get("on_surface", "#1A1C1E"))

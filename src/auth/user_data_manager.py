@@ -179,11 +179,30 @@ class UserDataManager:
             if pattern is None:
                 self._cache.clear()
                 self._cache_ttl.clear()
-            else:
-                keys_to_remove = [k for k in self._cache.keys() if pattern in k]
-                for key in keys_to_remove:
-                    self._cache.pop(key, None)
-                    self._cache_ttl.pop(key, None)
+                return
+
+            if not pattern:
+                return
+
+            # `pattern in key` 会导致 "contacts_1" 误伤 "contacts_12"。
+            # 这里采用更严格的前缀匹配，并在 pattern 以数字结尾时要求边界，避免跨用户误删缓存。
+            keys_to_remove: list[str] = []
+            for key in list(self._cache.keys()):
+                if not key.startswith(pattern):
+                    continue
+
+                if (
+                    pattern[-1].isdigit()
+                    and len(key) > len(pattern)
+                    and key[len(pattern)].isdigit()
+                ):
+                    continue
+
+                keys_to_remove.append(key)
+
+            for key in keys_to_remove:
+                self._cache.pop(key, None)
+                self._cache_ttl.pop(key, None)
 
     def _init_database(self) -> None:
         """初始化数据库表 (v2.28.0: 增强性能优化)"""
@@ -315,7 +334,8 @@ class UserDataManager:
                 )
                 cursor.execute(
                     """
-                    CREATE INDEX IF NOT EXISTS idx_custom_stickers_user_id ON custom_stickers(user_id)
+                    CREATE INDEX IF NOT EXISTS idx_custom_stickers_user_id
+                    ON custom_stickers(user_id)
                 """
                 )
                 cursor.execute(
@@ -1198,13 +1218,15 @@ class UserDataManager:
         except sqlite3.IntegrityError as e:
             logger.error(f"数据库完整性错误: {e}", exc_info=True)
             logger.error(
-                f"参数: user_id={user_id}, sticker_id={sticker_id}, file_path={file_path}, file_name={file_name}, file_type={file_type}, file_size={file_size}"
+                f"参数: user_id={user_id}, sticker_id={sticker_id}, file_path={file_path}, "
+                f"file_name={file_name}, file_type={file_type}, file_size={file_size}"
             )
             return False
         except Exception as e:
             logger.error(f"添加自定义表情包失败: {e}", exc_info=True)
             logger.error(
-                f"参数: user_id={user_id}, sticker_id={sticker_id}, file_path={file_path}, file_name={file_name}, file_type={file_type}, file_size={file_size}"
+                f"参数: user_id={user_id}, sticker_id={sticker_id}, file_path={file_path}, "
+                f"file_name={file_name}, file_type={file_type}, file_size={file_size}"
             )
             return False
 
@@ -1231,7 +1253,8 @@ class UserDataManager:
 
                 cursor.execute(
                     """
-                    SELECT sticker_id, file_path, file_name, file_type, file_size, caption, created_at
+                    SELECT sticker_id, file_path, file_name, file_type, file_size, caption,
+                    created_at
                     FROM custom_stickers
                     WHERE user_id = ?
                     ORDER BY created_at DESC

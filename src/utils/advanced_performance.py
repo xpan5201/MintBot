@@ -12,7 +12,6 @@
 日期: 2025-11-13
 """
 
-import asyncio
 import threading
 import time
 from collections import deque
@@ -72,7 +71,7 @@ class AdaptiveBatchProcessor:
         self.max_wait_time = max_wait_time
         self.current_batch_size = min_batch_size
         self._buffer: Deque[Any] = deque()
-        self._last_flush = time.time()
+        self._last_flush = time.monotonic()
         self._avg_process_time = 0.0
         self._metrics = PerformanceMetrics(operation="batch_processing")
         self._lock = threading.Lock()
@@ -94,7 +93,7 @@ class AdaptiveBatchProcessor:
             # 检查是否需要刷新
             should_flush = (
                 len(self._buffer) >= self.current_batch_size
-                or (time.time() - self._last_flush) >= self.max_wait_time
+                or (time.monotonic() - self._last_flush) >= self.max_wait_time
             )
 
         if should_flush:
@@ -114,7 +113,7 @@ class AdaptiveBatchProcessor:
 
             batch = list(self._buffer)
             self._buffer.clear()
-            self._last_flush = time.time()
+            self._last_flush = time.monotonic()
 
         # 自适应调整批大小
         self._adjust_batch_size(len(batch))
@@ -151,7 +150,7 @@ class AdaptiveBatchProcessor:
             )
             self._metrics.count += int(processed_count)
             self._metrics.total_time += elapsed_s
-            self._metrics.last_execution = time.time()
+            self._metrics.last_execution = time.monotonic()
             self._metrics.min_time = min(self._metrics.min_time, elapsed_s)
             self._metrics.max_time = max(self._metrics.max_time, elapsed_s)
 
@@ -206,7 +205,7 @@ class SmartPreloader:
                     return
                 self._cache[key] = result
                 self._access_count[key] = 0
-                self._last_access[key] = time.time()
+                self._last_access[key] = time.monotonic()
                 self._evict_if_needed_locked()
 
             logger.debug("预加载完成: %s", key)
@@ -233,7 +232,7 @@ class SmartPreloader:
         with self._lock:
             if key in self._cache:
                 self._access_count[key] = self._access_count.get(key, 0) + 1
-                self._last_access[key] = time.time()
+                self._last_access[key] = time.monotonic()
                 return self._cache[key]
             if self._closed:
                 return None
@@ -247,7 +246,7 @@ class SmartPreloader:
                         return result
                     self._cache[key] = result
                     self._access_count[key] = 1
-                    self._last_access[key] = time.time()
+                    self._last_access[key] = time.monotonic()
                     self._evict_if_needed_locked()
                 return result
             except Exception as e:
@@ -264,7 +263,7 @@ class SmartPreloader:
 
         # 计算每个项的分数（访问次数 * 时间衰减）
         scores = {}
-        current_time = time.time()
+        current_time = time.monotonic()
         for key in self._cache:
             access_count = self._access_count.get(key, 0)
             last_access = self._last_access.get(key, 0)
@@ -428,22 +427,64 @@ class AsyncTaskQueue:
             pass
 
 
-# 全局实例
-_batch_processor = AdaptiveBatchProcessor()
-_preloader = SmartPreloader()
-_task_queue = AsyncTaskQueue()
+# 全局实例（懒加载，避免导入即创建线程池/后台资源）
+_global_lock = threading.Lock()
+_batch_processor: AdaptiveBatchProcessor | None = None
+_preloader: SmartPreloader | None = None
+_task_queue: AsyncTaskQueue | None = None
 
 
 def get_batch_processor() -> AdaptiveBatchProcessor:
     """获取全局批处理器"""
-    return _batch_processor
+    global _batch_processor
+    if _batch_processor is not None:
+        return _batch_processor
+    with _global_lock:
+        if _batch_processor is None:
+            _batch_processor = AdaptiveBatchProcessor()
+        return _batch_processor
 
 
 def get_preloader() -> SmartPreloader:
     """获取全局预加载器"""
-    return _preloader
+    global _preloader
+    if _preloader is not None:
+        return _preloader
+    with _global_lock:
+        if _preloader is None:
+            _preloader = SmartPreloader()
+        return _preloader
 
 
 def get_task_queue() -> AsyncTaskQueue:
     """获取全局任务队列"""
-    return _task_queue
+    global _task_queue
+    if _task_queue is not None:
+        return _task_queue
+    with _global_lock:
+        if _task_queue is None:
+            _task_queue = AsyncTaskQueue()
+        return _task_queue
+
+
+def shutdown_global_performance_tools() -> None:
+    """关闭全局性能工具（用于程序退出/测试收尾）。"""
+    global _batch_processor, _preloader, _task_queue
+    with _global_lock:
+        preloader = _preloader
+        task_queue = _task_queue
+        _preloader = None
+        _task_queue = None
+        _batch_processor = None
+
+    if preloader is not None:
+        try:
+            preloader.close()
+        except Exception:
+            pass
+
+    if task_queue is not None:
+        try:
+            task_queue.close()
+        except Exception:
+            pass

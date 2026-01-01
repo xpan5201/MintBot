@@ -510,7 +510,11 @@ class TTSManager:
             self._cache.clear()
             self._cache_order.clear()
         if self._disk_cache is not None:
-            self._disk_cache.clear()
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._disk_cache.clear)
+            except Exception as e:
+                logger.debug(f"清空磁盘缓存失败: {e}")
         logger.info("TTS 缓存已清空")
 
     def get_stats(self) -> Dict[str, Any]:
@@ -524,7 +528,20 @@ class TTSManager:
         # 使用线程锁，支持同步和异步调用
         with self._cache_thread_lock:
             stats["cache_size"] = len(self._cache)
-        stats["client_stats"] = self.client.get_stats()
+        client_stats = self.client.get_stats()
+        stats["client_stats"] = client_stats
+
+        # GUI 兼容字段（部分面板依赖扁平字段）
+        stats.setdefault("total_requests", int(client_stats.get("total_requests", 0) or 0))
+        stats.setdefault(
+            "successful_requests", int(client_stats.get("successful_requests", 0) or 0)
+        )
+        stats.setdefault("failed_requests", int(client_stats.get("failed_requests", 0) or 0))
+        stats.setdefault("retry_count", int(client_stats.get("total_retries", 0) or 0))
+        stats.setdefault("timeout_errors", 0)
+        stats.setdefault("network_errors", 0)
+        stats.setdefault("api_errors", 0)
+        stats.setdefault("queue_size", 0)
         if self._disk_cache is not None:
             stats["disk_cache"] = self._disk_cache.stats()
         # inflight_futures 主要在异步环境中使用，使用线程锁也安全

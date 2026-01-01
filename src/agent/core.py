@@ -95,25 +95,29 @@ except ImportError:
     HAS_GOOGLE = False
     ChatGoogleGenerativeAI = None
 
-from src.character.config_loader import CharacterConfigLoader
-from src.character.personality import CharacterPersonality, default_character
-from src.config.settings import settings
-from src.utils.logger import get_logger
-from src.utils.async_loop_thread import AsyncLoopThread
-from src.utils.performance import monitor_performance, performance_monitor
-from src.utils.tool_context import ToolTraceRecorder, tool_timeout_s_var, tool_trace_recorder_var
+from src.character.config_loader import CharacterConfigLoader  # noqa: E402
+from src.character.personality import CharacterPersonality, default_character  # noqa: E402
+from src.config.settings import settings  # noqa: E402
+from src.utils.logger import get_logger  # noqa: E402
+from src.utils.async_loop_thread import AsyncLoopThread  # noqa: E402
+from src.utils.performance import monitor_performance, performance_monitor  # noqa: E402
+from src.utils.tool_context import (  # noqa: E402
+    ToolTraceRecorder,
+    tool_timeout_s_var,
+    tool_trace_recorder_var,
+)
 
-from .advanced_memory import CoreMemory, DiaryMemory, LoreBook
-from .character_state import CharacterState
-from .context_compressor import ContextCompressor
-from .emotion import EmotionEngine
-from .memory import MemoryManager
-from .memory_retriever import ConcurrentMemoryRetriever
-from .memory_scorer import MemoryScorer
-from .mood_system import MoodSystem
-from .style_learner import StyleLearner
-from .tools import ToolRegistry, tool_registry
-from .tool_trace_middleware import ToolTraceMiddleware
+from .advanced_memory import CoreMemory  # noqa: E402
+from .character_state import CharacterState  # noqa: E402
+from .context_compressor import ContextCompressor  # noqa: E402
+from .emotion import EmotionEngine  # noqa: E402
+from .memory import MemoryManager  # noqa: E402
+from .memory_retriever import ConcurrentMemoryRetriever  # noqa: E402
+from .memory_scorer import MemoryScorer  # noqa: E402
+from .mood_system import MoodSystem  # noqa: E402
+from .style_learner import StyleLearner  # noqa: E402
+from .tools import ToolRegistry, tool_registry  # noqa: E402
+from .tool_trace_middleware import ToolTraceMiddleware  # noqa: E402
 
 BaseAgentMiddleware = AgentMiddleware or object  # type: ignore[misc]
 
@@ -230,7 +234,8 @@ def _extract_any_json_fragment(text: str) -> Optional[str]:
 
 def _looks_like_tool_call_payload(data: Any) -> bool:
     """
-    Heuristically detect common "tool call" / structured-tool routing payloads that should not be shown to UI/TTS.
+    Heuristically detect common "tool call" / structured-tool routing payloads that should not be
+    shown to UI/TTS.
 
     This targets OpenAI-style tool call JSON such as:
       [{"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}, ...]
@@ -630,7 +635,8 @@ class StreamStructuredPrefixStripper:
         if not full_text:
             return ""
 
-        # Drop non-JSON tool routing traces that some gateways inject before the real assistant text.
+        # Drop non-JSON tool routing traces that some gateways inject before the real assistant
+        # text.
         # We do this before JSON stripping and keep it conservative (only at the very start).
         for _ in range(2):
             candidate = full_text.lstrip()
@@ -648,7 +654,8 @@ class StreamStructuredPrefixStripper:
                 if force:
                     self._done = True
                     self._buffer = ""
-                    # If we only received a very short prefix (e.g. "tool"/"tools"), it might be legit text.
+                    # If we only received a very short prefix (e.g. "tool"/"tools"), it might be
+                    # legit text.
                     # Drop only when we have enough chars to be confident it's the marker.
                     return "" if len(candidate_lower) >= 8 else full_text
                 self._buffer = full_text
@@ -820,14 +827,16 @@ class StreamToolTraceScrubber:
     """
     Stateful scrubber for streaming output.
 
-    Root cause (LangChain/LangGraph 1.0.x): when using `stream_mode="messages"`, some intermediate routing steps
-    (tool selection / structured output) can be streamed as assistant-like text messages. On some OpenAI-compatible
-    gateways, those structured payloads arrive as plain text (sometimes split across chunks), so "end-only" filtering
-    is not enough.
+    Root cause (LangChain/LangGraph 1.0.x): when using `stream_mode="messages"`, some intermediate
+    routing steps (tool selection / structured output) can be streamed as assistant-like text
+    messages. On some OpenAI-compatible gateways, those structured payloads arrive as plain text
+    (sometimes split across chunks), so "end-only" filtering is not enough.
 
     Strategy:
-    - Only react when we see suspicious markers (ToolSelectionResponse / JSON-like blocks at line start).
-    - Buffer minimal tail if a JSON/tool fragment is incomplete, so partial garbage never reaches UI.
+    - Only react when we see suspicious markers (ToolSelectionResponse / JSON-like blocks at line
+      start).
+    - Buffer minimal tail if a JSON/tool fragment is incomplete, so partial garbage never reaches
+      UI.
     - Remove:
         - ToolSelectionResponse lines
         - tool-call payload JSON blocks (dict/list)
@@ -901,7 +910,8 @@ class StreamToolTraceScrubber:
             if not s:
                 return "", False
 
-            # TOOL_RESULT blocks are line-oriented; drop leading whitespace while we're in this mode.
+            # TOOL_RESULT blocks are line-oriented; drop leading whitespace while we're in this
+            # mode.
             s_stripped = s.lstrip()
             if s_stripped != s:
                 s = s_stripped
@@ -1024,7 +1034,8 @@ class StreamToolTraceScrubber:
             if tool_idx is not None and tool_idx == next_idx:
                 lowered = s.lower()
                 if lowered.startswith("tool_result"):
-                    # Drop header line; the remaining continuation lines will be discarded in subsequent iterations.
+                    # Drop header line; the remaining continuation lines will be discarded in
+                    # subsequent iterations.
                     nl = s.find("\n")
                     if nl < 0:
                         if not force:
@@ -1088,9 +1099,9 @@ class StreamToolTraceScrubber:
                 if _looks_like_tool_call_payload(parsed):
                     remove_fragment = True
                 elif _looks_like_route_tag_list(parsed):
-                    # Be conservative: only remove tag lists when they behave like leaked internal markers
-                    # (e.g., followed by a stray brace or another JSON block). Otherwise the user might
-                    # legitimately be asking the model to output a JSON array.
+                    # Be conservative: only remove tag lists when they behave like leaked internal
+                    # markers (e.g., followed by a stray brace or another JSON block). Otherwise the
+                    # user might legitimately be asking the model to output a JSON array.
                     after = s[len(fragment) :]
                     after_lstrip = after.lstrip()
                     if after_lstrip.startswith("}") or after_lstrip[:1] in {"{", "["}:
@@ -1234,7 +1245,8 @@ def _unwrap_stream_item(item: Any) -> tuple[Any, Any]:
     Supported shapes:
     - (chunk, metadata)                     (LangChain agent.stream(stream_mode="messages"))
     - (mode, payload)                       (LangGraph stream(stream_mode=[...]))
-    - (mode, (chunk, metadata))             (LangGraph multi-mode + messages payload carries metadata)
+    - (mode, (chunk, metadata))             (LangGraph multi-mode + messages payload carries
+      metadata)
     - chunk                                 (fallback: no metadata)
     """
     stream_mode: Optional[str] = None
@@ -1431,15 +1443,11 @@ class MintChatAgent:
 
         # 高级记忆系统 - 使用用户特定路径
         self.core_memory = CoreMemory(user_id=user_id)
-        self.diary_memory = DiaryMemory(user_id=user_id)
-        self.lore_book = LoreBook(user_id=user_id)
 
         # 并发记忆检索器（性能优化）
         self.memory_retriever = ConcurrentMemoryRetriever(
             long_term_memory=self.memory,
             core_memory=self.core_memory,
-            diary_memory=self.diary_memory,
-            lore_book=self.lore_book,
             max_workers=4,
             source_timeout_s=float(
                 getattr(settings.agent, "memory_retriever_source_timeout_s", 0.0) or 0.0
@@ -1463,16 +1471,32 @@ class MintChatAgent:
 
         # 核心功能组件
         self.character_state = CharacterState()
-        self.context_compressor = ContextCompressor()
+        try:
+            context_compress_max_tokens = int(
+                getattr(settings.agent, "context_compress_max_tokens", 2000)
+            )
+        except Exception:
+            context_compress_max_tokens = 2000
+        try:
+            context_compress_keep_recent = int(
+                getattr(settings.agent, "context_compress_keep_recent_messages", 6)
+            )
+        except Exception:
+            context_compress_keep_recent = 6
+        try:
+            context_compress_max_important = int(
+                getattr(settings.agent, "context_compress_max_important_messages", 12)
+            )
+        except Exception:
+            context_compress_max_important = 12
+
+        self.context_compressor = ContextCompressor(
+            max_tokens=context_compress_max_tokens,
+            keep_recent=context_compress_keep_recent,
+            max_important=context_compress_max_important,
+        )
         self.style_learner = StyleLearner(user_id=user_id)
         self.memory_scorer = MemoryScorer()
-        self._recent_topics = deque(
-            maxlen=max(
-                0,
-                int(getattr(settings.agent, "proactive_push_recent_topics_max_len", 8)),
-            )
-        )
-        self._last_lore_hit: Optional[Dict[str, Any]] = None
         self._tts_runtime: Optional[tuple[Any, Any]] = None  # 懒加载 TTS 依赖
         self._auto_compress_ratio = max(
             0.1,
@@ -1482,16 +1506,14 @@ class MintChatAgent:
             4,
             int(getattr(settings.agent, "context_auto_compress_min_messages", 12)),
         )
-        self._history_summary_keep = max(
-            6,
-            int(
-                getattr(
-                    settings.agent,
-                    "context_summary_keep_messages",
-                    self._auto_compress_min_messages,
-                )
-            ),
-        )
+        summary_keep = getattr(settings.agent, "context_summary_keep_messages", None)
+        if summary_keep is None:
+            summary_keep = self._auto_compress_min_messages
+        try:
+            summary_keep_int = int(summary_keep)
+        except Exception:
+            summary_keep_int = self._auto_compress_min_messages
+        self._history_summary_keep = max(6, summary_keep_int)
         self._tts_prefetch_enabled = bool(getattr(settings.agent, "tts_auto_prefetch", True))
         self._tts_prefetch_min_chars = max(
             1,
@@ -1622,6 +1644,7 @@ class MintChatAgent:
         """
         provider = settings.default_llm_provider
         timeout_s = float(getattr(getattr(self, "_llm_timeouts", None), "total", 120.0))
+        api_base = str(getattr(settings.llm, "api", "") or "").strip()
 
         try:
             streaming_requested = bool(getattr(self, "enable_streaming", False))
@@ -1631,25 +1654,22 @@ class MintChatAgent:
                         "langchain-openai 未安装或导入失败，无法创建 ChatOpenAI。"
                         " 请运行: uv sync --locked --no-install-project"
                     ) from _LANGCHAIN_OPENAI_IMPORT_ERROR
-                if not settings.openai_api_key:
+                if "api.openai.com" in api_base.lower() and not settings.openai_api_key:
                     raise ValueError("OpenAI API Key 未配置")
 
-                openai_kwargs = dict(
-                    model=self.model_name,
-                    temperature=self.temperature,
-                    max_tokens=settings.model_max_tokens,
-                    api_key=settings.openai_api_key,
-                    timeout=timeout_s,
-                    max_retries=2,
-                )
-                if streaming_requested:
-                    openai_kwargs["streaming"] = True
                 try:
-                    llm = ChatOpenAI(**openai_kwargs)
-                except TypeError:
-                    # 兼容不同版本 LangChain：不支持 streaming 参数时自动回退
-                    openai_kwargs.pop("streaming", None)
-                    llm = ChatOpenAI(**openai_kwargs)
+                    from src.llm.factory import get_llm
+
+                    llm = get_llm(
+                        model=self.model_name,
+                        temperature=self.temperature,
+                        max_tokens=settings.model_max_tokens,
+                        timeout_s=timeout_s,
+                        max_retries=2,
+                        streaming=streaming_requested,
+                    )
+                except Exception:
+                    raise
                 logger.info(f"使用 OpenAI 模型: {self.model_name}，超时: {timeout_s:g}秒")
 
             elif provider == "anthropic":
@@ -1708,25 +1728,22 @@ class MintChatAgent:
                         "langchain-openai 未安装或导入失败，无法创建 ChatOpenAI。"
                         " 请运行: uv sync --locked --no-install-project"
                     ) from _LANGCHAIN_OPENAI_IMPORT_ERROR
-                if not settings.llm.key:
-                    raise ValueError("API Key 未配置")
 
-                compat_kwargs = dict(
-                    model=self.model_name,
-                    temperature=self.temperature,
-                    max_tokens=settings.model_max_tokens,
-                    api_key=settings.llm.key,
-                    base_url=settings.llm.api,
-                    timeout=timeout_s,
-                    max_retries=2,
-                )
-                if streaming_requested:
-                    compat_kwargs["streaming"] = True
+                if "api.openai.com" in api_base.lower() and not settings.llm.key:
+                    raise ValueError("API Key 未配置")
                 try:
-                    llm = ChatOpenAI(**compat_kwargs)
-                except TypeError:
-                    compat_kwargs.pop("streaming", None)
-                    llm = ChatOpenAI(**compat_kwargs)
+                    from src.llm.factory import get_llm
+
+                    llm = get_llm(
+                        model=self.model_name,
+                        temperature=self.temperature,
+                        max_tokens=settings.model_max_tokens,
+                        timeout_s=timeout_s,
+                        max_retries=2,
+                        streaming=streaming_requested,
+                    )
+                except Exception:
+                    raise
                 logger.info(
                     f"使用自定义 OpenAI 兼容 API: {settings.llm.api}, "
                     f"模型: {self.model_name}，超时: {timeout_s:g}秒"
@@ -1832,9 +1849,9 @@ class MintChatAgent:
 ✓ **自然性**：避免机械化表达，展现真实情感
 ✓ **简洁性**：清晰表达，避免冗长啰嗦
 
- ## 特殊情况处理
- 
- - **不确定时**：诚实告知"我不太确定..."而非编造答案
+  ## 特殊情况处理
+
+  - **不确定时**：诚实告知"我不太确定..."而非编造答案
  - **超出能力**：礼貌说明"这个可能超出我的能力范围..."
  - **工具失败**：温柔告知并提供替代方案
  - **敏感话题**：保持角色边界，委婉引导话题
@@ -1851,7 +1868,8 @@ class MintChatAgent:
 - 你可以在回复中附加**隐藏 JSON 指令**来触发表情/动作：`[[live2d:{"event":"EVENT","intensity":0.0-1.0,"hold_s":0.2-30}]]`
   - UI 会自动剥离该指令，不会显示给主人，也不会保存到聊天记录。
   - 仅用于 Live2D 控制，不要解释，不要放进正文；除这条隐藏指令外不要输出原始 JSON。
-  - `event` 可以是**表情语义标签**：`angry/shy/dizzy/love/sad/surprise`，也可以是中文关键词（如“猫尾/雾气/鱼干/脸黑”），或直接写 `.exp3.json` 文件名。
+  - `event` 可以是**表情语义标签**：`angry/shy/dizzy/love/sad/surprise`，
+    也可以是中文关键词（如“猫尾/雾气/鱼干/脸黑”），或直接写 `.exp3.json` 文件名。
   - `event` 也可以是**动作标签**（触发点头/摇头等）：`nod/shake`（同义：`yes/no/affirm/deny/肯定/否定/点头/摇头`）。
   - `intensity` 为 0~1（可省略），`hold_s` 为停留秒数（可省略）。
 - 使用原则：**少量、自然、服务于情绪表达**，不要在同一条回复里反复切换；不要向主人解释这些指令。
@@ -1990,7 +2008,8 @@ class MintChatAgent:
 
         stack: List[Any] = []
 
-        # v3.3.6: Tool tracing + output truncation must be done via middleware (ToolNode requires ToolMessage/Command).
+        # v3.3.6: Tool tracing + output truncation must be done via middleware (ToolNode requires
+        # ToolMessage/Command).
         try:
             tool_output_max_chars = int(
                 getattr(settings.agent, "tool_output_max_chars", 12000) or 0
@@ -2155,47 +2174,6 @@ class MintChatAgent:
         if save_to_long_term:
             self._enqueue_long_term_write(message, reply, importance=None)
 
-        # 极速模式：避免任何额外 I/O / 学习任务阻塞。
-        if getattr(settings.agent, "memory_fast_mode", False):
-            return
-
-        user_name = getattr(settings.agent, "user", "主人")
-        char_name = getattr(settings.agent, "char", "小雪糕")
-        interaction_text = f"{user_name}: {message}\n{char_name}: {reply}"
-        enable_diary = bool(getattr(self.diary_memory, "vectorstore", None))
-        enable_daily_summary = bool(getattr(self.diary_memory, "daily_summary_enabled", False))
-        enable_lore_learning = bool(
-            getattr(settings.agent, "lore_books", False)
-            and getattr(settings.agent, "auto_learn_from_conversation", True)
-        )
-
-        if not (enable_diary or enable_daily_summary or enable_lore_learning):
-            return
-
-        def _background_post_persist() -> None:
-            if enable_diary:
-                try:
-                    self.diary_memory.add_diary_entry(interaction_text)
-                except Exception as exc:
-                    logger.debug("写入日记失败（可忽略）: %s", exc)
-
-            if enable_daily_summary:
-                try:
-                    from datetime import datetime
-
-                    if datetime.now().hour >= 23:
-                        self.diary_memory.generate_daily_summary()
-                except Exception as exc:
-                    logger.debug("生成每日总结失败（可忽略）: %s", exc)
-
-            if enable_lore_learning:
-                try:
-                    self.lore_book.learn_from_conversation(message, reply, auto_extract=True)
-                except Exception as exc:
-                    logger.debug("从对话中学习知识失败（可忽略）: %s", exc)
-
-        self._submit_background_task(_background_post_persist, label="post-persist")
-
     def _enqueue_long_term_write(
         self,
         user_message: str,
@@ -2301,6 +2279,14 @@ class MintChatAgent:
                 except Exception:
                     # 长期记忆写入失败不应影响对话流程
                     pass
+
+            try:
+                long_term = getattr(memory, "long_term", None)
+                flush_batch = getattr(long_term, "flush_batch", None)
+                if callable(flush_batch):
+                    flush_batch()
+            except Exception:
+                pass
 
             return
 
@@ -2581,8 +2567,6 @@ class MintChatAgent:
         self,
         relevant_memories: List[str],
         core_memories: List[str],
-        diary_entries: List[str],
-        lore_entries: List[str],
     ) -> str:
         """
         构建记忆上下文（辅助方法）
@@ -2590,26 +2574,24 @@ class MintChatAgent:
         Args:
             relevant_memories: 相关记忆列表
             core_memories: 核心记忆列表
-            diary_entries: 日记条目列表
-            lore_entries: 知识库条目列表
 
         Returns:
             str: 格式化的记忆上下文
         """
         # 早期返回优化
-        if not (relevant_memories or core_memories or diary_entries or lore_entries):
+        if not (relevant_memories or core_memories):
             return ""
 
         # 使用列表推导式和join优化，减少中间对象创建
-        sections = []
+        sections = [
+            "\n【记忆规则】\n"
+            "- 以下为检索到的历史内容，请优先据此回答。\n"
+            "- 若不足以回答，请明确说明未找到相关记忆，不要编造。\n"
+        ]
         if relevant_memories:
             sections.append("\n【相关记忆】\n- " + "\n- ".join(relevant_memories) + "\n")
         if core_memories:
             sections.append("\n【核心记忆】\n- " + "\n- ".join(core_memories) + "\n")
-        if diary_entries:
-            sections.append("\n【日记】\n- " + "\n- ".join(diary_entries) + "\n")
-        if lore_entries:
-            sections.append("\n【知识库】\n- " + "\n- ".join(lore_entries) + "\n")
         return "".join(sections) if sections else ""
 
     def _build_context_with_state(self, use_compression: bool) -> str:
@@ -2710,20 +2692,40 @@ class MintChatAgent:
             query=message,
             long_term_k=retrieval_plan["long_term_k"],
             core_k=retrieval_plan["core_k"],
-            diary_k=retrieval_plan["diary_k"],
-            lore_k=retrieval_plan["lore_k"],
             use_cache=use_cache,
         )
 
         include_state = compression != "off"
         additional_context = history_summary
         additional_context += self._build_context_with_state(include_state)
-        additional_context += self._build_memory_context(
+        memory_context = self._build_memory_context(
             relevant_memories=memories["long_term"],
             core_memories=memories["core"],
-            diary_entries=memories["diary"],
-            lore_entries=memories["lore"],
         )
+        memory_query = any(
+            token in message
+            for token in (
+                "记得",
+                "还记得",
+                "回忆",
+                "聊了什么",
+                "说了什么",
+                "我们聊",
+                "我们说",
+                "刚才",
+                "刚刚",
+                "之前",
+                "上次",
+                "今天都聊",
+                "昨天都聊",
+            )
+        )
+        if memory_query and not memory_context.strip():
+            additional_context += (
+                "\n【记忆说明】\n" "- 未检索到相关记忆，请直接说明没有记录，不要编造。\n"
+            )
+        else:
+            additional_context += memory_context
 
         messages: List[Dict[str, str]] = []
 
@@ -3391,15 +3393,12 @@ class MintChatAgent:
             return False
 
         token_budget = self.context_compressor.max_tokens
-        if token_budget <= 0:
-            return False
-
         tokens = sum(
             self.context_compressor.estimate_tokens(msg.get("content", "")) for msg in messages
         )
         tokens += self.context_compressor.estimate_tokens(additional_context)
 
-        if tokens >= token_budget * self._auto_compress_ratio:
+        if token_budget > 0 and tokens >= token_budget * self._auto_compress_ratio:
             return True
 
         return len(messages) >= self._auto_compress_min_messages
@@ -3418,23 +3417,16 @@ class MintChatAgent:
         plan = {
             "long_term_k": 5,
             "core_k": 2,
-            "diary_k": 3 if compression != "off" else 2,
-            "lore_k": 3,
         }
 
         message_len = len(message)
         if message_len <= 32:
             plan["long_term_k"] = 3
-            plan["lore_k"] = 2
         elif message_len >= 200:
             plan["long_term_k"] = 8
-            plan["lore_k"] = 4
 
         turns = len(recent_messages)
-        if turns <= 6:
-            plan["diary_k"] = max(1, plan["diary_k"] - 1)
-        elif turns >= 24:
-            plan["diary_k"] = min(5, plan["diary_k"] + 1)
+        if turns >= 24:
             plan["core_k"] = min(4, plan["core_k"] + 1)
 
         # 确保所有值均为正整数（使用字典推导式优化）
@@ -3498,212 +3490,6 @@ class MintChatAgent:
 
         self._pre_interaction_update(original_message)
         return original_message, enriched_message
-
-    def _update_recent_topics(self, topic: str) -> None:
-        topic = (topic or "").strip()
-        if not topic:
-            return
-        try:
-            recent = self._recent_topics
-        except Exception:
-            return
-        try:
-            if recent and recent[-1] == topic:
-                return
-            recent.append(topic)
-        except Exception:
-            return
-
-    @staticmethod
-    def _extract_proactive_keywords(text: str, *, limit: int = 12) -> list[str]:
-        if not text or limit <= 0:
-            return []
-
-        stopwords = {
-            "什么",
-            "怎么",
-            "为什么",
-            "哪里",
-            "谁",
-            "如何",
-            "请问",
-            "现在",
-            "这个",
-            "那个",
-            "一下",
-            "可以",
-            "能不能",
-            "要不要",
-        }
-
-        keywords: list[str] = []
-        seen: set[str] = set()
-        for token in StyleLearner._extract_words(text):
-            token = str(token).strip()
-            if not token or len(token) < 2:
-                continue
-            if token in stopwords:
-                continue
-            if token in seen:
-                continue
-            seen.add(token)
-            keywords.append(token)
-            if len(keywords) >= limit:
-                break
-        return keywords
-
-    def _build_proactive_push_context(self, user_message: str) -> Dict[str, Any]:
-        topics = StyleLearner._extract_topics(user_message)
-        topic = topics[0] if topics else ""
-        try:
-            recent_topics = list(self._recent_topics)
-        except Exception:
-            recent_topics = []
-
-        last_used_knowledge = getattr(self, "_last_lore_hit", None)
-        if not isinstance(last_used_knowledge, dict):
-            last_used_knowledge = None
-
-        return {
-            "topic": topic,
-            "recent_topics": recent_topics,
-            "keywords": self._extract_proactive_keywords(user_message, limit=12),
-            "user_message": user_message,
-            "last_used_knowledge": last_used_knowledge,
-            "proactive_push_enabled": bool(getattr(settings.agent, "proactive_push_enabled", True)),
-        }
-
-    @staticmethod
-    def _format_proactive_knowledge_prompt(
-        pushed: List[Dict[str, Any]],
-        *,
-        user_name: str,
-        max_chars_per_item: int,
-    ) -> str:
-        if not pushed:
-            return ""
-
-        max_chars = max(0, int(max_chars_per_item))
-        name = (user_name or "").strip() or "主人"
-
-        lines = [
-            "【主动知识提示】",
-            f"你正在和{name}进行角色扮演对话。以下是知识库为你挑选的可用知识点：",
-            "要求：用角色口吻把有用信息自然融入回答；不要照抄字段/列表；不要提到“推送/知识库”；不适用可忽略。",
-        ]
-
-        for idx, item in enumerate(pushed, start=1):
-            title = str(item.get("title", "") or "").strip()
-            category = str(item.get("category", "") or "").strip()
-            source = str(item.get("source", "") or "").strip()
-            content = str(item.get("content", "") or "").strip()
-            reasons = item.get("push_reasons") or []
-
-            meta_parts = [p for p in (category, source) if p]
-            meta = f"（{' / '.join(meta_parts)}）" if meta_parts else ""
-            header = f"{idx}. {title}{meta}" if title else f"{idx}.{meta}"
-            lines.append(header)
-
-            if content:
-                snippet = content
-                if max_chars > 0 and len(snippet) > max_chars:
-                    snippet = snippet[: max_chars - 1].rstrip() + "…"
-                lines.append(f"- 要点：{snippet}")
-
-            if isinstance(reasons, list):
-                reasons_clean = [str(r).strip() for r in reasons if str(r).strip()]
-                if reasons_clean:
-                    lines.append(f"- 适用理由：{'、'.join(reasons_clean)}")
-
-        return "\n".join(lines).strip()
-
-    async def _maybe_inject_proactive_knowledge(
-        self,
-        messages: List[Dict[str, str]],
-        *,
-        context: Dict[str, Any],
-    ) -> None:
-        if not messages:
-            return
-
-        try:
-            proactive_enabled = bool(getattr(settings.agent, "proactive_push_enabled", True))
-            k = int(getattr(settings.agent, "proactive_push_k", 2))
-            timeout_s = float(getattr(settings.agent, "proactive_push_timeout_s", 0.0) or 0.0)
-            allow_in_fast_mode = bool(getattr(settings.agent, "proactive_push_in_fast_mode", False))
-        except Exception:
-            return
-
-        if not proactive_enabled or k <= 0:
-            return
-
-        if getattr(settings.agent, "memory_fast_mode", False) and not allow_in_fast_mode:
-            return
-
-        try:
-            user_id_key = str(self.user_id if self.user_id is not None else "default")
-            safe_context = dict(context or {})
-            safe_context.setdefault(
-                "proactive_push_enabled",
-                proactive_enabled,
-            )
-
-            lore_book = getattr(self, "lore_book", None)
-            if lore_book is None or getattr(lore_book, "pusher", None) is None:
-                return
-
-            loop = asyncio.get_running_loop()
-            executor = getattr(self, "_background_executor", None)
-            future = loop.run_in_executor(
-                executor,
-                lore_book.push_knowledge,
-                user_id_key,
-                safe_context,
-                k,
-            )
-
-            def _swallow_cancelled(_f: asyncio.Future) -> None:  # noqa: ANN001
-                try:
-                    _f.exception()
-                except asyncio.CancelledError:
-                    return
-                except Exception:
-                    return
-
-            try:
-                if timeout_s > 0.0:
-                    pushed = await asyncio.wait_for(future, timeout=timeout_s)
-                else:
-                    pushed = await future
-            except asyncio.TimeoutError:
-                try:
-                    future.cancel()
-                except Exception:
-                    pass
-                try:
-                    future.add_done_callback(_swallow_cancelled)
-                except Exception:
-                    pass
-                logger.debug("主动知识推送超时(%.0fms)，已跳过", max(0.0, timeout_s) * 1000)
-                return
-
-            prompt = self._format_proactive_knowledge_prompt(
-                pushed,
-                user_name=str(getattr(settings.agent, "user", "主人")),
-                max_chars_per_item=int(
-                    getattr(settings.agent, "proactive_push_max_chars_per_item", 480)
-                ),
-            )
-            if not prompt:
-                return
-
-            insert_at = next(
-                (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
-                len(messages),
-            )
-            messages.insert(insert_at, {"role": "system", "content": prompt})
-        except Exception as exc:
-            logger.debug("主动知识推送注入失败（可忽略）: %s", exc)
 
     async def _build_agent_bundle_async(
         self,
@@ -3772,17 +3558,6 @@ class MintChatAgent:
             prepared_messages.append({"role": "user", "content": enriched_message})
         if t0:
             timer.record_ms("bundle.prepare", (time.perf_counter() - t0) * 1000)
-            t0 = time.perf_counter()
-
-        proactive_context = self._build_proactive_push_context(original_message)
-        await self._maybe_inject_proactive_knowledge(prepared_messages, context=proactive_context)
-        self._update_recent_topics(str(proactive_context.get("topic", "") or "").strip())
-        try:
-            self._last_lore_hit = self.lore_book.get_last_search_hit()
-        except Exception:
-            self._last_lore_hit = None
-        if t0:
-            timer.record_ms("bundle.proactive", (time.perf_counter() - t0) * 1000)
 
         return AgentConversationBundle(
             messages=prepared_messages,
@@ -3901,7 +3676,8 @@ class MintChatAgent:
                             if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
                                 break
                             try:
-                                # Keep queue payload small: we only need a boolean for internal routing/tool traces.
+                                # Keep queue payload small: we only need a boolean for internal
+                                # routing/tool traces.
                                 chunk_queue.put(("data", (chunk, skip_internal)), timeout=0.1)
                                 break
                             except Full:
@@ -4631,8 +4407,8 @@ class MintChatAgent:
                             extras.append(f"distance_m={distance}")
                         if tel:
                             extras.append(f"tel={tel}")
-                        suffix = f" | " + " | ".join(extras) if extras else ""
-                        result_lines.append(f"{len(result_lines)+1}. {name}{suffix}")
+                        suffix = " | " + " | ".join(extras) if extras else ""
+                        result_lines.append(f"{len(result_lines) + 1}. {name}{suffix}")
                     kv = {
                         "keywords": _as_clean_text(
                             payload.get("keywords") or payload.get("keyword") or payload.get("q")
@@ -5351,7 +5127,10 @@ class MintChatAgent:
         tool_recorder: Optional[ToolTraceRecorder],
         source: str,
     ) -> Optional[str]:
-        """If the agent produced no final answer, ask the LLM to craft a role-played reply from tool results."""
+        """
+        If the agent produced no final answer, ask the LLM to craft a role-played reply from tool
+        results.
+        """
         tool_trace = self._format_tool_trace_for_rewrite(tool_recorder)
         if not tool_trace:
             return None
@@ -5530,49 +5309,6 @@ class MintChatAgent:
         )
         if save_to_long_term:
             self._enqueue_long_term_write(save_message, full_reply, importance=None)
-
-        # 极速模式：避免任何额外 I/O / 学习任务阻塞。
-        if getattr(settings.agent, "memory_fast_mode", False):
-            return
-
-        user_name = getattr(settings.agent, "user", "主人")
-        char_name = getattr(settings.agent, "char", "小雪糕")
-        interaction_text = f"{user_name}: {save_message}\n{char_name}: {full_reply}"
-        enable_diary = bool(getattr(self.diary_memory, "vectorstore", None))
-        enable_daily_summary = bool(getattr(self.diary_memory, "daily_summary_enabled", False))
-        enable_lore_learning = bool(
-            getattr(settings.agent, "lore_books", False)
-            and getattr(settings.agent, "auto_learn_from_conversation", True)
-        )
-
-        if not (enable_diary or enable_daily_summary or enable_lore_learning):
-            return
-
-        def _background_post_persist() -> None:
-            if enable_diary:
-                try:
-                    self.diary_memory.add_diary_entry(interaction_text)
-                except Exception as exc:
-                    logger.debug("写入日记失败（可忽略）: %s", exc)
-
-            if enable_daily_summary:
-                try:
-                    from datetime import datetime
-
-                    if datetime.now().hour >= 23:
-                        self.diary_memory.generate_daily_summary()
-                except Exception as exc:
-                    logger.debug("生成每日总结失败（可忽略）: %s", exc)
-
-            if enable_lore_learning:
-                try:
-                    self.lore_book.learn_from_conversation(
-                        save_message, full_reply, auto_extract=True
-                    )
-                except Exception as exc:
-                    logger.debug("从对话中学习知识失败（可忽略）: %s", exc)
-
-        self._submit_background_task(_background_post_persist, label="post-persist")
 
     def _run_background_memory_tasks(self, save_message: str, full_reply: str) -> None:
         """运行后台记忆任务（v2.30.34 优化）"""
@@ -5882,7 +5618,8 @@ class MintChatAgent:
                     reply_parts.append(chunk)
                     yield chunk
                 if canceled:
-                    # Drain the iterator to ensure internal cleanup (closing streams, stopping threads).
+                    # Drain the iterator to ensure internal cleanup (closing streams, stopping
+                    # threads).
                     try:
                         for _ in stream_iter:
                             pass
@@ -5951,8 +5688,105 @@ class MintChatAgent:
                     or repr(stream_exc)
                     or f"{type(stream_exc).__name__}: LLM调用失败"
                 )
-                logger.error(f"LLM调用失败: {error_msg}")
-                raise
+
+                def _is_connection_error(exc: BaseException) -> bool:
+                    chain: list[BaseException] = []
+                    current: BaseException | None = exc
+                    for _ in range(8):
+                        if current is None:
+                            break
+                        chain.append(current)
+                        current = current.__cause__ or current.__context__
+
+                    for item in chain:
+                        name = type(item).__name__
+                        if name in {
+                            "APIConnectionError",
+                            "APITimeoutError",
+                            "ConnectError",
+                            "ConnectTimeout",
+                            "ReadTimeout",
+                            "ReadError",
+                            "RemoteProtocolError",
+                            "ProtocolError",
+                        }:
+                            return True
+                        if isinstance(item, ConnectionError):
+                            return True
+                        msg = (str(item) or "").lower()
+                        if "connection error" in msg:
+                            return True
+                        if "unexpected_eof_while_reading" in msg or "unexpected eof" in msg:
+                            return True
+                    return False
+
+                if _is_connection_error(stream_exc):
+                    if cancel_event and cancel_event.is_set():
+                        logger.info("流式对话已取消（忽略连接异常）: %s", error_msg)
+                        return
+
+                    if reply_parts:
+                        logger.warning(
+                            "LLM 流式输出中断（已输出部分内容）: %s",
+                            error_msg,
+                        )
+                        self._stream_failure_count = 0
+                    else:
+                        logger.error("LLM 流式调用失败（连接异常）: %s", error_msg)
+                        self._stream_failure_count = (
+                            int(getattr(self, "_stream_failure_count", 0)) + 1
+                        )
+                        if self._stream_failure_count >= int(
+                            getattr(self, "_stream_disable_after_failures", 2)
+                        ):
+                            if getattr(self, "enable_streaming", False):
+                                logger.warning(
+                                    "检测到多次流式失败（%s 次），将暂时禁用 streaming 以提升可用性",
+                                    self._stream_failure_count,
+                                )
+                            try:
+                                cooldown_s = float(
+                                    getattr(self, "_stream_disable_cooldown_s", 60.0)
+                                )
+                            except Exception:
+                                cooldown_s = 60.0
+                            self._streaming_disabled_until = (
+                                time.monotonic()
+                                if cooldown_s <= 0
+                                else time.monotonic() + cooldown_s
+                            )
+                            self.enable_streaming = False
+
+                        try:
+                            response = self._invoke_with_failover(
+                                bundle,
+                                timeout_s=getattr(self, "_stream_failover_timeout_s", None),
+                            )
+                            reply = self._extract_reply_from_response(response)
+                            if not reply.strip() or reply.strip() == _DEFAULT_EMPTY_REPLY:
+                                rescued = self._rescue_empty_reply(
+                                    bundle, raw_reply=reply, source="stream_failover"
+                                )
+                                if rescued:
+                                    reply = rescued
+                            if not reply.strip():
+                                reply = _DEFAULT_EMPTY_REPLY
+                            reply_parts.append(reply)
+                            yield reply
+                        except Exception as failover_exc:
+                            logger.warning(
+                                "流式失败后的非流式兜底也失败: %s",
+                                failover_exc,
+                            )
+                            fallback = (
+                                "抱歉主人，网络连接似乎不太稳定，我暂时无法联系模型服务。"
+                                "请检查网络/代理或稍后再试~"
+                            )
+                            reply_parts.append(fallback)
+                            yield fallback
+                else:
+                    logger.error(f"LLM调用失败: {error_msg}")
+                    raise
 
             if cancel_event and cancel_event.is_set():
                 logger.info("流式对话已取消（忽略后处理）")
@@ -6146,7 +5980,8 @@ class MintChatAgent:
                     reply_parts.append(chunk)
                     yield chunk
                 if canceled:
-                    # Drain the iterator to ensure internal cleanup (closing streams, avoiding dangling tasks).
+                    # Drain the iterator to ensure internal cleanup (closing streams, avoiding
+                    # dangling tasks).
                     try:
                         async for _ in stream_iter:
                             pass
@@ -6331,18 +6166,6 @@ class MintChatAgent:
                     self.core_memory.clear_all()
             except Exception as e:
                 logger.debug("清空核心记忆失败（可忽略）: %s", e)
-        if getattr(self, "diary_memory", None):
-            try:
-                if hasattr(self.diary_memory, "clear_all"):
-                    self.diary_memory.clear_all()
-            except Exception as e:
-                logger.debug("清空日记失败（可忽略）: %s", e)
-        if getattr(self, "lore_book", None):
-            try:
-                if hasattr(self.lore_book, "clear_all"):
-                    self.lore_book.clear_all()
-            except Exception as e:
-                logger.debug("清空知识库失败（可忽略）: %s", e)
 
         logger.info("记忆已清空")
 
@@ -6378,36 +6201,11 @@ class MintChatAgent:
             ids = core_data.get("ids") or []
             docs = core_data.get("documents") or []
             metas = core_data.get("metadatas") or []
-            for doc_id, content, meta in zip(ids, docs, metas):
-                if not content:
-                    continue
-                core_items.append(
-                    {"id": str(doc_id), "content": content, "metadata": dict(meta or {})}
-                )
+        for doc_id, content, meta in zip(ids, docs, metas):
+            if not content:
+                continue
+            core_items.append({"id": str(doc_id), "content": content, "metadata": dict(meta or {})})
         advanced["core_memory"] = {"count": len(core_items), "items": core_items}
-
-        # DiaryMemory（以 diary.json 为准；向量库可由内容重建）
-        diary_entries = []
-        diary_file = getattr(getattr(self, "diary_memory", None), "diary_file", None)
-        if diary_file:
-            try:
-                diary_entries = json.loads(Path(diary_file).read_text(encoding="utf-8"))
-                if not isinstance(diary_entries, list):
-                    diary_entries = []
-            except Exception as e:
-                logger.debug("读取 diary.json 失败（可忽略）: %s", e)
-        advanced["diary"] = {"count": len(diary_entries), "items": diary_entries}
-
-        # LoreBook（JSON 为准；向量库可由内容重建）
-        lore_items = []
-        if getattr(self, "lore_book", None):
-            try:
-                lore_items = self.lore_book.get_all_lores(use_cache=False)
-            except TypeError:
-                lore_items = self.lore_book.get_all_lores()
-            except Exception as e:
-                logger.debug("读取 lore_books 失败（可忽略）: %s", e)
-        advanced["lore_book"] = {"count": len(lore_items), "items": lore_items}
 
         data["advanced_memory"] = advanced
 
@@ -6441,8 +6239,6 @@ class MintChatAgent:
             "short_term": 0,
             "long_term": 0,
             "core_memory": 0,
-            "diary": 0,
-            "lore_book": 0,
         }
 
         # 基础记忆（短期+长期）
@@ -6474,36 +6270,6 @@ class MintChatAgent:
                 except Exception as e:
                     logger.warning("导入核心记忆失败: %s", e)
 
-            # Diary
-            diary_block = advanced.get("diary")
-            diary_items = diary_block.get("items") if isinstance(diary_block, dict) else None
-            if (
-                isinstance(diary_items, list)
-                and getattr(self, "diary_memory", None)
-                and hasattr(self.diary_memory, "import_entries")
-            ):
-                try:
-                    stats["diary"] = int(
-                        self.diary_memory.import_entries(diary_items, overwrite=overwrite)
-                    )
-                except Exception as e:
-                    logger.warning("导入日记失败: %s", e)
-
-            # LoreBook
-            lore_block = advanced.get("lore_book")
-            lore_items = lore_block.get("items") if isinstance(lore_block, dict) else None
-            if (
-                isinstance(lore_items, list)
-                and getattr(self, "lore_book", None)
-                and hasattr(self.lore_book, "import_records")
-            ):
-                try:
-                    stats["lore_book"] = int(
-                        self.lore_book.import_records(lore_items, overwrite=overwrite)
-                    )
-                except Exception as e:
-                    logger.warning("导入知识库失败: %s", e)
-
         logger.info("导入记忆完成: %s", stats)
         return stats
 
@@ -6527,8 +6293,6 @@ class MintChatAgent:
             "mood_stats": self.mood_system.get_mood_stats(),  # v2.3 NEW!
             "advanced_memory": {  # v2.3 NEW!
                 "core_memory_enabled": settings.agent.is_core_mem,
-                "diary_enabled": settings.agent.long_memory,
-                "lore_books_enabled": settings.agent.lore_books,
             },
             "character_state": self.character_state.get_stats(),  # v2.5 NEW!
             "style_learning": self.style_learner.get_stats(),  # v2.5 NEW!
@@ -6558,51 +6322,6 @@ class MintChatAgent:
             importance: 重要性
         """
         self.core_memory.add_core_memory(content, category, importance)
-
-    def add_lore(
-        self,
-        title: str,
-        content: str,
-        category: str = "general",
-        keywords: Optional[List[str]] = None,
-        source: str = "manual",
-    ) -> Optional[str]:
-        """
-        添加知识库条目 - v2.30.38 增强版
-
-        Args:
-            title: 标题
-            content: 内容
-            category: 类别
-            keywords: 关键词
-            source: 来源
-
-        Returns:
-            str: 知识ID，失败返回 None
-        """
-        return self.lore_book.add_lore(title, content, category, keywords, source)
-
-    def learn_from_file(self, filepath: str) -> int:
-        """
-        从文件中学习知识 - v2.30.38 新增
-
-        Args:
-            filepath: 文件路径
-
-        Returns:
-            int: 学习到的知识数量
-        """
-        learned_ids = self.lore_book.learn_from_file(filepath)
-        return len(learned_ids)
-
-    def get_lore_statistics(self) -> Dict[str, Any]:
-        """
-        获取知识库统计信息 - v2.30.38 新增
-
-        Returns:
-            Dict: 统计信息
-        """
-        return self.lore_book.get_statistics()
 
     def get_mood_status(self) -> str:
         """
@@ -6825,16 +6544,74 @@ class MintChatAgent:
                     self._pending_state_persist.cancel()
                 self._pending_state_persist = None
 
-        # 1.15 取消待处理的长期记忆写入任务（避免退出阶段被向量写入拖慢）
-        if hasattr(self, "_pending_long_term_write") and self._pending_long_term_write:
-            with self._long_term_write_lock:
-                if self._pending_long_term_write and not self._pending_long_term_write.done():
-                    self._pending_long_term_write.cancel()
-                self._pending_long_term_write = None
-                try:
-                    self._long_term_write_buffer.clear()
-                except Exception:
-                    pass
+        # 1.15 尽量落盘长期记忆写入（避免重启丢失）
+        if hasattr(self, "_long_term_write_lock") and hasattr(self, "_long_term_write_buffer"):
+            pending = getattr(self, "_pending_long_term_write", None)
+            # Prevent the done-callback from rescheduling new slices during close().
+            try:
+                with self._long_term_write_lock:
+                    self._pending_long_term_write = None
+            except Exception:
+                pass
+
+            # Best-effort wait for the in-flight drain slice to finish quickly.
+            try:
+                if pending is not None and hasattr(pending, "done") and not pending.done():
+                    try:
+                        pending.result(timeout=2.0)
+                    except Exception:
+                        try:
+                            pending.cancel()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            # Drain remaining buffered interactions synchronously and flush the batch buffer.
+            try:
+                memory = getattr(self, "memory", None)
+                items: list[tuple[str, str, Optional[float]]] = []
+                with self._long_term_write_lock:
+                    try:
+                        while self._long_term_write_buffer:
+                            items.append(self._long_term_write_buffer.popleft())
+                    except Exception:
+                        try:
+                            items = list(self._long_term_write_buffer)
+                            self._long_term_write_buffer.clear()
+                        except Exception:
+                            items = []
+
+                if memory is not None and items:
+                    add_long_term = getattr(memory, "add_interaction_long_term", None)
+                    for msg, reply, imp in items:
+                        try:
+                            if callable(add_long_term):
+                                add_long_term(
+                                    user_message=msg,
+                                    assistant_message=reply,
+                                    importance=imp,
+                                )
+                            else:
+                                memory.add_interaction(
+                                    user_message=msg,
+                                    assistant_message=reply,
+                                    save_to_long_term=True,
+                                    importance=imp,
+                                )
+                        except Exception:
+                            pass
+
+                if memory is not None:
+                    try:
+                        long_term = getattr(memory, "long_term", None)
+                        flush_batch = getattr(long_term, "flush_batch", None)
+                        if callable(flush_batch):
+                            flush_batch()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
         # 1.2 关闭复用的 AsyncLoopThread（用于同步路径跑异步逻辑）
         try:
@@ -6912,14 +6689,6 @@ class MintChatAgent:
                 tool_registry.close()
         except Exception as e:
             logger.debug("关闭工具执行器时出错（可忽略）: %s", e)
-
-        # 8. 关闭知识库/高级记忆的后台资源（如异步处理器）
-        if hasattr(self, "lore_book") and self.lore_book:
-            try:
-                if hasattr(self.lore_book, "close"):
-                    self.lore_book.close()
-            except Exception as e:
-                logger.debug("关闭知识库资源时出错（可忽略）: %s", e)
 
         # 4. 关闭记忆检索器
         if hasattr(self, "memory_retriever") and self.memory_retriever:
@@ -7008,40 +6777,6 @@ class MintChatAgent:
             else:
                 stats["core_memories"] = 0
 
-            # 日记统计（v2.30.29: 增加情感和主题统计）
-            if self.diary_memory.diary_file and self.diary_memory.diary_file.exists():
-                try:
-                    import json
-
-                    diaries = json.loads(self.diary_memory.diary_file.read_text(encoding="utf-8"))
-                    stats["diary_entries"] = len(diaries)
-
-                    # 情感统计
-                    stats["emotion_stats"] = self.diary_memory.get_emotion_stats()
-
-                    # 主题统计
-                    stats["topic_stats"] = self.diary_memory.get_topic_stats()
-                except Exception as e:
-                    logger.warning(f"获取日记统计失败: {e}")
-                    stats["diary_entries"] = 0
-                    stats["emotion_stats"] = {}
-                    stats["topic_stats"] = {}
-            else:
-                stats["diary_entries"] = 0
-                stats["emotion_stats"] = {}
-                stats["topic_stats"] = {}
-
-            # 知识库统计
-            if self.lore_book.vectorstore:
-                try:
-                    lore_data = self.lore_book.vectorstore.get()
-                    stats["lore_entries"] = len(lore_data.get("documents", []))
-                except Exception as e:
-                    logger.warning(f"获取知识库统计失败: {e}")
-                    stats["lore_entries"] = 0
-            else:
-                stats["lore_entries"] = 0
-
             return stats
 
         except Exception as e:
@@ -7051,8 +6786,6 @@ class MintChatAgent:
                 "short_term_messages": 0,
                 "long_term_memories": 0,
                 "core_memories": 0,
-                "diary_entries": 0,
-                "lore_entries": 0,
             }
 
     def _execute_tool_calls_from_text(

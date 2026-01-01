@@ -39,7 +39,6 @@ USER_EXAMPLE_REQUIRED_PATHS: tuple[str, ...] = (
     "Agent.mood_system_enabled",
     "Agent.emotion_memory_enabled",
     "Agent.long_memory",
-    "Agent.lore_books",
     # TTS (basic)
     "TTS.enabled",
     "TTS.api_url",
@@ -118,4 +117,3 @@ def has_config_path(config: Mapping[str, Any], path: str) -> bool:
             return False
         current = current.get(part)
     return True
-

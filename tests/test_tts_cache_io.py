@@ -58,3 +58,58 @@ async def _run_disk_cache_get_uses_executor() -> None:
 
 def test_ttsmanager_disk_cache_get_runs_in_executor() -> None:
     asyncio.run(_run_disk_cache_get_uses_executor())
+
+
+async def _run_disk_cache_clear_uses_executor() -> None:
+    manager = TTSManager(
+        TTSConfig(
+            api_url="http://127.0.0.1:9880/tts",
+            disk_cache_enabled=False,
+        )
+    )
+
+    main_thread = threading.current_thread()
+    called_thread: threading.Thread | None = None
+
+    class _DummyDiskCache:
+        def clear(self) -> None:
+            nonlocal called_thread
+            called_thread = threading.current_thread()
+
+    manager._disk_cache = _DummyDiskCache()  # type: ignore[attr-defined]
+
+    await manager.clear_cache()
+    assert called_thread is not None
+    assert called_thread.ident is not None and main_thread.ident is not None
+    assert called_thread.ident != main_thread.ident
+
+
+def test_ttsmanager_disk_cache_clear_runs_in_executor() -> None:
+    asyncio.run(_run_disk_cache_clear_uses_executor())
+
+
+def test_ttsmanager_get_stats_includes_client_compat_fields() -> None:
+    manager = TTSManager(
+        TTSConfig(
+            api_url="http://127.0.0.1:9880/tts",
+            disk_cache_enabled=False,
+        )
+    )
+
+    class _DummyClient:
+        def get_stats(self):  # noqa: ANN001
+            return {
+                "total_requests": 10,
+                "successful_requests": 7,
+                "failed_requests": 3,
+                "total_retries": 5,
+            }
+
+    manager.client = _DummyClient()  # type: ignore[assignment]
+
+    stats = manager.get_stats()
+    assert stats["client_stats"]["total_requests"] == 10
+    assert stats["total_requests"] == 10
+    assert stats["successful_requests"] == 7
+    assert stats["failed_requests"] == 3
+    assert stats["retry_count"] == 5

@@ -252,7 +252,9 @@ class ShortcutSettingsDialog(QDialog):
 
             if sequence in shortcuts_map:
                 conflict_key = shortcuts_map[sequence]
-                return f"快捷键冲突: '{self.SHORTCUT_DESCRIPTIONS[key]}' 和 '{self.SHORTCUT_DESCRIPTIONS[conflict_key]}' 都使用了 '{sequence}'"
+                key_desc = self.SHORTCUT_DESCRIPTIONS[key]
+                conflict_desc = self.SHORTCUT_DESCRIPTIONS[conflict_key]
+                return f"快捷键冲突: '{key_desc}' 和 '{conflict_desc}' 都使用了 " f"'{sequence}'"
 
             shortcuts_map[sequence] = key
 

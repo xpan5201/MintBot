@@ -59,10 +59,6 @@ USER_AGENT_KEYS = {
     "mood_system_enabled",
     "emotion_memory_enabled",
     "long_memory",
-    "lore_books",
-    "daily_summary_enabled",
-    "smart_diary_enabled",
-    "proactive_push_enabled",
     "style_learning_enabled",
     "tool_selector_enabled",
 }

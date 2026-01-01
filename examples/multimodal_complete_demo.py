@@ -17,11 +17,11 @@ from pathlib import Path
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.multimodal.vision import vision_processor
-from src.multimodal.audio import audio_processor
-from src.utils.export import exporter
-from src.utils.cache import response_cache
-from src.utils.logger import get_logger
+from src.multimodal.vision import vision_processor  # noqa: E402
+from src.multimodal.audio import audio_processor  # noqa: E402
+from src.utils.export import exporter  # noqa: E402
+from src.utils.cache import response_cache  # noqa: E402
+from src.utils.logger import get_logger  # noqa: E402
 
 logger = get_logger(__name__)
 

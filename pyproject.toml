@@ -39,8 +39,6 @@ dependencies = [
   # PyTorch (CUDA 13.0 on Windows/Linux; CPU on macOS)
   "torch==2.9.1+cu130; sys_platform != 'darwin'",
   "torch==2.9.1; sys_platform == 'darwin'",
-  "rank-bm25>=0.2.2",
-  "networkx>=3.4.2",
   # Cache
   "redis>=5.0.0",
   # Config / HTTP / Logging
@@ -116,3 +114,33 @@ target-version = ["py313"]
 [tool.mypy]
 python_version = "3.13"
 ignore_missing_imports = true
+no_implicit_optional = false
+
+# Mypy is enforced in CI, but this codebase is still incrementally adopting typing.
+# For now, keep mypy focused on configuration/version modules. The remaining subsystems are highly dynamic
+# (PyQt, LangChain tools, multimodal backends, etc.) and will be typed incrementally.
+[[tool.mypy.overrides]]
+module = ["src.gui", "src.gui.*"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["src.agent", "src.agent.*"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["src.utils", "src.utils.*"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["src.auth", "src.auth.*"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["src.multimodal", "src.multimodal.*"]
+ignore_errors = true
+
+# Incremental typing: enable mypy for key agent modules that are now guarded by tests
+# and have stable, low-dynamic surfaces.
+[[tool.mypy.overrides]]
+module = ["src.agent.advanced_memory", "src.agent.memory_retriever"]
+ignore_errors = false

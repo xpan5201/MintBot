@@ -82,7 +82,7 @@ class StreamProcessor:
 
         # 缓冲区
         self._buffer = ""
-        self._sentence_queue = deque()
+        self._sentence_queue: deque[str] = deque()
 
         # 统计信息
         self._stats = {

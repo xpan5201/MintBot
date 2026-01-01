@@ -422,7 +422,7 @@ class TTSHistoryPanel(QWidget):
                 try:
                     dt = datetime.fromisoformat(created_at)
                     time_str = dt.strftime("%m-%d %H:%M")
-                except:
+                except Exception:
                     time_str = created_at[:16]
             else:
                 time_str = ""

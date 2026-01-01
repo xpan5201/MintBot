@@ -93,14 +93,20 @@ class PreparedStatementManager:
             # 更新语句
             "update_last_login": "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?",
             "invalidate_session": "UPDATE sessions SET is_active = 0 WHERE session_token = ?",
-            "deactivate_user_sessions": "UPDATE sessions SET is_active = 0 WHERE user_id = ? AND is_active = 1",
+            "deactivate_user_sessions": (
+                "UPDATE sessions SET is_active = 0 WHERE user_id = ? AND is_active = 1"
+            ),
             "delete_user_data": "DELETE FROM user_data WHERE user_id = ? AND key = ?",
         }
 
         with self._lock:
+            conn = self._conn
+            if conn is None:
+                raise RuntimeError("数据库连接未初始化")
+
             for name, query in common_queries.items():
                 try:
-                    cursor = self._conn.cursor()
+                    cursor = conn.cursor()
                     # SQLite会自动缓存预编译的语句
                     self._statements[name] = (query, cursor)
                     logger.debug(f"预编译语句: {name}")
@@ -132,6 +138,10 @@ class PreparedStatementManager:
             if statement_name not in self._statements:
                 raise ValueError(f"未找到预编译语句: {statement_name}")
 
+            conn = self._conn
+            if conn is None:
+                raise RuntimeError("数据库连接未初始化")
+
             query, cursor = self._statements[statement_name]
 
             try:
@@ -141,7 +151,7 @@ class PreparedStatementManager:
                     cursor.execute(query)
 
                 if commit:
-                    self._conn.commit()
+                    conn.commit()
 
                 if fetch_one:
                     return cursor.fetchone()
@@ -151,7 +161,7 @@ class PreparedStatementManager:
                     return cursor.lastrowid
 
             except Exception as e:
-                self._conn.rollback()
+                conn.rollback()
                 logger.error(f"执行预编译语句失败 {statement_name}: {e}")
                 raise
 

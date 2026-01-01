@@ -93,7 +93,8 @@ def _try_import_live2d_v3() -> tuple[Any | None, str]:
         v3_spec.loader.exec_module(v3_mod)
         return v3_mod, ""
     except Exception as exc:
-        # Keep the most actionable message (prefer the second attempt which can surface shadowing issues).
+        # Keep the most actionable message.
+        # Prefer the second attempt which can surface shadowing issues.
         return None, repr(exc) or first_error
 
 
@@ -110,7 +111,10 @@ def _relpath_posix(target: Path, start: Path) -> str:
 
 
 def _stable_ascii_token(value: str, *, prefix: str) -> str:
-    """Return an ASCII-only token for potentially non-ASCII strings (CubismJson can reject Unicode)."""
+    """Return an ASCII-only token for potentially non-ASCII strings.
+
+    CubismJson can reject Unicode.
+    """
     s = str(value or "")
     if _is_ascii(s):
         return s
@@ -153,9 +157,11 @@ def _sanitize_model3_json_for_cubism(
     """
     Return a model3.json path that is safe for Cubism's limited JSON parser.
 
-    Empirically, CubismJson (live2d-py / Cubism Native SDK) may reject Unicode (either UTF-8 bytes or \\u escapes)
-    and can even crash on invalid documents. We generate an ASCII-only wrapper under `data/live2d_cache/`, copying
-    only necessary assets with non-ASCII names (and, when the source path contains Unicode, copying core assets too).
+    Empirically, CubismJson (live2d-py / Cubism Native SDK) may reject Unicode
+    (UTF-8 bytes or \\u escapes) and can even crash on invalid documents.
+    We generate an ASCII-only wrapper under `data/live2d_cache/`.
+    We copy only required assets with non-ASCII names.
+    If the source path contains Unicode, we also copy core assets.
     """
     src_model_json = Path(src_model_json)
     if not src_model_json.exists():
@@ -608,7 +614,8 @@ def _choose_expression_file_for_event(event: str, available: list[str]) -> str |
 def _gesture_kind_for_event(event: str) -> str | None:
     """Map a semantic event token to a Live2D gesture kind (best-effort).
 
-    Gestures are implemented by parameter-driven VTuber motion (no dedicated motion assets required).
+    Gestures are implemented by parameter-driven VTuber motion.
+    No dedicated motion assets required.
     """
 
     raw = str(event or "").strip()
@@ -747,7 +754,8 @@ class Live2DGlWidget(QOpenGLWidget):
     DEFAULT_EXPRESSION_FILE = "手势 抱娃娃.exp3.json"
 
     status_changed = pyqtSignal()
-    # Thread-safe bridge: external callers can request a state event without worrying about Qt thread affinity.
+    # Thread-safe bridge: external callers can request a state event.
+    # No need to worry about Qt thread affinity.
     # (Signal emission from non-GUI threads is delivered via queued connection.)
     state_event_requested = pyqtSignal(str, float, float, str)
 
@@ -784,7 +792,8 @@ class Live2DGlWidget(QOpenGLWidget):
         self._auto_view_enabled = True
         self._view_mode = self.VIEW_MODE_FULL
         self._interaction_locked = False
-        # Expression policy: keep a stable default and only change expressions via explicit user actions.
+        # Expression policy: keep a stable default.
+        # Only change expressions via explicit user actions.
         self._default_expression_file = str(self.DEFAULT_EXPRESSION_FILE)
         self._base_expression_id: str | None = None
         self._base_expression_mode = ""  # "set" (override) or "add" (stack) for the base expression
@@ -795,6 +804,8 @@ class Live2DGlWidget(QOpenGLWidget):
         self._state_expression_last_apply_t = 0.0
         self._expr_files_cache_dir: Path | None = None
         self._expr_files_cache_mtime = 0.0
+        self._expr_files_cache_dir_mtime = 0.0
+        self._expr_files_cache_model_json_mtime = 0.0
         self._expr_files_cache: list[str] = []
         self._expr_candidates_cache: dict[str, list[str]] = {}
         self._model_expression_ids: list[str] = []
@@ -810,9 +821,14 @@ class Live2DGlWidget(QOpenGLWidget):
         self._param_index_cache: dict[str, int] = {}
 
         try:
-            self.state_event_requested.connect(self._on_state_event_requested)
+            self.state_event_requested.connect(
+                self._on_state_event_requested, type=Qt.ConnectionType.QueuedConnection
+            )
         except Exception:
-            pass
+            try:
+                self.state_event_requested.connect(self._on_state_event_requested)
+            except Exception:
+                pass
 
         # "VTuber" idle layer: subtle motion + blinking + occasional expressions.
         # Implemented best-effort on top of the model without requiring a dedicated motion set.
@@ -892,7 +908,8 @@ class Live2DGlWidget(QOpenGLWidget):
         # idle motion. Temporarily boost during interaction / speech for a snappier feel.
         self._tick_ms_normal = 33  # ~30 FPS
         self._tick_ms_boost = 16  # ~60 FPS
-        # Adaptive FPS under load: when the UI thread is under pressure, temporarily reduce FPS to keep
+        # Adaptive FPS under load: when the UI thread is under pressure,
+        # temporarily reduce FPS to keep
         # the app responsive instead of stuttering.
         self._tick_ms_medium = 40  # ~25 FPS
         self._tick_ms_heavy = 50  # ~20 FPS
@@ -931,7 +948,8 @@ class Live2DGlWidget(QOpenGLWidget):
         except Exception:
             pass
 
-        # QOpenGLWidget transparency is fragile on Windows (often becomes black or causes artifacts).
+        # QOpenGLWidget transparency is fragile on Windows.
+        # (Often becomes black or causes artifacts.)
         # We render an opaque background by default and let the panel style handle the "glass" look.
         try:
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
@@ -940,7 +958,8 @@ class Live2DGlWidget(QOpenGLWidget):
             pass
         try:
             # Prefer the default non-preserved update behavior (better performance on Qt 5.5+).
-            # QOpenGLWidget always redraws each frame anyway (Live2D), so preserving content adds overhead.
+            # QOpenGLWidget always redraws each frame anyway (Live2D).
+            # Preserving content adds overhead.
             self.setUpdateBehavior(QOpenGLWidget.UpdateBehavior.NoPartialUpdate)
         except Exception:
             pass
@@ -1019,7 +1038,8 @@ class Live2DGlWidget(QOpenGLWidget):
         if str(kind) in {"user_send", "user"}:
             preferred, alt = alt, preferred
 
-        # When triggered by an actual click on the model, prefer HitTest/HitPart to decide reactions.
+        # When triggered by an actual click on the model, prefer HitTest/HitPart.
+        # Use it to decide reactions.
         # This makes interactions feel more natural and prevents non-click triggers (e.g. button)
         # from unexpectedly changing the base expression.
         hit_head = False
@@ -1102,12 +1122,14 @@ class Live2DGlWidget(QOpenGLWidget):
             except Exception:
                 pass
 
-        # Keep the default expression stable; only allow expression changes on explicit user interaction.
+        # Keep the default expression stable.
+        # Only allow expression changes on explicit user interaction.
         # (assistant/user auto reactions should not override the user's chosen look).
         try:
             allow_expression = bool(pos is not None and hit_head)
             if allow_expression and model is not None:
-                # Prefer AddExpression for base expression changes so chat-driven state events can still stack.
+                # Prefer AddExpression for base expression changes.
+                # This allows chat-driven state events to still stack.
                 if hasattr(model, "AddExpression") and hasattr(model, "RemoveExpression"):
                     try:
                         try:
@@ -1323,7 +1345,8 @@ class Live2DGlWidget(QOpenGLWidget):
         ww = max(1, int(w))
         hh = max(1, int(h))
 
-        # Qt's `resizeGL` parameters may already be device-pixel sizes (depending on Qt version/platform).
+        # Qt's `resizeGL` parameters may already be device-pixel sizes.
+        # (Depends on Qt version/platform.)
         # Avoid double-multiplying by DPR, otherwise the model appears "squeezed"/tiny on HiDPI.
         try:
             dpr = float(self.devicePixelRatioF() or 1.0)
@@ -1368,7 +1391,8 @@ class Live2DGlWidget(QOpenGLWidget):
         except Exception:
             now = 0.0
 
-        # Coalesce expensive view updates: apply at most once per frame even if mouse events fire at 500+ Hz.
+        # Coalesce expensive view updates: apply at most once per frame.
+        # (Mouse events can fire at 500+ Hz.)
         try:
             if self._view_apply_pending:
                 self._view_apply_pending = False
@@ -1547,8 +1571,8 @@ class Live2DGlWidget(QOpenGLWidget):
                 event.accept()
                 return
 
-            # Left drag pan (when unlocked): delay pan until the cursor moves enough so simple clicks
-            # still trigger Tap animations.
+            # Left drag pan (when unlocked): delay pan until the cursor moves enough
+            # that simple clicks still trigger Tap animations.
             if (
                 (not self._interaction_locked)
                 and self._pan_candidate
@@ -1603,7 +1627,8 @@ class Live2DGlWidget(QOpenGLWidget):
                 except Exception:
                     pass
 
-                # Left press becomes a pan candidate (move beyond threshold => pan); otherwise Tap on release.
+                # Left press becomes a pan candidate (move beyond threshold => pan).
+                # Otherwise, Tap on release.
                 try:
                     if event.button() == Qt.MouseButton.LeftButton:
                         self._pan_candidate = True
@@ -2340,8 +2365,8 @@ class Live2DGlWidget(QOpenGLWidget):
     def _drag_pos_to_model_px(self, pos: QPointF) -> tuple[float, float]:
         """Convert a Qt local mouse pos to the coordinate space expected by `model.Drag`.
 
-        live2d-py typically works in the same pixel space as `model.Resize`. Qt events provide logical
-        coordinates, while `resizeGL` may pass device-pixel sizes. We scale accordingly to avoid HiDPI
+        live2d-py typically works in the same pixel space as `model.Resize`.
+        Qt events provide logical coordinates, while `resizeGL` may pass device-pixel sizes.
         mismatch (more consistent interaction across DPI settings).
         """
 
@@ -2381,7 +2406,8 @@ class Live2DGlWidget(QOpenGLWidget):
             self._drag_smooth_t = 0.0
             return
 
-        # 1) User pointer interaction takes precedence (even when locked; lock only disables pan/zoom).
+        # 1) User pointer interaction takes precedence.
+        #    (Even when locked; lock only disables pan/zoom.)
         hovering = False
         try:
             hovering = bool(self.underMouse())
@@ -2448,7 +2474,8 @@ class Live2DGlWidget(QOpenGLWidget):
                         self._idle_drag_next_t = now_f + float(interval_s)
 
                 if not should_drag:
-                    # Skip `Drag` this frame but still allow periodic motion/expression scheduling below.
+                    # Skip `Drag` this frame.
+                    # Still allow periodic motion/expression scheduling below.
                     pass
                 else:
                     try:
@@ -3342,6 +3369,8 @@ class Live2DGlWidget(QOpenGLWidget):
         try:
             self._expr_files_cache_dir = None
             self._expr_files_cache_mtime = 0.0
+            self._expr_files_cache_dir_mtime = 0.0
+            self._expr_files_cache_model_json_mtime = 0.0
             self._expr_files_cache = []
             self._expr_candidates_cache = {}
         except Exception:
@@ -3406,18 +3435,45 @@ class Live2DGlWidget(QOpenGLWidget):
         except Exception:
             now = 0.0
 
-        # Cache for a short TTL (filesystem reads/parsing can be expensive in the hot path).
+        try:
+            src_model_json = Path(model_json)
+        except Exception:
+            return
+
+        # Cache invalidation based on filesystem mtimes (avoid periodic disk IO/JSON parsing
+        # on the GUI thread).
+        model_json_mtime = 0.0
+        dir_mtime = 0.0
+        try:
+            model_json_mtime = float(src_model_json.stat().st_mtime)
+        except Exception:
+            model_json_mtime = 0.0
+        try:
+            dir_mtime = float(model_dir.stat().st_mtime)
+        except Exception:
+            dir_mtime = 0.0
+
         try:
             if (
                 self._expr_files_cache_dir is not None
                 and Path(self._expr_files_cache_dir) == model_dir
-                and (now - float(self._expr_files_cache_mtime or 0.0)) < 2.0
             ):
-                return
+                if model_json_mtime > 0.0 and dir_mtime > 0.0:
+                    if (
+                        float(getattr(self, "_expr_files_cache_model_json_mtime", 0.0) or 0.0)
+                        == model_json_mtime
+                        and float(getattr(self, "_expr_files_cache_dir_mtime", 0.0) or 0.0)
+                        == dir_mtime
+                    ):
+                        return
+                else:
+                    # Fallback: if stat fails (rare), use a conservative TTL to avoid
+                    # hot-loop refresh.
+                    if (now - float(self._expr_files_cache_mtime or 0.0)) < 10.0:
+                        return
         except Exception:
             pass
 
-        src_model_json = Path(model_json)
         files: list[str] = []
         candidates: dict[str, list[str]] = {}
 
@@ -3466,7 +3522,8 @@ class Live2DGlWidget(QOpenGLWidget):
                 files.append(fname)
                 included.add(fname)
 
-            # Include any extra exp files not referenced in model3.json (matches sanitizer behavior).
+            # Include any extra exp files not referenced in model3.json.
+            # (Matches sanitizer behavior.)
             extra_idx = base_count + 1
             for p in exp_paths:
                 try:
@@ -3489,6 +3546,8 @@ class Live2DGlWidget(QOpenGLWidget):
             self._expr_files_cache = list(files)
             self._expr_candidates_cache = dict(candidates)
             self._expr_files_cache_mtime = float(now)
+            self._expr_files_cache_dir_mtime = float(dir_mtime)
+            self._expr_files_cache_model_json_mtime = float(model_json_mtime)
         except Exception:
             pass
 
@@ -3509,7 +3568,7 @@ class Live2DGlWidget(QOpenGLWidget):
                 cached = self._expr_candidates_cache.get(filename)
                 if cached:
                     return list(cached)
-                # If the model3.json has an explicit Expressions list and the file isn't referenced there,
+                # If the model3.json has an explicit Expressions list and the file isn't referenced
                 # don't guess an ID (it likely won't exist on the loaded model anyway).
                 if self._expr_candidates_cache:
                     return []
@@ -3637,8 +3696,8 @@ class Live2DGlWidget(QOpenGLWidget):
     ) -> bool:
         """Apply a temporary expression based on a semantic state event.
 
-        The base/persistent expression is only changed by user actions; state events are transient and will
-        revert back to the base expression after a short TTL.
+        The base/persistent expression is only changed by user actions.
+        State events are transient and will revert back to the base expression after a short TTL.
         """
         if not self._ready or self._model is None:
             return False
@@ -3714,7 +3773,8 @@ class Live2DGlWidget(QOpenGLWidget):
             pass
 
         # Prefer additive state expressions when possible so the base expression stays stable.
-        # If a previous `SetExpression` override is still active, clear it so `AddExpression` takes effect.
+        # If a previous `SetExpression` override is still active, clear it.
+        # This ensures `AddExpression` takes effect.
         try:
             active_id = str(getattr(self, "_state_expression_id", "") or "").strip()
             active_mode = str(getattr(self, "_state_expression_mode", "") or "")
@@ -3872,7 +3932,8 @@ class Live2DGlWidget(QOpenGLWidget):
                 pass
             return
 
-        # If our base expression is additive, clearing the SetExpression override is enough to reveal it again.
+        # If our base expression is additive, clearing the SetExpression override is enough
+        # to reveal it again.
         if base_mode == "add" and hasattr(self._model, "ResetExpression"):
             try:
                 self._model.ResetExpression()

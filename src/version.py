@@ -12,10 +12,25 @@ VERSION_HISTORY = {
     "2.60.6": {
         "date": "2025-11-21",
         "changes": [
-            "🧠 Agent 主系统再升级：引入 `AgentConversationBundle` 统一 chat/chat_stream/chat_stream_async 的上下文构建，图片描述/来源、角色状态与压缩策略一次成型",
-            "🛡️ LLM failover 与看门狗：`_invoke_with_failover()` 自动触发压缩上下文重试，`_stream_llm_response()` / `_astream_llm_response()` 共享 `LLMStreamWatchdog`，首包/总耗时都有日志",
-            "🧰 Context7 工具中间件链：重新挂载 LLMToolSelector / ContextEditing / ToolLimit / PermissionScoped，让工具筛选、历史裁剪与权限控制全自动",
-            "📚 记忆检索与日志修复：ConcurrentMemoryRetriever 恢复 per-source 熔断与 EMA 动态超时，新增 `_LegacyLoggerAdapter` 兼容 `%s`/`%.0f` 日志写法避免占位符泄露",
+            (
+                "🧠 Agent 主系统再升级：引入 `AgentConversationBundle` "
+                "统一 chat/chat_stream/chat_stream_async 的上下文构建，"
+                "图片描述/来源、角色状态与压缩策略一次成型"
+            ),
+            (
+                "🛡️ LLM failover 与看门狗：`_invoke_with_failover()` 自动触发压缩上下文重试，"
+                "`_stream_llm_response()` / `_astream_llm_response()` 共享 `LLMStreamWatchdog`，"
+                "首包/总耗时都有日志"
+            ),
+            (
+                "🧰 Context7 工具中间件链：重新挂载 "
+                "LLMToolSelector / ContextEditing / ToolLimit / PermissionScoped，"
+                "让工具筛选、历史裁剪与权限控制全自动"
+            ),
+            (
+                "📚 记忆检索与日志修复：ConcurrentMemoryRetriever 恢复 per-source 熔断与 EMA 动态超时，"
+                "新增 `_LegacyLoggerAdapter` 兼容 `%s`/`%.0f` 日志写法避免占位符泄露"
+            ),
         ],
     },
     "2.60.5": {
@@ -24,7 +39,10 @@ VERSION_HISTORY = {
             "🤖 LLM 看门狗回归：恢复 `_invoke_agent_with_timeout()`、线程池与阶段耗时记录，超时即时降级并提醒用户",
             "🌊 流式/异步流式防护：`LLMStreamWatchdog` 统一首包/空闲/总时长控制，queue + wait_for 确保不会无限卡顿",
             "🧠 上下文压缩升级：`_prepare_messages_async()` 重新启用历史摘要窗口，历史要点与状态/记忆上下文一次性拼接",
-            "📚 记忆检索与日志修复：ConcurrentMemoryRetriever 恢复 per-source 超时与 `last_latency_ms`，移除 loguru `isEnabledFor` 调用",
+            (
+                "📚 记忆检索与日志修复：ConcurrentMemoryRetriever 恢复 per-source 超时与 `last_latency_ms`，"
+                "移除 loguru `isEnabledFor` 调用"
+            ),
         ],
     },
     "2.60.4": {
@@ -48,7 +66,10 @@ VERSION_HISTORY = {
     "2.60.2": {
         "date": "2025-11-21",
         "changes": [
-            "🐛 修复TTS客户端关闭错误：synthesize方法中检测客户端关闭状态并自动重建，彻底解决'Cannot send a request, as the client has been closed'报错",
+            (
+                "🐛 修复TTS客户端关闭错误：synthesize方法中检测客户端关闭状态并自动重建，"
+                "彻底解决'Cannot send a request, as the client has been closed'报错"
+            ),
             "🎯 TTS预取任务错误处理优化：优雅处理客户端关闭和事件循环异常，避免后台任务崩溃",
             "⚡ Agent系统性能优化：精简代码逻辑，提升响应速度和稳定性",
         ],
@@ -71,7 +92,7 @@ def get_version_string() -> str:
     return f"MintChat v{__version__}"
 
 
-def get_version_history(version: str = None) -> dict:
+def get_version_history(version: str | None = None) -> dict:
     """
     获取版本历史
 

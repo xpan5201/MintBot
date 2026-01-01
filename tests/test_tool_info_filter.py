@@ -9,7 +9,9 @@ from src.agent.core import (
 
 def test_filter_tool_info_strips_structured_prefix_lists() -> None:
     raw = (
-        '["general_chat"]}["emotion_analysis","affection_expression","personalized_advice","mindfulness_exercises"]}'
+        '["general_chat"]}'
+        '["emotion_analysis","affection_expression","personalized_advice",'
+        '"mindfulness_exercises"]}'
         "当然是真的喵！(认真地点点头)"
     )
     assert MintChatAgent._filter_tool_info(raw).startswith("当然是真的喵！")
@@ -22,7 +24,8 @@ def test_filter_tool_info_strips_tools_dict_prefix() -> None:
 
 def test_filter_tool_info_strips_openai_tool_calls_prefix() -> None:
     raw = (
-        '[{"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\":\\"abc\\"}"}}]'
+        '[{"id":"call_1","type":"function","function":{"name":"web_search","arguments":'
+        '"{\\"query\\":\\"abc\\"}"}}]'
         "当然是真的喵！"
     )
     assert MintChatAgent._filter_tool_info(raw) == "当然是真的喵！"
@@ -66,7 +69,10 @@ def test_stream_prefix_stripper_strips_structured_prefix_across_chunks() -> None
     chunks = [
         '["general',
         '_chat"]}',
-        '["emotion_analysis","affection_expression","personalized_advice","mindfulness_exercises"]}',
+        (
+            '["emotion_analysis","affection_expression","personalized_advice",'
+            '"mindfulness_exercises"]}'
+        ),
         "当然是真的喵！(认真地点点头)",
     ]
     output = "".join(stripper.process(chunk) for chunk in chunks) + stripper.flush()

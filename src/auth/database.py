@@ -328,7 +328,8 @@ class UserDatabase:
                     return None
 
                 # users 表结构：
-                # id, username, email, password_hash, salt, user_avatar, ai_avatar, created_at, last_login, is_active
+                # id, username, email, password_hash, salt, user_avatar, ai_avatar
+                # created_at, last_login, is_active
                 user_id = row[0]
                 username_db = row[1]
                 email = row[2]
@@ -530,6 +531,16 @@ class UserDatabase:
                 (new_password_hash, new_salt, user_id),
             )
 
+            # 安全策略：重置密码后使该用户所有会话失效
+            cursor.execute(
+                """
+                UPDATE sessions
+                SET is_active = 0
+                WHERE user_id = ? AND is_active = 1
+            """,
+                (user_id,),
+            )
+
             conn.commit()
             return True
         finally:
@@ -702,24 +713,49 @@ class UserDatabase:
         Returns:
             是否更新成功
         """
+        avatar_norm = (avatar or "").strip() or "👤"
+        # 防御性限制：避免将超长字符串写入 users.db
+        if len(avatar_norm) > 512:
+            avatar_norm = avatar_norm[:512]
+
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-
-            cursor.execute(
-                """
-                UPDATE users
-                SET user_avatar = ?
-                WHERE id = ?
-            """,
-                (avatar, user_id),
-            )
+            row = None
+            try:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET user_avatar = ?
+                    WHERE id = ?
+                    RETURNING id
+                """,
+                    (avatar_norm, user_id),
+                )
+                row = cursor.fetchone()
+            except sqlite3.OperationalError:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET user_avatar = ?
+                    WHERE id = ?
+                """,
+                    (avatar_norm, user_id),
+                )
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM users
+                    WHERE id = ?
+                """,
+                    (user_id,),
+                )
+                row = cursor.fetchone()
 
             conn.commit()
-            affected_rows = cursor.rowcount
-            return affected_rows > 0
+            return row is not None
         except Exception as e:
-            logger.error(f"更新用户头像失败: {e}")
+            logger.error("更新用户头像失败: %s", e)
             return False
         finally:
             conn.close()
@@ -734,24 +770,49 @@ class UserDatabase:
         Returns:
             是否更新成功
         """
+        avatar_norm = (avatar or "").strip() or "🐱"
+        # 防御性限制：避免将超长字符串写入 users.db
+        if len(avatar_norm) > 512:
+            avatar_norm = avatar_norm[:512]
+
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-
-            cursor.execute(
-                """
-                UPDATE users
-                SET ai_avatar = ?
-                WHERE id = ?
-            """,
-                (avatar, user_id),
-            )
+            row = None
+            try:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET ai_avatar = ?
+                    WHERE id = ?
+                    RETURNING id
+                """,
+                    (avatar_norm, user_id),
+                )
+                row = cursor.fetchone()
+            except sqlite3.OperationalError:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET ai_avatar = ?
+                    WHERE id = ?
+                """,
+                    (avatar_norm, user_id),
+                )
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM users
+                    WHERE id = ?
+                """,
+                    (user_id,),
+                )
+                row = cursor.fetchone()
 
             conn.commit()
-            affected_rows = cursor.rowcount
-            return affected_rows > 0
+            return row is not None
         except Exception as e:
-            logger.error(f"更新AI助手头像失败: {e}")
+            logger.error("更新AI助手头像失败: %s", e)
             return False
         finally:
             conn.close()

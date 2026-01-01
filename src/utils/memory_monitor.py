@@ -287,8 +287,20 @@ def setup_memory_monitoring(
             """清理所有缓存的过期条目"""
             manager = get_cache_manager()
             results = manager.cleanup_all()
+            try:
+                from src.utils.cache_manager import cache_manager
+
+                results["smart_cache_manager"] = cache_manager.cleanup_all()
+            except Exception:
+                pass
+            cleaned_total = 0
             if results:
-                logger.info(f"清理了 {sum(results.values())} 个过期缓存条目")
+                try:
+                    cleaned_total = int(sum(results.values()))
+                except Exception:
+                    cleaned_total = 0
+            if cleaned_total > 0:
+                logger.info(f"清理了 {cleaned_total} 个过期缓存条目")
 
         monitor.register_cleanup_callback(cleanup_caches)
 

@@ -2,7 +2,7 @@
 
 from PyQt6.QtWidgets import QWidget, QScrollArea
 from PyQt6.QtCore import Qt, QTimer, QObject, QCoreApplication
-from typing import List, Dict, Optional, Callable
+from typing import Any, List, Dict, Optional, Callable
 import time
 
 from src.utils.logger import get_logger
@@ -215,7 +215,20 @@ class BatchRenderer:
         self.interval_ms = interval_ms
         self._timer_parent: Optional[QObject] = parent or QCoreApplication.instance()
         self.pending_updates: List[Callable] = []
+        self._pending_keys: set[tuple[Any, ...]] = set()
         self.timer: Optional[QTimer] = None
+
+    @staticmethod
+    def _callback_key(callback: Callable) -> tuple[Any, ...]:
+        """Return a stable key for coalescing duplicate callbacks within a single batch window."""
+        try:
+            func = getattr(callback, "__func__", None)
+            bound_self = getattr(callback, "__self__", None)
+            if func is not None and bound_self is not None:
+                return ("method", id(bound_self), id(func))
+        except Exception:
+            pass
+        return ("callable", id(callback))
 
     def schedule_update(self, callback: Callable):
         """调度更新
@@ -223,6 +236,14 @@ class BatchRenderer:
         Args:
             callback: 更新回调函数
         """
+        try:
+            key = self._callback_key(callback)
+        except Exception:
+            key = ("callable", id(callback))
+
+        if key in self._pending_keys:
+            return
+        self._pending_keys.add(key)
         self.pending_updates.append(callback)
 
         if self.timer is None:
@@ -244,6 +265,7 @@ class BatchRenderer:
         # 先拷贝并清空，避免回调内部再次 schedule_update() 时被本次 clear 掉
         callbacks = self.pending_updates
         self.pending_updates = []
+        self._pending_keys.clear()
 
         start_time = time.perf_counter()
 
@@ -257,6 +279,22 @@ class BatchRenderer:
 
         if elapsed_ms > 16:
             logger.warning("批量更新耗时: %.2fms（超过 16ms）", elapsed_ms)
+
+    def close(self) -> None:
+        """停止计时器并清空待处理更新（幂等）。"""
+        timer = self.timer
+        self.timer = None
+
+        self.pending_updates = []
+        self._pending_keys.clear()
+
+        if timer is None:
+            return
+        try:
+            if timer.isActive():
+                timer.stop()
+        except Exception:
+            pass
 
 
 class LazyLoader:

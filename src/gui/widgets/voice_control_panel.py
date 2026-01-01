@@ -155,7 +155,7 @@ class VoiceControlPanel(QWidget):
         layout.addWidget(slider)
 
         # 值标签
-        value_label = QLabel(f"{default_val/divisor:.1f}{suffix}")
+        value_label = QLabel(f"{default_val / divisor:.1f}{suffix}")
         value_label.setFixedWidth(50)
         value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(value_label)

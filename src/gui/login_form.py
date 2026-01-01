@@ -14,8 +14,12 @@ from .material_design_enhanced import MD3_ENHANCED_COLORS
 from .notifications import show_toast, Toast
 from .qss_utils import qss_rgba
 
+from src.utils.logger import get_logger
+
 if TYPE_CHECKING:
     from src.auth.auth_service import AuthService
+
+logger = get_logger(__name__)
 
 
 class LoginForm(QWidget):
@@ -134,6 +138,15 @@ class LoginForm(QWidget):
         self.remember_checkbox = QCheckBox("记住我")
         self.remember_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
         indicator_hover_bg = qss_rgba(MD3_ENHANCED_COLORS["primary"], 0.08)
+        check_icon_uri = (
+            "data:image/svg+xml;base64,"
+            "PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIg"
+            "ZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4K"
+            "PHBhdGggZD0iTTEzLjMzMzMgNC42NjY2N0w2IDEyTDIuNjY2NjcgOC42NjY2NyIgc3Ryb2tlPSJ3aGl0ZSIg"
+            "c3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1s"
+            "aW5lam9pbj0icm91bmQiLz4K"
+            "PC9zdmc+"
+        )
         self.remember_checkbox.setStyleSheet(
             f"""
             QCheckBox {{
@@ -155,7 +168,7 @@ class LoginForm(QWidget):
             QCheckBox::indicator:checked {{
                 background: {MD3_ENHANCED_COLORS['primary']};
                 border: 2px solid {MD3_ENHANCED_COLORS['primary']};
-                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEzLjMzMzMgNC42NjY2N0w2IDEyTDIuNjY2NjcgOC42NjY2NyIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPC9zdmc+);
+                image: url({check_icon_uri});
             }}
         """
         )

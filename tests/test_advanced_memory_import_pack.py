@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -91,53 +90,3 @@ def test_core_memory_import_records_overwrite_preserves_ids(monkeypatch, temp_di
     assert imported == 2
     ids = [doc_id for doc_id, _, _ in core.vectorstore._collection.items]
     assert ids == ["c1", "c2"]
-
-
-def test_diary_import_entries_rebuilds_vectorstore(monkeypatch, temp_dir: Path):
-    _patch_dummy_chroma(monkeypatch)
-    monkeypatch.setattr(adv.settings.agent, "long_memory", True, raising=False)
-
-    diary = adv.DiaryMemory(persist_directory=str(temp_dir / "diary"), user_id=1)
-    assert diary.vectorstore is not None
-    assert diary.diary_file is not None
-
-    imported = diary.import_entries(
-        [{"content": "today", "timestamp": "2020-01-01T00:00:00", "emotion": "happy"}],
-        overwrite=True,
-        batch_size=10,
-    )
-    assert imported == 1
-    data = json.loads(Path(diary.diary_file).read_text(encoding="utf-8"))
-    assert isinstance(data, list) and len(data) == 1
-    assert diary.vectorstore._collection.count() == 1
-
-
-def test_lore_book_import_records_preserves_ids_and_json(monkeypatch, temp_dir: Path):
-    _patch_dummy_chroma(monkeypatch)
-    monkeypatch.setattr(adv.settings.agent, "lore_books", True, raising=False)
-
-    lore = adv.LoreBook(persist_directory=str(temp_dir / "lore"), user_id=1)
-    assert lore.vectorstore is not None
-    assert lore.json_file is not None
-
-    imported = lore.import_records(
-        [
-            {
-                "id": "l1",
-                "title": "T",
-                "content": "C",
-                "category": "general",
-                "keywords": ["k"],
-                "source": "import",
-                "timestamp": "2020-01-01T00:00:00",
-                "usage_count": 3,
-            }
-        ],
-        overwrite=True,
-        batch_size=10,
-    )
-    assert imported == 1
-    json_data = json.loads(Path(lore.json_file).read_text(encoding="utf-8"))
-    assert isinstance(json_data, list) and json_data and json_data[0]["id"] == "l1"
-    ids = [doc_id for doc_id, _, _ in lore.vectorstore._collection.items]
-    assert ids == ["l1"]

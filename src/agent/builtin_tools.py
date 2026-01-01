@@ -44,6 +44,7 @@
 
 import asyncio
 import json
+import os
 import sys
 import time
 import threading
@@ -88,14 +89,58 @@ def load_config() -> Dict[str, Any]:
 
 
 _config: Optional[Dict[str, Any]] = None
+_config_cache_key: Optional[tuple[str, str, int | None, int | None]] = None
+_config_lock = threading.Lock()
 
 
 def _get_config() -> Dict[str, Any]:
     """惰性加载配置，避免模块导入阶段读取/解析配置文件。"""
-    global _config
-    if _config is None:
+    global _config, _config_cache_key
+
+    def _mtime_ns(path: Path | None) -> int | None:
+        if path is None:
+            return None
+        try:
+            return path.stat().st_mtime_ns
+        except FileNotFoundError:
+            return None
+
+    try:
+        from src.config.config_files import resolve_config_paths
+
+        user_path, dev_path, _legacy_used = resolve_config_paths()
+    except Exception:
+        return {}
+
+    cache_key = (
+        str(user_path),
+        str(dev_path) if dev_path is not None else "",
+        _mtime_ns(user_path),
+        _mtime_ns(dev_path),
+    )
+
+    if _config is not None and _config_cache_key == cache_key:
+        return _config
+
+    with _config_lock:
+        if _config is not None and _config_cache_key == cache_key:
+            return _config
         _config = load_config()
-    return _config
+        _config_cache_key = cache_key
+        return _config
+
+
+def _get_amap_key() -> str:
+    env_key = str(os.environ.get("AMAP_API_KEY") or os.environ.get("GAODE_API_KEY") or "").strip()
+    if env_key:
+        return env_key
+
+    cfg = _get_config()
+    amap = cfg.get("AMAP", {}) if isinstance(cfg, dict) else {}
+    key = ""
+    if isinstance(amap, dict):
+        key = str(amap.get("api_key", "") or "")
+    return key.strip()
 
 
 # 性能统计 (v2.30.25 增强：添加延迟百分位统计)
@@ -828,9 +873,12 @@ async def _amap_api_call(
     - 指数退避重试
     - 错误分类处理
     """
-    api_key = _get_config().get("AMAP", {}).get("api_key", "")
+    api_key = _get_amap_key()
     if not api_key:
-        raise ToolError(ErrorType.PARAM_ERROR, "高德地图 API Key 未配置")
+        raise ToolError(
+            ErrorType.PARAM_ERROR,
+            "高德地图 API Key 未配置（请在 config.user.yaml 配置 AMAP.api_key 或设置 AMAP_API_KEY）",
+        )
 
     params["key"] = api_key
     params["output"] = "json"

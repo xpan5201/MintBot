@@ -12,6 +12,10 @@ v2.26.0 新增:
 from typing import Optional
 from pydantic import BaseModel, Field
 
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 class MemoryPersistenceConfig(BaseModel):
     """记忆持久化配置"""

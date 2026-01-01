@@ -148,12 +148,16 @@ class Live2DPanel(QWidget):
         self._constraints_timer.setInterval(220)
         self._constraints_timer.timeout.connect(self._apply_expanded_constraints_if_needed)
 
+        c = MD3_ENHANCED_COLORS
+        r = MD3_ENHANCED_RADIUS
+        panel_bg = c.get("frosted_glass_light", c["surface_container_low"])
+
         self.setStyleSheet(
             f"""
             QWidget#live2dPanel {{
-                background: {MD3_ENHANCED_COLORS.get('frosted_glass_light', MD3_ENHANCED_COLORS['surface_container_low'])};
-                border: 1px solid {MD3_ENHANCED_COLORS['outline_variant']};
-                border-radius: {MD3_ENHANCED_RADIUS['extra_large']};
+                background: {panel_bg};
+                border: 1px solid {c['outline_variant']};
+                border-radius: {r['extra_large']};
             }}
             QLabel#live2dHeader {{
                 color: {MD3_ENHANCED_COLORS['on_surface_variant']};

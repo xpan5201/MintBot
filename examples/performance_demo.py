@@ -11,9 +11,9 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.agent.core import MintChatAgent
-from src.character.config_loader import CharacterConfigLoader
-from src.utils.performance import BatchProcessor, monitor_performance
+from src.agent.core import MintChatAgent  # noqa: E402
+from src.character.config_loader import CharacterConfigLoader  # noqa: E402
+from src.utils.performance import BatchProcessor, monitor_performance  # noqa: E402
 
 
 def demo_character_config():

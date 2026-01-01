@@ -15,7 +15,7 @@ from pathlib import Path
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.agent.core import MintChatAgent
+from src.agent.core import MintChatAgent  # noqa: E402
 
 
 def print_section(title: str):

@@ -215,10 +215,11 @@ class MoodSystem:
         if settings.agent.mood_persists:
             self._load_mood_state()
 
+        pad = self.pad_state
         logger.info(
             f"情绪系统初始化完成 (v2.28.2) - "
             f"情绪值: {self.mood_value:.2f}, "
-            f"PAD: P={self.pad_state.pleasure:.2f}, A={self.pad_state.arousal:.2f}, D={self.pad_state.dominance:.2f}"
+            f"PAD: P={pad.pleasure:.2f}, A={pad.arousal:.2f}, D={pad.dominance:.2f}"
         )
 
     def _load_mood_state(self) -> None:
@@ -266,9 +267,10 @@ class MoodSystem:
                 self.mood_value = self.pad_state.to_mood_value()
                 self._trim_history()
 
+                pad = self.pad_state
                 logger.info(
                     f"加载情绪状态: {self.mood_value:.2f}, "
-                    f"PAD: P={self.pad_state.pleasure:.2f}, A={self.pad_state.arousal:.2f}, D={self.pad_state.dominance:.2f}"
+                    f"PAD: P={pad.pleasure:.2f}, A={pad.arousal:.2f}, D={pad.dominance:.2f}"
                 )
         except Exception as e:
             from src.utils.exceptions import handle_exception
@@ -646,10 +648,11 @@ class MoodSystem:
         if persist:
             self._save_mood_state()
 
+        pad = self.pad_state
         logger.debug(
             f"情绪更新: {old_mood:.2f} -> {self.mood_value:.2f} "
             f"({'正面' if is_positive else '负面'}: {calculated_impact:.2f}) - {reason} | "
-            f"PAD: P={self.pad_state.pleasure:.2f}, A={self.pad_state.arousal:.2f}, D={self.pad_state.dominance:.2f}"
+            f"PAD: P={pad.pleasure:.2f}, A={pad.arousal:.2f}, D={pad.dominance:.2f}"
         )
 
     def get_mood_state(self) -> str:

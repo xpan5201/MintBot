@@ -124,7 +124,7 @@ class AsyncImageLoader:
             self._stats["total_loads"] += 1
             self._stats["total_time"] += elapsed
 
-            logger.debug(f"图片加载完成: {image_path.name}, 耗时: {elapsed*1000:.1f}ms")
+            logger.debug(f"图片加载完成: {image_path.name}, 耗时: {elapsed * 1000:.1f}ms")
             return image
 
         except Exception as e:

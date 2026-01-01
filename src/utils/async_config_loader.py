@@ -16,7 +16,6 @@ import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional
 import time
-import threading
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -130,7 +129,7 @@ class AsyncConfigLoader:
             self._stats["total_loads"] += 1
             self._stats["total_time"] += elapsed
 
-            logger.debug(f"配置加载完成: {filename}, 耗时: {elapsed*1000:.1f}ms")
+            logger.debug(f"配置加载完成: {filename}, 耗时: {elapsed * 1000:.1f}ms")
             return config
 
         except Exception as e:
@@ -191,7 +190,7 @@ class AsyncConfigLoader:
             self._stats["total_loads"] += 1
             self._stats["total_time"] += elapsed
 
-            logger.debug(f"配置加载完成: {filename}, 耗时: {elapsed*1000:.1f}ms")
+            logger.debug(f"配置加载完成: {filename}, 耗时: {elapsed * 1000:.1f}ms")
             return config
 
         except Exception as e:

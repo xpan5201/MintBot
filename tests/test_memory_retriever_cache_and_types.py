@@ -14,7 +14,6 @@ class _DummyCache:
         return None
 
     def set(self, key: str, value):  # noqa: ANN001
-        # 不需要存储，测试只关心 key
         return None
 
 
@@ -28,30 +27,12 @@ class _DummyLongTermManager:
 
 
 class _DummyCoreMemory:
-    def __init__(self) -> None:
+    def __init__(self, *, version: int = 0) -> None:
         self.vectorstore = object()
+        self.write_version = version
 
     def search_core_memories(self, query: str, k: int):  # noqa: ANN001
         return [{"content": f"core:{query}:{k}"}]
-
-
-class _DummyDiaryMemory:
-    def __init__(self) -> None:
-        self.vectorstore = object()
-
-    def search_by_time(self, query: str, k: int):  # noqa: ANN001
-        return [{"content": f"diary_time:{query}:{k}"}]
-
-    def search_by_content(self, query: str, k: int):  # noqa: ANN001
-        return [{"content": f"diary:{query}:{k}"}]
-
-
-class _DummyLoreBook:
-    def __init__(self) -> None:
-        self.vectorstore = object()
-
-    def search_lore(self, query: str, k: int):  # noqa: ANN001
-        return [{"content": f"lore:{query}:{k}"}]
 
 
 @pytest.mark.anyio
@@ -64,8 +45,6 @@ async def test_memory_retriever_core_returns_strings(monkeypatch):
     retriever = ConcurrentMemoryRetriever(
         long_term_memory=_DummyLongTermManager(user_id=1),
         core_memory=_DummyCoreMemory(),
-        diary_memory=_DummyDiaryMemory(),
-        lore_book=_DummyLoreBook(),
         max_workers=1,
     )
     try:
@@ -73,7 +52,7 @@ async def test_memory_retriever_core_returns_strings(monkeypatch):
     finally:
         retriever.close()
 
-    assert isinstance(result["core"], list)
+    assert result["long_term"] == ["lt:hello:5"]
     assert result["core"] == ["core:hello:2"]
 
 
@@ -84,12 +63,15 @@ async def test_memory_retriever_cache_key_is_user_scoped(monkeypatch):
     dummy_cache = _DummyCache(seen_keys=[])
     monkeypatch.setattr(cm, "memory_cache", dummy_cache)
 
-    async def run(user_id: int, lt_version: int) -> str:
+    async def run(
+        user_id: int,
+        lt_version: int,
+        *,
+        core_version: int = 0,
+    ) -> str:
         retriever = ConcurrentMemoryRetriever(
             long_term_memory=_DummyLongTermManager(user_id=user_id, lt_version=lt_version),
-            core_memory=_DummyCoreMemory(),
-            diary_memory=_DummyDiaryMemory(),
-            lore_book=_DummyLoreBook(),
+            core_memory=_DummyCoreMemory(version=core_version),
             max_workers=1,
         )
         try:
@@ -106,3 +88,7 @@ async def test_memory_retriever_cache_key_is_user_scoped(monkeypatch):
     key_v0 = await run(user_id=1, lt_version=0)
     key_v1 = await run(user_id=1, lt_version=1)
     assert key_v0 != key_v1
+
+    key_c0 = await run(user_id=1, lt_version=0, core_version=0)
+    key_c1 = await run(user_id=1, lt_version=0, core_version=1)
+    assert key_c0 != key_c1

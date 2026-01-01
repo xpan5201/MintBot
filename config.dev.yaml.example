@@ -2,9 +2,6 @@ MCP:
   enable: false
   servers: {}
 Agent:
-  books_thresholds: 0.5
-  diary_importance_threshold: 0.6
-  is_check_memorys: true
   is_core_mem: true
   long_term_batch_size: 10
   long_term_batch_flush_interval_s: 30.0
@@ -15,8 +12,11 @@ Agent:
       sqrt(e)
     positive_impact: 1 + log(3 * pi * x) + 0.8 * sqrt(x)
   mood_persists: true
-  scan_depth: 4
-  use_llm_extraction: false
+  context_compress_max_tokens: 2000
+  context_compress_keep_recent_messages: 6
+  context_compress_max_important_messages: 12
+  # null => follow context_auto_compress_min_messages
+  context_summary_keep_messages: null
   llm_stream_disable_after_failures: 2
   llm_stream_disable_cooldown_s: 60.0
   tool_selector_timeout_s: 4.0
@@ -25,14 +25,6 @@ Agent:
   tool_timeout_s: 30.0
   tool_rewrite_timeout_s: 8.0
   memory_character_consistency_weight: 0.1
-  knowledge_graph_rule_max_ids_per_keyword: 200
-  knowledge_graph_rule_max_keyword_links_per_node: 12
-  knowledge_graph_rule_category_anchor_count: 2
-  knowledge_graph_rule_max_relations: 100000
-  knowledge_graph_rule_shared_keywords_desc_limit: 12
-  knowledge_graph_find_max_results: 200
-  knowledge_graph_find_max_nodes_visited: 5000
-  knowledge_graph_find_include_incoming: true
   mood_persist_interval_s: 1.0
   mood_history_max_len: 500
   emotion_persist_interval_s: 1.0
@@ -48,16 +40,6 @@ Agent:
   style_guidance_max_chars: 600
   style_topic_decay: 0.985
   style_formality_decay: 0.99
-  proactive_push_k: 2
-  proactive_push_recent_topics_max_len: 8
-  proactive_push_cooldown_s: 300.0
-  proactive_push_daily_limit: 10
-  proactive_push_min_quality_score: 0.5
-  proactive_push_min_relevance_score: 0.3
-  proactive_push_max_history: 1000
-  proactive_push_max_pushed_per_user: 500
-  proactive_push_max_chars_per_item: 480
-  proactive_push_candidate_pool_size: 60
 ASR:
   streaming_model: paraformer-zh-streaming
   # hf=HuggingFace, ms=ModelScope; null=auto infer from model id

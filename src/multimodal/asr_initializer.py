@@ -266,7 +266,8 @@ def _try_register_funasr_model(model_key: str) -> bool:
 def _dir_has_transformers_weights(model_dir: Path) -> bool:
     if not model_dir.exists() or not model_dir.is_dir():
         return False
-    # Transformers considers these canonical weight filenames; shards also end with .safetensors/.bin
+    # Transformers considers these canonical weight filenames.
+    # Shards also end with .safetensors/.bin
     patterns = ("*.safetensors", "pytorch_model*.bin", "model*.safetensors", "model*.bin")
     for pat in patterns:
         if any(model_dir.glob(pat)):
@@ -447,7 +448,8 @@ def init_asr(*, force: bool = False) -> bool:
             hub = ""
         if not hub:
             hub = _infer_hub(model_name) or ""
-        # Guard against common misconfiguration: SenseVoiceSmall is typically provided via ModelScope (ms),
+        # Guard against common misconfiguration: SenseVoiceSmall is typically provided via
+        # ModelScope (ms),
         # while some users may set hub=hf by habit.
         try:
             hub_norm = hub.lower()
@@ -504,7 +506,8 @@ def init_asr(*, force: bool = False) -> bool:
                 if " is not registered" in msg and attempt < max_attempts:
                     model_key = msg.split(" is not registered", 1)[0].strip()
                     # If the failing key looks like a hub repo id, prefer switching to the official
-                    # SenseVoiceSmall ModelScope id (FunASR expects internal keys like "SenseVoiceSmall").
+                    # SenseVoiceSmall ModelScope id (FunASR expects internal keys like
+                    # "SenseVoiceSmall").
                     if "/" in model_key:
                         lowered = model_key.lower()
                         if "sensevoice" in lowered:

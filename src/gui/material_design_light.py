@@ -78,13 +78,34 @@ MD3_LIGHT_COLORS = {
     "inverse_on_surface": "#EFF1F1",  # 反色表面上的文字
     "inverse_primary": "#7FE5D8",  # 反色主色
     # 薄荷绿渐变色（加深版 - 更明显的薄荷绿效果）
-    "gradient_mint_cyan": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7FE5D8, stop:1 #7FD9CF)",  # 薄荷绿到青绿
-    "gradient_cyan_blue": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7FD9CF, stop:1 #8FE0F5)",  # 青绿到天蓝
-    "gradient_mint_blue": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7FE5D8, stop:1 #8FE0F5)",  # 薄荷绿到天蓝
-    "gradient_light_mint": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #F0FBF8, stop:1 #C8F3E8)",  # 淡薄荷绿到薄荷绿（加深）
-    "gradient_soft_mint": "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #D8F3ED, stop:1 #D5F4F1)",  # 柔和薄荷渐变（加深）
-    "gradient_mint_vertical": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #C8F3E8, stop:1 #D8F3ED)",  # 垂直薄荷渐变
-    "gradient_mint_radial": "qlineargradient(x1:0.5, y1:0.5, x2:1, y2:1, stop:0 #C8F3E8, stop:1 #A8E6CF)",  # 径向薄荷渐变
+    # 薄荷绿到青绿
+    "gradient_mint_cyan": (
+        "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7FE5D8, stop:1 #7FD9CF)"
+    ),
+    # 青绿到天蓝
+    "gradient_cyan_blue": (
+        "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7FD9CF, stop:1 #8FE0F5)"
+    ),
+    # 薄荷绿到天蓝
+    "gradient_mint_blue": (
+        "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7FE5D8, stop:1 #8FE0F5)"
+    ),
+    # 淡薄荷绿到薄荷绿（加深）
+    "gradient_light_mint": (
+        "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #F0FBF8, stop:1 #C8F3E8)"
+    ),
+    # 柔和薄荷渐变（加深）
+    "gradient_soft_mint": (
+        "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #D8F3ED, stop:1 #D5F4F1)"
+    ),
+    # 垂直薄荷渐变
+    "gradient_mint_vertical": (
+        "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #C8F3E8, stop:1 #D8F3ED)"
+    ),
+    # 径向薄荷渐变
+    "gradient_mint_radial": (
+        "qlineargradient(x1:0.5, y1:0.5, x2:1, y2:1, stop:0 #C8F3E8, stop:1 #A8E6CF)"
+    ),
     # 毛玻璃效果背景（薄荷绿调 - 加深版）
     "frosted_glass": "rgba(240, 251, 248, 0.90)",  # 半透明薄荷绿
     "frosted_glass_mint": "rgba(200, 243, 232, 0.92)",  # 半透明薄荷绿（加深）
@@ -136,10 +157,16 @@ _ANIME_LIGHT_COLOR_OVERRIDES: dict[str, str] = {
     "gradient_mint_cyan": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FF9FCB, stop:1 #B1A8FF)",
     "gradient_cyan_blue": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #B1A8FF, stop:1 #8FD1FF)",
     "gradient_mint_blue": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FF9FCB, stop:1 #8FD1FF)",
-    "gradient_light_mint": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFF7FB, stop:1 #FFE3F1)",
+    "gradient_light_mint": (
+        "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFF7FB, stop:1 #FFE3F1)"
+    ),
     "gradient_soft_mint": "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFF2FA, stop:1 #ECEAFF)",
-    "gradient_mint_vertical": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFD2E6, stop:1 #FFE3F1)",
-    "gradient_mint_radial": "qlineargradient(x1:0.5, y1:0.5, x2:1, y2:1, stop:0 #FFD2E6, stop:1 #B1A8FF)",
+    "gradient_mint_vertical": (
+        "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFD2E6, stop:1 #FFE3F1)"
+    ),
+    "gradient_mint_radial": (
+        "qlineargradient(x1:0.5, y1:0.5, x2:1, y2:1, stop:0 #FFD2E6, stop:1 #B1A8FF)"
+    ),
     "frosted_glass": "rgba(255, 247, 251, 0.90)",
     "frosted_glass_mint": "rgba(255, 227, 241, 0.92)",
     "frosted_glass_dark": "rgba(255, 210, 230, 0.94)",
@@ -329,7 +356,11 @@ def get_typography_style(style: str) -> str:
         style = "body_medium"
 
     typo = MD3_TYPOGRAPHY[style]
-    return f"font-size: {typo['size']}px; font-weight: {typo['weight']}; line-height: {typo['line_height']}px;"
+    return (
+        f"font-size: {typo['size']}px; "
+        f"font-weight: {typo['weight']}; "
+        f"line-height: {typo['line_height']}px;"
+    )
 
 
 # ============================================================================

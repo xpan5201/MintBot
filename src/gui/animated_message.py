@@ -5,6 +5,8 @@ MintChat GUI - 动画消息气泡组件
 遵循 Material Design 3 规范
 """
 
+from datetime import datetime
+
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,

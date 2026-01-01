@@ -56,3 +56,31 @@ def test_memory_manager_short_term_version_tracks_short_term_memory() -> None:
     mgr.clear_all()
     assert mgr.short_term_version == 3
     assert mgr.get_recent_messages() == []
+
+
+def test_short_term_memory_ignores_invalid_role_without_version_bump() -> None:
+    mem = ShortTermMemory(k=2)
+    assert mem.version == 0
+    mem.add_message("unknown", "x")
+    assert mem.version == 0
+    assert mem.get_messages_as_dict() == []
+
+
+def test_short_term_memory_set_k_trims_messages_and_bumps_version() -> None:
+    mem = ShortTermMemory(k=3)
+    mem.add_messages(((("user", "u1"), ("assistant", "a1"))))
+    mem.add_messages(((("user", "u2"), ("assistant", "a2"))))
+    mem.add_messages(((("user", "u3"), ("assistant", "a3"))))
+    assert [m["content"] for m in mem.get_messages_as_dict()] == [
+        "u1",
+        "a1",
+        "u2",
+        "a2",
+        "u3",
+        "a3",
+    ]
+
+    before = mem.version
+    mem.set_k(1)
+    assert mem.version == before + 1
+    assert [m["content"] for m in mem.get_messages_as_dict()] == ["u3", "a3"]

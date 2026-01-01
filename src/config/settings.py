@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 import sys
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 # 允许直接执行该模块时也能解析到 src.* 包
@@ -646,12 +646,7 @@ class AgentConfig(BaseModel):
     # 记忆系统配置
     long_memory: bool = Field(
         default=True,
-        description="是否启用日记功能（长期记忆）",
-    )
-
-    is_check_memorys: bool = Field(
-        default=True,
-        description="启用日记检索加强",
+        description="是否启用长期记忆",
     )
 
     is_core_mem: bool = Field(
@@ -663,7 +658,7 @@ class AgentConfig(BaseModel):
         default=0.385,
         ge=0.0,
         le=1.0,
-        description="日记内容搜索阈值",
+        description="记忆内容搜索阈值（用于相似度过滤）",
     )
 
     # v3.2 记忆优化器配置
@@ -788,85 +783,6 @@ class AgentConfig(BaseModel):
         description="是否启用 MCP 工具注册（需要配置 MCP.servers，且安装 mcp SDK）",
     )
 
-    # v2.30.36 智能日记系统配置
-    smart_diary_enabled: bool = Field(
-        default=True,
-        description="启用智能日记系统（只记录重要对话，像人类写日记一样）",
-    )
-
-    diary_importance_threshold: float = Field(
-        default=0.6,
-        ge=0.0,
-        le=1.0,
-        description="日记重要性阈值（只保存重要性 >= 此值的对话）",
-    )
-    diary_daily_max_entries: int = Field(
-        default=5,
-        ge=1,
-        description="每天最多保存的日记条数，超过后跳过（仍可生成每日总结）",
-    )
-    diary_max_entries: int = Field(
-        default=500,
-        ge=1,
-        description="日记最大保留条数（超过后自动清理最旧条目）",
-    )
-    diary_max_days: int = Field(
-        default=90,
-        ge=1,
-        description="日记最大保留天数（超过后自动清理最旧条目）",
-    )
-    diary_min_chars: int = Field(
-        default=10,
-        ge=1,
-        description="日记最小字符数（低于该长度将不记录）",
-    )
-    diary_min_interval_minutes: int = Field(
-        default=10,
-        ge=1,
-        description="日记记录的最小时间间隔（分钟），避免短时间内重复记录",
-    )
-    diary_similarity_threshold: float = Field(
-        default=0.9,
-        ge=0.0,
-        le=1.0,
-        description="日记内容近似去重阈值（0-1，越高越严格）",
-    )
-    diary_daily_highlights: int = Field(
-        default=3,
-        ge=1,
-        description="每日总结高光时刻保留条数",
-    )
-
-    daily_summary_enabled: bool = Field(
-        default=True,
-        description="启用每日总结（自动生成今天的对话总结）",
-    )
-
-    # 知识库配置
-    lore_books: bool = Field(
-        default=True,
-        description="是否启用世界书（知识库）",
-    )
-
-    books_thresholds: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="知识库检索阈值",
-    )
-
-    scan_depth: int = Field(
-        default=4,
-        gt=0,
-        description="知识库搜索深度",
-    )
-
-    # v2.30.38 智能学习配置
-    auto_learn_from_conversation: bool = Field(
-        default=True,
-        description="是否从对话中自动学习知识",
-    )
-
     # TTS 预取优化
     tts_auto_prefetch: bool = Field(
         default=True,
@@ -878,161 +794,12 @@ class AgentConfig(BaseModel):
         description="触发 TTS 预取的最小回复长度（字符）",
     )
 
-    # v2.30.39 LLM 辅助提取配置
-    use_llm_for_knowledge_extraction: bool = Field(
-        default=False,
-        description="是否使用 LLM 辅助知识提取（更智能但更慢，需要消耗 API）",
-    )
-
-    # 主动知识推送（ProactiveKnowledgePusher）
-    proactive_push_enabled: bool = Field(
-        default=True,
-        description="是否启用主动知识推送（将知识库内容作为辅助角色扮演的轻量提示）",
-    )
-    proactive_push_k: int = Field(
-        default=2,
-        ge=0,
-        description="每次最多推送知识条数（0 为禁用）",
-    )
-    proactive_push_timeout_s: float = Field(
-        default=0.18,
-        ge=0.0,
-        le=10.0,
-        description="主动知识推送在请求热路径的预算超时（秒）。0 表示不限制（可能显著增加延迟）。",
-    )
-    proactive_push_in_fast_mode: bool = Field(
-        default=False,
-        description="在 memory_fast_mode 下是否仍注入主动知识提示（会影响首包延迟）。",
-    )
+    # 上下文构建预算（避免长对话/压缩导致热路径卡顿）
     bundle_prepare_timeout_s: float = Field(
         default=0.35,
         ge=0.0,
         le=30.0,
         description="构建对话上下文/消息列表的总体超时预算（秒）。0 表示不限制。",
-    )
-    proactive_push_recent_topics_max_len: int = Field(
-        default=8,
-        ge=0,
-        description="保留的最近主题数（用于话题转换触发，0 为不保留）",
-    )
-    proactive_push_cooldown_s: float = Field(
-        default=300.0,
-        ge=0.0,
-        description="主动推送冷却时间（秒）",
-    )
-    proactive_push_daily_limit: int = Field(
-        default=10,
-        ge=0,
-        description="每日最大推送次数（0 为不限制）",
-    )
-    proactive_push_min_quality_score: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="推送知识的最低质量分数阈值（0-1）",
-    )
-    proactive_push_min_relevance_score: float = Field(
-        default=0.3,
-        ge=0.0,
-        le=1.0,
-        description="推送知识的最低相关性分数阈值（0-1）",
-    )
-    proactive_push_max_history: int = Field(
-        default=1000,
-        ge=0,
-        description="内部保存的推送历史最大条数（0 为不保留）",
-    )
-    proactive_push_max_pushed_per_user: int = Field(
-        default=500,
-        ge=0,
-        description="每个用户记录的“已推送知识”去重 key 最大条数（0 为不限制）",
-    )
-    proactive_push_candidate_pool_size: int = Field(
-        default=60,
-        ge=0,
-        description="主动推送向量检索候选池大小（0 为禁用，回退为全库扫描）",
-    )
-    proactive_push_persist_state: bool = Field(
-        default=True,
-        description="是否持久化主动推送去重/冷却/每日计数状态（重启后仍生效）",
-    )
-    proactive_push_state_file: str = Field(
-        default="",
-        description="主动推送状态文件路径（留空则使用 data_dir/memory/proactive_push_state.json）",
-    )
-    proactive_push_max_chars_per_item: int = Field(
-        default=480,
-        ge=0,
-        description="注入提示词时，每条知识内容最大字符数（0 为不截断）",
-    )
-
-    # 知识图谱配置（关系提取/查询性能保护）
-    knowledge_graph_enabled: bool = Field(
-        default=True,
-        description="是否启用知识图谱系统（仅当依赖可用时生效）",
-    )
-    knowledge_graph_auto_update: bool = Field(
-        default=True,
-        description="知识增删改时是否自动增量更新图谱（避免手动重建）",
-    )
-    knowledge_graph_auto_update_edges: bool = Field(
-        default=True,
-        description="增量更新时是否同时更新规则关系边（更智能但更耗时）",
-    )
-    knowledge_graph_auto_update_async: bool = Field(
-        default=True,
-        description="图谱增量更新是否放到后台线程执行（需要性能优化器/线程池可用）",
-    )
-    knowledge_graph_autosave: bool = Field(
-        default=True,
-        description="知识图谱是否自动落盘（关闭可显著减少写盘，但异常退出会丢最后未 flush 的更新）",
-    )
-    knowledge_graph_save_pretty_json: bool = Field(
-        default=True,
-        description="知识图谱保存 JSON 时是否缩进美化（更易读但更慢更大）",
-    )
-    knowledge_graph_save_sort: bool = Field(
-        default=True,
-        description="知识图谱保存 JSON 时是否对节点/边排序（便于 diff 但更慢）",
-    )
-    knowledge_graph_rule_max_ids_per_keyword: int = Field(
-        default=200,
-        ge=1,
-        description="规则提取时每个关键词最多参与匹配的知识数量（防止公共词爆炸）",
-    )
-    knowledge_graph_rule_max_keyword_links_per_node: int = Field(
-        default=12,
-        ge=0,
-        description="规则提取时每个知识最多保留的关键词相关边数（0 表示不限制）",
-    )
-    knowledge_graph_rule_category_anchor_count: int = Field(
-        default=2,
-        ge=0,
-        description="规则提取时每个类别的锚点数量（用于稀疏化类别边）",
-    )
-    knowledge_graph_rule_max_relations: int = Field(
-        default=100_000,
-        ge=0,
-        description="规则提取最大关系数量（0 表示不限制）",
-    )
-    knowledge_graph_rule_shared_keywords_desc_limit: int = Field(
-        default=12,
-        ge=1,
-        description="关系描述中最多显示的共享关键词数量",
-    )
-    knowledge_graph_find_max_results: int = Field(
-        default=200,
-        ge=0,
-        description="图谱相关知识查询最大返回数（0 表示不限制）",
-    )
-    knowledge_graph_find_max_nodes_visited: int = Field(
-        default=5000,
-        ge=0,
-        description="图谱相关知识查询最大遍历节点数（0 表示不限制）",
-    )
-    knowledge_graph_find_include_incoming: bool = Field(
-        default=True,
-        description="图谱相关知识查询是否包含入边（True 更适合“相关知识”检索）",
     )
 
     # 情绪系统配置
@@ -1093,6 +860,27 @@ class AgentConfig(BaseModel):
         default=12,
         ge=4,
         description="消息条数达到该值时尝试自动压缩",
+    )
+
+    # 上下文压缩器（ContextCompressor）参数
+    context_compress_max_tokens: int = Field(
+        default=2000,
+        ge=0,
+        description="上下文压缩器 token 预算（估算，0 表示不使用 token 预算判断/激进压缩）",
+    )
+    context_compress_keep_recent_messages: int = Field(
+        default=6,
+        ge=0,
+        description="压缩时保留最近的消息条数（用于 extract_key_info）",
+    )
+    context_compress_max_important_messages: int = Field(
+        default=12,
+        ge=0,
+        description="压缩时最多保留的“重要历史消息”条数（0 表示不保留重要历史消息）",
+    )
+    context_summary_keep_messages: Optional[int] = Field(
+        default=None,
+        description="历史摘要保留窗口（最近消息条数）；None 表示跟随 context_auto_compress_min_messages",
     )
 
     # 流式/线程池/工具执行配置
@@ -1670,7 +1458,7 @@ class Settings(BaseModel):
 
                 # ???? MCP ????
                 enabled_value = mcp_config_data.get("enabled", mcp_config_data.get("enable", True))
-                mcp_config = MCPConfig(enabled=enabled_value, servers=servers)
+                mcp_config = MCPConfig(enable=enabled_value, servers=servers)
                 settings_kwargs["mcp"] = mcp_config
 
         # TTS 配置 (v2.48.10 新增)

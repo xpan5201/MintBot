@@ -430,11 +430,15 @@ class SettingsPanel(QWidget):
         border.setAlpha(130)
         card_bg = _parse_color(MD3_ENHANCED_COLORS.get("frosted_glass_light", "#FFFFFF"))
         card_bg.setAlpha(220)
+        card_bg_rgba = (
+            f"rgba({card_bg.red()}, {card_bg.green()}, {card_bg.blue()}, {card_bg.alpha()})"
+        )
+        border_rgba = f"rgba({border.red()}, {border.green()}, {border.blue()}, {border.alpha()})"
         card.setStyleSheet(
             f"""
             QWidget#settingsCard {{
-                background: rgba({card_bg.red()}, {card_bg.green()}, {card_bg.blue()}, {card_bg.alpha()});
-                border: 1px solid rgba({border.red()}, {border.green()}, {border.blue()}, {border.alpha()});
+                background: {card_bg_rgba};
+                border: 1px solid {border_rgba};
                 border-radius: {MD3_ENHANCED_RADIUS['extra_large']};
             }}
             """
@@ -596,6 +600,11 @@ class SettingsPanel(QWidget):
             bg = MD3_ENHANCED_COLORS["surface_container_high"]
             fg = MD3_ENHANCED_COLORS["on_surface"]
             border = f"1px solid {MD3_ENHANCED_COLORS['outline_variant']}"
+
+        hover_bg = MD3_ENHANCED_COLORS["surface_container_highest"] if not accent else bg
+        pressed_bg = (
+            MD3_ENHANCED_COLORS.get("primary_70", MD3_ENHANCED_COLORS["primary"]) if accent else bg
+        )
         btn.setStyleSheet(
             f"""
             QPushButton {{
@@ -608,10 +617,10 @@ class SettingsPanel(QWidget):
                 font-weight: 700;
             }}
             QPushButton:hover {{
-                background-color: {MD3_ENHANCED_COLORS['surface_container_highest'] if not accent else bg};
+                background-color: {hover_bg};
             }}
             QPushButton:pressed {{
-                background-color: {MD3_ENHANCED_COLORS.get('primary_70', MD3_ENHANCED_COLORS['primary']) if accent else bg};
+                background-color: {pressed_bg};
             }}
             """
         )
@@ -641,6 +650,9 @@ class SettingsPanel(QWidget):
         row.setObjectName("settingsRow")
         row.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         row.setMouseTracking(True)
+        row_hover_bg = MD3_ENHANCED_COLORS.get(
+            "frosted_glass_medium", MD3_ENHANCED_COLORS["surface_container"]
+        )
         row.setStyleSheet(
             f"""
             QWidget#settingsRow {{
@@ -648,7 +660,7 @@ class SettingsPanel(QWidget):
                 border-radius: 14px;
             }}
             QWidget#settingsRow:hover {{
-                background: {MD3_ENHANCED_COLORS.get('frosted_glass_medium', MD3_ENHANCED_COLORS['surface_container'])};
+                background: {row_hover_bg};
             }}
             """
         )

@@ -33,7 +33,7 @@ def apply_torch_optimizations(*, verbose: bool = False) -> TorchOptimStatus:
 
     Notes:
         - This function is idempotent.
-        - It intentionally avoids hard requirements on torch; if torch isn't available it returns disabled.
+        - It avoids hard torch dependency; if torch isn't available it returns disabled.
     """
     global _APPLIED
 
@@ -61,7 +61,8 @@ def apply_torch_optimizations(*, verbose: bool = False) -> TorchOptimStatus:
         except Exception:
             pass
 
-        # Enable TF32 on Ampere+ (safe, typical for inference; slight numeric differences are acceptable).
+        # Enable TF32 on Ampere+ (safe, typical for inference).
+        # Slight numeric differences are acceptable.
         try:
             torch.backends.cuda.matmul.allow_tf32 = True  # type: ignore[attr-defined]
         except Exception:

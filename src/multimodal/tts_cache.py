@@ -144,11 +144,18 @@ class PersistentTTSAudioCache:
                 "entries": {key: asdict(entry) for key, entry in self._entries.items()},
                 "updated_at": self._now(),
             }
-            self.index_path.write_text(
+            temp_path = self.index_path.with_name(f"{self.index_path.name}.tmp")
+            temp_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            temp_path.replace(self.index_path)
         except Exception as exc:
+            try:
+                temp_path = self.index_path.with_name(f"{self.index_path.name}.tmp")
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
             # 仅在严重错误时记录警告
             logger.warning("写入 TTS 磁盘缓存索引失败: %s", exc)
 

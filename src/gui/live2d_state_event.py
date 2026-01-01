@@ -147,8 +147,9 @@ def infer_state_event_from_text(text: str) -> tuple[str, float] | None:
 
         return None
     _, intensity, key = best
-    # Roleplay replies frequently include affectionate words ("喜欢/抱抱/贴贴") that can override a stronger
-    # explicit angry signal inside the same message. Prefer "angry" when it is present (and not negated).
+    # Roleplay replies often include affectionate words ("喜欢/抱抱/贴贴").
+    # They can override a stronger explicit angry signal inside the same message.
+    # Prefer "angry" when it is present (and not negated).
     try:
         if key == "love" and "angry" in found:
             key = "angry"
@@ -319,7 +320,8 @@ def filter_explicit_state_directives_stream(
 ) -> tuple[str, str, tuple[str, float | None, float | None] | None]:
     """Incrementally strip directives from streamed chunks.
 
-    Returns `(clean_chunk, new_buffer, directive)` where `new_buffer` keeps any partial directive prefix.
+    Returns `(clean_chunk, new_buffer, directive)` where `new_buffer` keeps
+    any partial directive prefix for the next call.
     """
 
     buf = str(buffer or "")
@@ -363,7 +365,8 @@ def filter_explicit_state_directives_stream(
             # Keep the incomplete directive in buffer.
             new_buffer = data[start:]
             if len(new_buffer) > max_buf:
-                # Not a real directive (or never closed): flush it back to output to avoid dropping content.
+                # Not a real directive (or never closed): flush it back to output
+                # to avoid dropping content.
                 out_parts.append(new_buffer)
                 new_buffer = ""
             break

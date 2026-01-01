@@ -48,12 +48,12 @@ class UserSession:
             self._auth_db = UserDatabase()
         return self._auth_db
 
-    def login(self, user: Dict[str, Any], session_token: str):
+    def login(self, user: Dict[str, Any], session_token: Optional[str]) -> None:
         """用户登录
 
         Args:
             user: 用户信息字典
-            session_token: 会话令牌
+            session_token: 会话令牌（可为空）
         """
         with self._state_lock:
             self.current_user = user
@@ -374,13 +374,17 @@ class UserSession:
             logger.warning("未登录，无法更新用户头像")
             return False
 
-        success = self._get_auth_db().update_user_avatar(user_id, avatar)
+        avatar_norm = (avatar or "").strip() or "👤"
+        if len(avatar_norm) > 512:
+            avatar_norm = avatar_norm[:512]
+
+        success = self._get_auth_db().update_user_avatar(user_id, avatar_norm)
 
         if success:
             with self._state_lock:
                 if self.current_user is not None:
-                    self.current_user["user_avatar"] = avatar
-            logger.info(f"用户 {user_id} 的头像已更新")
+                    self.current_user["user_avatar"] = avatar_norm
+            logger.info("用户 %s 的头像已更新", user_id)
 
         return success
 
@@ -398,13 +402,17 @@ class UserSession:
             logger.warning("未登录，无法更新AI助手头像")
             return False
 
-        success = self._get_auth_db().update_ai_avatar(user_id, avatar)
+        avatar_norm = (avatar or "").strip() or "🐱"
+        if len(avatar_norm) > 512:
+            avatar_norm = avatar_norm[:512]
+
+        success = self._get_auth_db().update_ai_avatar(user_id, avatar_norm)
 
         if success:
             with self._state_lock:
                 if self.current_user is not None:
-                    self.current_user["ai_avatar"] = avatar
-            logger.info(f"用户 {user_id} 的AI助手头像已更新")
+                    self.current_user["ai_avatar"] = avatar_norm
+            logger.info("用户 %s 的AI助手头像已更新", user_id)
 
         return success
 
@@ -415,8 +423,10 @@ class UserSession:
             用户头像（emoji 或图片路径），未登录返回默认值
         """
         with self._state_lock:
-            if self.current_user and "user_avatar" in self.current_user:
-                return self.current_user["user_avatar"]
+            if self.current_user:
+                avatar = self.current_user.get("user_avatar")
+                if avatar:
+                    return avatar
 
         user_id = self.get_user_id()
         if user_id is None:
@@ -440,8 +450,10 @@ class UserSession:
             AI助手头像（emoji 或图片路径），未登录返回默认值
         """
         with self._state_lock:
-            if self.current_user and "ai_avatar" in self.current_user:
-                return self.current_user["ai_avatar"]
+            if self.current_user:
+                avatar = self.current_user.get("ai_avatar")
+                if avatar:
+                    return avatar
 
         user_id = self.get_user_id()
         if user_id is None:

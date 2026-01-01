@@ -23,25 +23,6 @@ class _DummyCoreMemory:
         return [{"content": f"core:{query}:{k}"}]
 
 
-class _DummyDiaryMemory:
-    def __init__(self) -> None:
-        self.vectorstore = object()
-
-    def search_by_time(self, query: str, k: int):  # noqa: ANN001
-        return [{"content": f"diary_time:{query}:{k}"}]
-
-    def search_by_content(self, query: str, k: int):  # noqa: ANN001
-        return [{"content": f"diary:{query}:{k}"}]
-
-
-class _DummyLoreBook:
-    def __init__(self) -> None:
-        self.vectorstore = object()
-
-    def search_lore(self, query: str, k: int):  # noqa: ANN001
-        return [{"content": f"lore:{query}:{k}"}]
-
-
 @pytest.mark.anyio
 async def test_memory_retriever_source_timeout_skips_hanging_source(monkeypatch):
     from src.agent.memory_retriever import ConcurrentMemoryRetriever
@@ -49,8 +30,6 @@ async def test_memory_retriever_source_timeout_skips_hanging_source(monkeypatch)
     retriever = ConcurrentMemoryRetriever(
         long_term_memory=_DummyLongTermManager(),
         core_memory=_DummyCoreMemory(),
-        diary_memory=_DummyDiaryMemory(),
-        lore_book=_DummyLoreBook(),
         max_workers=1,
         source_timeout_s=0.1,
     )

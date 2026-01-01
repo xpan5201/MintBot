@@ -16,7 +16,18 @@ def test_save_interaction_defers_long_term_write_in_fast_mode(monkeypatch) -> No
     short_term_calls: list[dict] = []
     long_term_calls: list[dict] = []
 
+    class DummyLongTerm:
+        def __init__(self) -> None:
+            self.flush_calls = 0
+
+        def flush_batch(self) -> int:
+            self.flush_calls += 1
+            return 0
+
     class DummyMemory:
+        def __init__(self) -> None:
+            self.long_term = DummyLongTerm()
+
         def add_interaction(self, **kwargs: object) -> None:
             short_term_calls.append(dict(kwargs))
 
@@ -33,7 +44,8 @@ def test_save_interaction_defers_long_term_write_in_fast_mode(monkeypatch) -> No
         scheduled.append((func, fut))
         return fut
 
-    agent.memory = DummyMemory()  # type: ignore[assignment]
+    memory = DummyMemory()
+    agent.memory = memory  # type: ignore[assignment]
     agent._submit_background_task = submit_task  # type: ignore[assignment]
     agent._long_term_write_lock = Lock()  # type: ignore[assignment]
     agent._pending_long_term_write = None  # type: ignore[assignment]
@@ -55,6 +67,7 @@ def test_save_interaction_defers_long_term_write_in_fast_mode(monkeypatch) -> No
     fut.set_result(None)
 
     assert [call.get("user_message") for call in long_term_calls] == ["u1", "u2"]
+    assert memory.long_term.flush_calls == 1
 
 
 def test_long_term_write_drain_slices_and_reschedules(monkeypatch) -> None:
@@ -64,7 +77,18 @@ def test_long_term_write_drain_slices_and_reschedules(monkeypatch) -> None:
 
     long_term_calls: list[dict] = []
 
+    class DummyLongTerm:
+        def __init__(self) -> None:
+            self.flush_calls = 0
+
+        def flush_batch(self) -> int:
+            self.flush_calls += 1
+            return 0
+
     class DummyMemory:
+        def __init__(self) -> None:
+            self.long_term = DummyLongTerm()
+
         def add_interaction(self, **kwargs: object) -> None:
             return None
 
@@ -81,7 +105,8 @@ def test_long_term_write_drain_slices_and_reschedules(monkeypatch) -> None:
         scheduled.append((func, fut))
         return fut
 
-    agent.memory = DummyMemory()  # type: ignore[assignment]
+    memory = DummyMemory()
+    agent.memory = memory  # type: ignore[assignment]
     agent._submit_background_task = submit_task  # type: ignore[assignment]
     agent._long_term_write_lock = Lock()  # type: ignore[assignment]
     agent._pending_long_term_write = None  # type: ignore[assignment]
@@ -94,7 +119,8 @@ def test_long_term_write_drain_slices_and_reschedules(monkeypatch) -> None:
     agent._save_interaction_to_memory("u2", "a2", save_to_long_term=True)
     agent._save_interaction_to_memory("u3", "a3", save_to_long_term=True)
 
-    # Only one drain is scheduled initially; the rest is scheduled slice-by-slice by the done callback.
+    # Only one drain is scheduled initially.
+    # The rest is scheduled slice-by-slice by the done callback.
     assert submitted == ["long-term-write"]
     assert len(scheduled) == 1
 
@@ -105,3 +131,4 @@ def test_long_term_write_drain_slices_and_reschedules(monkeypatch) -> None:
 
     assert [call.get("user_message") for call in long_term_calls] == ["u1", "u2", "u3"]
     assert agent._pending_long_term_write is None
+    assert memory.long_term.flush_calls == 3

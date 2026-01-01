@@ -46,7 +46,7 @@ class LRUCache:
         """
         self.max_size = max(0, int(max_size))
         self.ttl = max(0, int(ttl))
-        self.cache: OrderedDict = OrderedDict()
+        self.cache: OrderedDict[str, Any] = OrderedDict()
         # 使用 monotonic 记录过期时间点（避免系统时间变化影响 TTL）
         self.timestamps: Dict[str, float] = {}
         self._lock = Lock()
@@ -85,19 +85,34 @@ class LRUCache:
             self.stats["hits"] += 1
             return self.cache[key]
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key: str, value: Any, *, ttl: int | None = None) -> None:
         """设置缓存值"""
         if self.max_size <= 0:
             return
 
         with self._lock:
+            now = time.monotonic()
+            effective_ttl = self.ttl if ttl is None else max(0, int(ttl))
+
+            # 若缓存已接近/达到上限，优先清理过期条目，避免“挤占容量导致误淘汰”。
+            if self.timestamps and len(self.cache) >= self.max_size:
+                expired_keys = [
+                    expire_key
+                    for expire_key, expire_at in list(self.timestamps.items())
+                    if now > expire_at
+                ]
+                for expire_key in expired_keys:
+                    self._delete_unlocked(expire_key)
+                if expired_keys:
+                    self.stats["expirations"] += len(expired_keys)
+
             # 如果已存在，先删除
             if key in self.cache:
                 del self.cache[key]
 
             # 添加新值
             self.cache[key] = value
-            self.timestamps[key] = time.monotonic() + self.ttl
+            self.timestamps[key] = now + effective_ttl
 
             # 如果超过最大大小，删除最旧的
             while len(self.cache) > self.max_size:
@@ -184,9 +199,31 @@ class SmartCacheManager:
     @staticmethod
     def _generate_key(*args, **kwargs) -> str:
         """生成缓存键"""
-        # 将参数转换为字符串并哈希
-        key_str = json.dumps({"args": args, "kwargs": kwargs}, sort_keys=True)
-        return hashlib.md5(key_str.encode()).hexdigest()
+        # 将参数转换为字符串并哈希（需容错：args/kwargs 可能包含不可 JSON 序列化对象）。
+        payload: dict[str, Any] = {"args": args, "kwargs": kwargs}
+
+        def _default(obj: Any) -> Any:  # noqa: ANN401
+            try:
+                model_dump = getattr(obj, "model_dump", None)
+                if callable(model_dump):
+                    return model_dump()
+            except Exception:
+                pass
+            if isinstance(obj, (bytes, bytearray)):
+                return {"__bytes__": bytes(obj).hex()}
+            return str(obj)
+
+        try:
+            key_str = json.dumps(
+                payload,
+                sort_keys=True,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=_default,
+            )
+        except Exception:
+            key_str = repr(payload)
+        return hashlib.md5(key_str.encode("utf-8")).hexdigest()
 
     def cache_prompt(self, func: Callable) -> Callable:
         """Prompt缓存装饰器"""
@@ -262,6 +299,20 @@ class SmartCacheManager:
 
         logger.info(f"手动清理了 {total_cleaned} 个过期缓存条目")
         return total_cleaned
+
+    def clear_all(self) -> None:
+        """清空所有缓存（用于调试或在配置/模型切换后主动释放内存）。"""
+        self.prompt_cache.clear()
+        self.memory_cache.clear()
+        self.config_cache.clear()
+
+    def get_stats(self) -> Dict[str, Any]:
+        """获取所有缓存统计。"""
+        return {
+            "prompt": self.prompt_cache.get_stats(),
+            "memory": self.memory_cache.get_stats(),
+            "config": self.config_cache.get_stats(),
+        }
 
 
 # 全局缓存管理器实例

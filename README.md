@@ -15,7 +15,7 @@
 
 - Agent 编排：LangChain / LangGraph
 - 多模态：图像 / 音频（可选启用 ASR/TTS；ASR 默认 SenseVoiceSmall）
-- 记忆系统：短期 / 长期 / 日记等能力（实现细节见 `src/agent/`）
+- 记忆系统：短期 / 长期 / 核心记忆（实现细节见 `src/agent/`）
 - GUI：PyQt6（入口 `MintChat.py`）
 
 ## 快速开始（uv + .venv）

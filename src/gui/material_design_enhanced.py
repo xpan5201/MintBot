@@ -127,12 +127,16 @@ MD3_ENHANCED_COLORS = {
     "on_info_container": "#01579B",
     # ========== 渐变色 (Gradients) ==========
     "gradient_primary": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #80CBC4, stop:1 #26A69A)",
-    "gradient_primary_vertical": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #80CBC4, stop:1 #26A69A)",
+    "gradient_primary_vertical": (
+        "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #80CBC4, stop:1 #26A69A)"
+    ),
     "gradient_secondary": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #80DEEA, stop:1 #26C6DA)",
     "gradient_tertiary": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #81D4FA, stop:1 #03A9F4)",
     "gradient_surface": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #F0FBF8, stop:1 #C8F3E8)",
     "gradient_mint_soft": "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #E0F2F1, stop:1 #B2DFDB)",
-    "gradient_mint_radial": "qradialgradient(cx:0.5, cy:0.5, radius:1, fx:0.5, fy:0.5, stop:0 #B2DFDB, stop:1 #80CBC4)",
+    "gradient_mint_radial": (
+        "qradialgradient(cx:0.5, cy:0.5, radius:1, fx:0.5, fy:0.5, stop:0 #B2DFDB, stop:1 #80CBC4)"
+    ),
     # ========== 毛玻璃效果 (Frosted Glass) ==========
     "frosted_glass_light": "rgba(248, 255, 254, 0.85)",
     "frosted_glass": "rgba(240, 251, 248, 0.90)",
@@ -190,7 +194,9 @@ _ANIME_ENHANCED_COLOR_OVERRIDES: dict[str, str] = {
     "outline_variant": "#F6D8E7",
     # 渐变色：从薄荷系切换到樱花/薰衣草系
     "gradient_primary": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFB3D3, stop:1 #FF6FAE)",
-    "gradient_primary_vertical": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFB3D3, stop:1 #FF6FAE)",
+    "gradient_primary_vertical": (
+        "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFB3D3, stop:1 #FF6FAE)"
+    ),
     "gradient_secondary": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #DAD6FF, stop:1 #8B7DFF)",
     "gradient_tertiary": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #C7E8FF, stop:1 #5AB6FF)",
     "gradient_surface": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFF7FB, stop:1 #FFE3F1)",
@@ -334,7 +340,8 @@ MD3_ENHANCED_TYPOGRAPHY = {
 def _get_typography_css_cached(variant: str) -> str:
     typo = MD3_ENHANCED_TYPOGRAPHY[variant]
     return (
-        f"font-family: '{typo['font']}', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;"
+        f"font-family: '{typo['font']}', -apple-system, BlinkMacSystemFont, "
+        "'Segoe UI', Roboto, sans-serif;"
         f"font-size: {typo['size']}px;"
         f"font-weight: {typo['weight']};"
         f"line-height: {typo['line_height']}px;"

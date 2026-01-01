@@ -1,8 +1,10 @@
 """
 添加测试记忆数据
 
-为性能测试准备数据
+为性能测试准备数据（长期记忆/核心记忆）。
 """
+
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -11,20 +13,18 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.agent.memory import MemoryManager
-from src.agent.advanced_memory import CoreMemory, DiaryMemory, LoreBook
-from src.utils.logger import logger
+from src.agent.advanced_memory import CoreMemory  # noqa: E402
+from src.agent.memory import MemoryManager  # noqa: E402
+from src.utils.logger import logger  # noqa: E402
 
 
-def add_test_memories():
+def add_test_memories() -> None:
     """添加测试记忆"""
     logger.info("添加测试记忆数据...")
 
     # 初始化记忆系统
     memory = MemoryManager()
     core_memory = CoreMemory()
-    diary_memory = DiaryMemory()
-    lore_book = LoreBook()
 
     # 添加长期记忆
     test_conversations = [
@@ -38,7 +38,7 @@ def add_test_memories():
     for user_msg, assistant_msg in test_conversations:
         memory.add_interaction(user_msg, assistant_msg, save_to_long_term=True)
 
-    logger.info(f"添加了 {len(test_conversations)} 条对话记忆")
+    logger.info("添加了 %d 条对话记忆", len(test_conversations))
 
     # 添加核心记忆
     core_memories_data = [
@@ -50,35 +50,10 @@ def add_test_memories():
     for core_mem in core_memories_data:
         core_memory.add_core_memory(core_mem, importance=0.9)
 
-    logger.info(f"添加了 {len(core_memories_data)} 条核心记忆")
-
-    # 添加日记
-    diary_entries_data = [
-        "今天和主人聊了天气，主人很开心",
-        "主人问了我的名字，我告诉他我叫MintChat",
-        "今天帮主人查了北京的天气",
-    ]
-
-    for entry in diary_entries_data:
-        diary_memory.add_diary_entry(entry)
-
-    logger.info(f"添加了 {len(diary_entries_data)} 条日记")
-
-    # 添加知识库
-    lore_data = [
-        ("天气知识", "晴天适合出门，雨天要带伞"),
-        ("猫娘知识", "猫娘喜欢说'喵'，很可爱"),
-        ("服务知识", "作为女仆要礼貌、体贴、细心"),
-    ]
-
-    for title, content in lore_data:
-        lore_book.add_lore(title, content, category="常识")
-
-    logger.info(f"添加了 {len(lore_data)} 条知识")
+    logger.info("添加了 %d 条核心记忆", len(core_memories_data))
 
     logger.info("测试记忆数据添加完成！")
 
 
 if __name__ == "__main__":
     add_test_memories()
-

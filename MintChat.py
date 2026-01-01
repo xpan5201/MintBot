@@ -9,7 +9,6 @@ from typing import Dict, Any
 
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
-
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import qInstallMessageHandler, QtMsgType

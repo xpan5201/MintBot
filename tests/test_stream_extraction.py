@@ -4,9 +4,9 @@ import pytest
 
 pytest.importorskip("langchain_core")
 
-from langchain_core.messages import AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessageChunk, ToolMessage  # noqa: E402
 
-from src.agent.core import MintChatAgent
+from src.agent.core import MintChatAgent  # noqa: E402
 
 
 def test_extract_stream_text_allows_ai_message_chunk() -> None:

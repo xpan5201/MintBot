@@ -345,7 +345,8 @@ class ASRListenThread(QThread):
                     kwargs = dict(base)
                     kwargs.update(extra)
                     if is_final:
-                        # Final: allow internal VAD / merge_vad behavior configured in AutoModel.generate().
+                        # Final: allow internal VAD / merge_vad behavior configured in
+                        # AutoModel.generate().
                         try:
                             result = _call_funasr_generate(model, kwargs)
                         except Exception:
@@ -354,7 +355,8 @@ class ASRListenThread(QThread):
                             else:
                                 raise
                     else:
-                        # Partial: prefer inference (skip FunASR internal VAD) to reduce latency and CPU/GPU cost.
+                        # Partial: prefer inference (skip FunASR internal VAD) to reduce latency and
+                        # CPU/GPU cost.
                         if hasattr(model, "inference"):
                             try:
                                 result = _call_funasr_inference_fast(model, kwargs)
@@ -634,7 +636,8 @@ class ASRListenThread(QThread):
             # QAudioFormat
             sample_rate = int(max(8000, self.sample_rate))
             if active_mode in {"streaming", "dual"} and sample_rate != 16000:
-                # paraformer-zh-streaming chunk stride is implemented in 16k units (960 samples / 60ms).
+                # paraformer-zh-streaming chunk stride is implemented in 16k units
+                # (960 samples / 60ms).
                 logger.warning(
                     "流式 ASR 推荐 16k 采样率；当前=%s，将强制使用 16000 以避免异常输出",
                     sample_rate,

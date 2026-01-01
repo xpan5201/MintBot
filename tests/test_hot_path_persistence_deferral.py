@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 
 def test_style_learner_persist_false_skips_disk_write(monkeypatch, tmp_path):
     from src.agent import style_learner as style_mod

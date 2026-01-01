@@ -8,7 +8,7 @@ Agent 聊天相关后台线程。
 from __future__ import annotations
 
 import time
-from threading import Event
+from threading import Event, Lock
 from typing import Any, Optional, TYPE_CHECKING
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -20,6 +20,49 @@ logger = get_logger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover
     from src.agent.core import MintChatAgent
+
+
+_AGENT_CACHE_LOCK = Lock()
+_AGENT_CACHE: dict[object, "MintChatAgent"] = {}
+
+
+def _normalize_user_id(user_id: Any) -> Any:
+    if user_id is None:
+        return None
+    try:
+        return int(user_id)
+    except (TypeError, ValueError):
+        return user_id
+
+
+def get_cached_agent(user_id: Any) -> Optional["MintChatAgent"]:
+    key = _normalize_user_id(user_id)
+    with _AGENT_CACHE_LOCK:
+        return _AGENT_CACHE.get(key)
+
+
+def invalidate_agent_cache(user_id: Any) -> None:
+    key = _normalize_user_id(user_id)
+    with _AGENT_CACHE_LOCK:
+        _AGENT_CACHE.pop(key, None)
+
+
+def _create_agent(user_id: Any) -> "MintChatAgent":
+    from src.agent.core import MintChatAgent
+
+    return MintChatAgent(user_id=user_id)
+
+
+def get_or_create_agent(user_id: Any) -> "MintChatAgent":
+    key = _normalize_user_id(user_id)
+    with _AGENT_CACHE_LOCK:
+        cached = _AGENT_CACHE.get(key)
+        if cached is not None:
+            return cached
+
+        agent = _create_agent(key)
+        _AGENT_CACHE[key] = agent
+        return agent
 
 
 class ChatThread(QThread):
@@ -191,9 +234,7 @@ class AgentInitThread(QThread):
 
     def run(self) -> None:  # pragma: no cover - QThread
         try:
-            from src.agent.core import MintChatAgent
-
-            agent = MintChatAgent(user_id=self.user_id)
+            agent = get_or_create_agent(self.user_id)
             self.agent_ready.emit(agent)
         except Exception as exc:
             logger.error("初始化 Agent 失败: %s", exc, exc_info=True)

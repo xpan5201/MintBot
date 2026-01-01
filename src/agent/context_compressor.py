@@ -14,7 +14,10 @@ logger = get_logger(__name__)
 
 # v2.29.10: 预编译正则表达式，提升性能
 _CHINESE_CHARS_PATTERN = re.compile(r"[\u4e00-\u9fff]")
-_WHITESPACE_PATTERN = re.compile(r"\s+")
+_CODE_FENCE_SPLIT_PATTERN = re.compile(r"(```.*?```)", re.DOTALL)
+_INLINE_WHITESPACE_PATTERN = re.compile(r"(?<=\S)[ \t\u3000]{2,}")
+_TRAILING_WHITESPACE_PATTERN = re.compile(r"[ \t]+\n")
+_BLANK_LINES_PATTERN = re.compile(r"\n{3,}")
 _PUNCTUATION_PATTERN = re.compile(r"([。！？~…])\1+")
 _MEOW_PATTERN = re.compile(r"(喵~?){3,}")
 _IMPORTANT_KEYWORDS = (
@@ -57,40 +60,78 @@ class ContextCompressor:
     4. 智能截断
     """
 
-    def __init__(self, max_tokens: int = 2000):
+    def __init__(
+        self,
+        max_tokens: int = 2000,
+        *,
+        keep_recent: int = 6,
+        max_important: int = 12,
+    ):
         """
         初始化上下文压缩器
 
         Args:
             max_tokens: 最大 token 数量（估算）
         """
-        self.max_tokens = max_tokens
-        logger.info(f"上下文压缩器初始化完成，最大 token: {max_tokens}")
+        self.max_tokens = max(0, int(max_tokens))
+        self.keep_recent = max(0, int(keep_recent))
+        self.max_important = max(0, int(max_important))
+        logger.info(f"上下文压缩器初始化完成，最大 token: {self.max_tokens}")
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
         """估算文本的 token 数量（中文约1.5字符/token，英文约4字符/token）"""
+        text = str(text or "")
         chinese_chars = sum(1 for _ in _CHINESE_CHARS_PATTERN.finditer(text))
         other_chars = len(text) - chinese_chars
         return int(chinese_chars / 1.5 + other_chars / 4)
 
     @staticmethod
     def remove_redundancy(text: str) -> str:
-        """移除冗余信息（空白、重复标点、多余的喵）"""
-        text = _WHITESPACE_PATTERN.sub(" ", text)
-        text = _PUNCTUATION_PATTERN.sub(r"\1", text)
-        text = _MEOW_PATTERN.sub("喵~", text)
-        return text.strip()
+        """移除冗余信息（尽量不破坏格式：保留换行/缩进与代码块）"""
+        raw = str(text or "")
+        if not raw:
+            return ""
 
-    def extract_key_info(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        """提取关键信息（保留最近3轮对话+重要历史消息）"""
-        if len(messages) <= 6:
-            return messages
+        parts = _CODE_FENCE_SPLIT_PATTERN.split(raw)
+        cleaned_parts: List[str] = []
+        for part in parts:
+            if part.startswith("```") and part.endswith("```"):
+                cleaned_parts.append(part)
+                continue
 
-        recent_messages = messages[-6:]
+            normalized = part.replace("\r\n", "\n").replace("\r", "\n")
+            normalized = _INLINE_WHITESPACE_PATTERN.sub(" ", normalized)
+            normalized = _TRAILING_WHITESPACE_PATTERN.sub("\n", normalized)
+            normalized = _BLANK_LINES_PATTERN.sub("\n\n", normalized)
+            normalized = _PUNCTUATION_PATTERN.sub(r"\1", normalized)
+            normalized = _MEOW_PATTERN.sub("喵~", normalized)
+            cleaned_parts.append(normalized)
+
+        return "".join(cleaned_parts).strip()
+
+    def extract_key_info(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        keep_recent: int = 6,
+        max_important: int = 12,
+    ) -> List[Dict[str, str]]:
+        """提取关键信息（保留最近 N 条 + 重要历史消息，避免无上限膨胀）"""
+        keep_recent = max(0, int(keep_recent))
+        max_important = max(0, int(max_important))
+        if len(messages) <= keep_recent:
+            return list(messages)
+
+        recent_messages = messages[-keep_recent:] if keep_recent else []
+        old_messages = messages[: -keep_recent or None]
         important_messages = [
-            msg for msg in messages[:-6] if self._is_important(msg.get("content", ""))
+            msg for msg in old_messages if self._is_important(str(msg.get("content", "") or ""))
         ]
+        if max_important == 0:
+            important_messages = []
+        elif len(important_messages) > max_important:
+            important_messages = important_messages[-max_important:]
         compressed = important_messages + recent_messages
         logger.debug(f"上下文压缩: {len(messages)} -> {len(compressed)} 条消息")
         return compressed
@@ -98,6 +139,7 @@ class ContextCompressor:
     @staticmethod
     def _is_important(text: str) -> bool:
         """判断文本是否包含重要信息"""
+        text = str(text or "")
         return any(keyword in text for keyword in _IMPORTANT_KEYWORDS)
 
     def compress_context(
@@ -106,26 +148,43 @@ class ContextCompressor:
         additional_context: str = "",
     ) -> tuple[List[Dict[str, str]], str]:
         """压缩上下文（提取关键消息+移除冗余）"""
-        compressed_messages = self.extract_key_info(messages)
+        compressed_messages = self.extract_key_info(
+            messages,
+            keep_recent=self.keep_recent,
+            max_important=self.max_important,
+        )
 
+        # 避免原地修改输入 messages（memory 内部可能复用同一份 dict）
+        cleaned_messages: List[Dict[str, str]] = []
         for msg in compressed_messages:
-            if "content" in msg:
-                msg["content"] = self.remove_redundancy(msg["content"])
+            cloned = dict(msg)
+            if "content" in cloned:
+                cloned["content"] = self.remove_redundancy(str(cloned.get("content", "") or ""))
+            cleaned_messages.append(cloned)
+        compressed_messages = cleaned_messages
 
         compressed_context = self.remove_redundancy(additional_context)
 
-        total_tokens = sum(
+        total_tokens_before = sum(
             self.estimate_tokens(msg.get("content", "")) for msg in compressed_messages
         ) + self.estimate_tokens(compressed_context)
 
-        if total_tokens > self.max_tokens:
-            compressed_messages = self._aggressive_compress(compressed_messages, compressed_context)
+        total_tokens_after = total_tokens_before
+        if self.max_tokens > 0 and total_tokens_before > self.max_tokens:
+            compressed_messages = self._aggressive_compress(compressed_messages)
+            total_tokens_after = sum(
+                self.estimate_tokens(msg.get("content", "")) for msg in compressed_messages
+            ) + self.estimate_tokens(compressed_context)
 
-        logger.debug(f"上下文压缩完成，估算 token: {total_tokens}")
+        logger.debug(
+            "上下文压缩完成，估算 token: before=%d after=%d",
+            total_tokens_before,
+            total_tokens_after,
+        )
         return compressed_messages, compressed_context
 
     @staticmethod
-    def _aggressive_compress(messages: List[Dict[str, str]], context: str) -> List[Dict[str, str]]:
+    def _aggressive_compress(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """激进压缩（只保留最近2轮对话）"""
         if len(messages) > 4:
             logger.warning("上下文过长，执行激进压缩")
@@ -157,10 +216,11 @@ class ContextCompressor:
         # 提取关键信息
         key_points = []
         for msg in old_messages:
-            content = msg.get("content", "")
+            content = str(msg.get("content", "") or "")
             if self._is_important(content):
                 # 简化内容
                 simplified = content[:50] + "..." if len(content) > 50 else content
+                simplified = self.remove_redundancy(simplified)
                 key_points.append(simplified)
 
         if not key_points:
@@ -189,11 +249,11 @@ class ContextCompressor:
             Dict: 压缩统计
         """
         original_tokens = sum(
-            self.estimate_tokens(msg.get("content", "")) for msg in original_messages
+            self.estimate_tokens(str(msg.get("content", "") or "")) for msg in original_messages
         ) + self.estimate_tokens(original_context)
 
         compressed_tokens = sum(
-            self.estimate_tokens(msg.get("content", "")) for msg in compressed_messages
+            self.estimate_tokens(str(msg.get("content", "") or "")) for msg in compressed_messages
         ) + self.estimate_tokens(compressed_context)
 
         compression_ratio = (

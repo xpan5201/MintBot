@@ -44,7 +44,10 @@ def _mintchat_cache_dir() -> Path:
 
 
 def _ensure_ffmpeg_alias(exe: str) -> tuple[str, str]:
-    """Return (ffmpeg_path, bin_dir) where ffmpeg_path is discoverable by `shutil.which('ffmpeg')`."""
+    """Return (ffmpeg_path, bin_dir).
+
+    ffmpeg_path is discoverable by `shutil.which("ffmpeg")`.
+    """
     bin_dir = os.path.dirname(exe)
     is_windows = os.name == "nt"
     alias_name = "ffmpeg.exe" if is_windows else "ffmpeg"

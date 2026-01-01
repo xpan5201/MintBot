@@ -170,7 +170,10 @@ def _json_schema_to_pydantic_model(
         default = prop_schema.get("default", None)
 
         if prop_name in required_set:
-            fields[prop_name] = (field_type, Field(..., description=str(desc) if desc else ""))  # type: ignore[arg-type]
+            fields[prop_name] = (
+                field_type,
+                Field(..., description=str(desc) if desc else ""),
+            )  # type: ignore[arg-type]
         else:
             fields[prop_name] = (
                 Optional[field_type],  # type: ignore[valid-type]
@@ -308,7 +311,11 @@ class MCPManager:
 
         server_name = _sanitize_name(name)
         try:
-            params = StdioServerParameters(command=command, args=args, env=env)  # type: ignore[misc]
+            params = StdioServerParameters(
+                command=command,
+                args=args,
+                env=env,
+            )  # type: ignore[misc]
         except Exception as exc:
             logger.warning("创建 MCP StdioServerParameters 失败 (server=%s): %s", name, exc)
             return None

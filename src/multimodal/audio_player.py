@@ -209,7 +209,8 @@ class AudioPlayer:
             trimmed = x[: blocks * step]
             frames = trimmed.reshape(blocks, step)
             rms = np.sqrt(np.mean(np.square(frames), axis=1))
-            # Robust normalization: 95th percentile keeps occasional spikes from squashing everything.
+            # Robust normalization: 95th percentile keeps occasional spikes
+            # from squashing everything.
             denom = float(np.percentile(rms, 95) + 1e-6)
             env = np.clip(rms / denom, 0.0, 1.0)
             # Gentle compression so quiet speech still moves, loud speech doesn't over-open.

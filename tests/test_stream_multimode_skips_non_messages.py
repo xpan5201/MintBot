@@ -8,7 +8,11 @@ from src.agent.core import LLMTimeouts, MintChatAgent
 
 def test_stream_llm_response_skips_non_messages_stream_modes() -> None:
     agent = MintChatAgent.__new__(MintChatAgent)
-    agent._llm_timeouts = LLMTimeouts(first_chunk=1.0, idle_chunk=1.0, total=5.0)  # type: ignore[attr-defined]
+    agent._llm_timeouts = LLMTimeouts(  # type: ignore[attr-defined]
+        first_chunk=1.0,
+        idle_chunk=1.0,
+        total=5.0,
+    )
     agent._stream_min_chars = 1  # type: ignore[attr-defined]
 
     class DummyAgent:

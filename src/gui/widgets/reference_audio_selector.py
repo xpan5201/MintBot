@@ -380,5 +380,5 @@ class ReferenceAudioSelector(QWidget):
                 f"已导入 {success_count}/{len(file_paths)} 个参考音频",
                 Toast.Type.SUCCESS if success_count == len(file_paths) else Toast.Type.WARNING,
             )
-        except:
+        except Exception:
             pass

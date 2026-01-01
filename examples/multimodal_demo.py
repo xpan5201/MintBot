@@ -11,9 +11,9 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.multimodal.audio import audio_processor
-from src.multimodal.vision import vision_processor
-from src.utils.logger import get_logger
+from src.multimodal.audio import audio_processor  # noqa: E402
+from src.multimodal.vision import vision_processor  # noqa: E402
+from src.utils.logger import get_logger  # noqa: E402
 
 logger = get_logger(__name__)
 

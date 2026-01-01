@@ -545,7 +545,8 @@ class MintChatToolSelectorMiddleware(AgentMiddleware):
             system_message += (
                 "\nIMPORTANT: List the tool names in order of relevance, "
                 "with the most relevant first. "
-                f"If you exceed the maximum number of tools, only the first {self.max_tools} will be used."
+                f"If you exceed the maximum number of tools, only the first "
+                f"{self.max_tools} will be used."
             )
         # 显式要求返回固定结构，提升兼容性（尤其是 json_mode 场景）
         system_message += '\nReturn ONLY a JSON object like: {"tools": ["tool_name"]}.'
