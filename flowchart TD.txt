@@ -1,0 +1,136 @@
+flowchart TD
+  %% MintChat 去 LangChain/LangGraph 迁移流程图（更具体规划版）
+  %% 目标：完全移除 langchain*/langgraph* 依赖；统一 OpenAI API 兼容接口；高度自研化；稳定优先。
+  %%
+  %% 已确认决策（来自你本轮确认）
+  %% 1) 彻底移除依赖范围：最终不再依赖 langchain*/langgraph*（含相关 provider 包）。
+  %% 2) 统一走 OpenAI API 兼容接口：以 base_url + api_key + model 方式接入所有提供商。
+  %% 3) 双后端稳定期：周期/阈值由你视情况额定（图中用 TBD 表示“需要你确认”）。
+  %% 4) “功能等价”硬指标：每个阶段必须用 MCP（Context7/tavily/Fetch）做“最佳实践研究 + 取舍记录”，
+  %%    但落地实现必须以项目体验/不变量/测试与指标为准（不是照抄外部代码）。
+  %%
+  %% 关键原则（安全护栏）
+  %% - 双后端 + 总开关：settings.agent.llm_backend = langchain | native（默认 langchain，native 灰度）
+  %% - 每个 Gate：先完成 MCP Research 形成《决策记录》，再实现；并跑 pytest/black/flake8/mypy + GUI/流式/工具/记忆冒烟
+  %% - 任何 Gate 失败：立即回滚到 langchain 后端，不允许带病进入下一阶段
+
+  Start([START<br/>开始“去 LangChain/LangGraph”计划]) --> RS0a
+
+  subgraph RS["MCP Research Loop（每个 Phase/Gate 之前必做）"]
+    direction TB
+    RS0a[/Context7：查官方 SDK/接口/示例（stream/tools/timeout/retry）/]
+    RS0b[/tavily_local：检索最新迁移经验/已知坑/生态变化/]
+    RS0c[/Fetch：抓取关键页面细节并提炼关键段落/]
+    RS0d["产出《决策记录》<br/>- 约束/取舍/不变量<br/>- 对应测试点/指标<br/>- 不采纳的方案与原因"]
+    RS0a --> RS0b --> RS0c --> RS0d
+  end
+
+  RS0d --> P0a
+
+  subgraph P0["Phase 0 盘点&冻结（建立护栏，禁止贸然改行为）"]
+    direction TB
+    P0a["P0.1 锁定范围与“功能等价”不变量<br/>必须保留：<br/>- 流式输出语义（chunk/节流/首包超时/兜底）<br/>- 工具调用（选择/执行/回填/错误处理）<br/>- 记忆（短期/长期/核心）<br/>- 多模态（Vision/TTS/ASR；GUI 主线程不阻塞）"]
+    P0b["P0.2 锁定“彻底移除依赖”清单（最终删掉）<br/>- langchain / langchain-core / langchain-community<br/>- langgraph<br/>- langchain-openai / langchain-anthropic / langchain-google-genai<br/>- langchain-chroma / langchain-community(vectorstores/embeddings)<br/>- langsmith（如仍被使用）"]
+    P0c["P0.3 OpenAI-compatible 接口统一策略（兼容优先）<br/>- Canonical：Chat Completions（providers 最通用）<br/>- Streaming：content delta + tool call delta（聚合 arguments）<br/>- Tools：strict JSON schema + tool_call_id 回填<br/>- Embeddings：OpenAI-compatible embeddings 接口"]
+    P0d["P0.4 产出 Provider 能力矩阵（兼容层入口）<br/>- base_url 规范化规则<br/>- stream 支持/首包超时语义<br/>- tool calling 支持差异（function/tool 形状）<br/>- 错误码/重试策略/限流策略"]
+    P0e["P0.5 基线（Golden）对比资产<br/>- 录制 LangChain 后端事件流（StreamEvent）<br/>- 关键对话脚本/工具脚本 → fixtures<br/>- 性能基线：首包/吞吐/失败率/GUI 卡顿"]
+    P0f["P0.6 加“总开关 + 双实现策略”<br/>settings.agent.llm_backend = langchain | native<br/>默认 langchain；native 灰度；任何回归可回滚"]
+    G0{{Gate#0（不改行为）<br/>- MCP《决策记录》完成<br/>- baseline/fixtures 建立<br/>- pytest/black/flake8/mypy + 冒烟通过}}
+    P0a --> P0b --> P0c --> P0d --> P0e --> P0f --> G0
+  end
+
+  G0 --> P1a
+
+  subgraph P1["Phase 1 自研协议层（先统一契约，再替换实现）"]
+    direction TB
+    P1a["P1.1 自研 Message 协议（项目统一数据结构）<br/>- 对齐 OpenAI messages 形状（role/content/tool）<br/>- tool_call_id / tool_calls / multi-modal blocks（后续）"]
+    P1b["P1.2 自研 StreamEvent 协议（统一流式语义）<br/>- TextDelta / ToolCallDelta / ToolResult / Error / Done<br/>- 取消/超时/finish_reason 显式化"]
+    P1c["P1.3 自研 ToolSpec/ToolRegistry<br/>- strict JSON schema（可选 Pydantic 生成）<br/>- 超时/权限/输出裁剪/结构化结果"]
+    P1d["P1.4 自研 ChatBackend 接口（唯一入口）<br/>complete()/stream()<br/>统一配置：base_url/model/key/timeout/retry/httpx pool"]
+    G1{{Gate#1<br/>- 协议层仅新增，不影响现有链路<br/>- pytest/black/flake8/mypy 全绿}}
+    P1a --> P1b --> P1c --> P1d --> G1
+  end
+
+  G1 --> P2a
+
+  subgraph P2["Phase 2 LangChainBackend 适配器（把 LangChain 封进后端）"]
+    direction TB
+    P2a["P2.1 实现 LangChainBackend（Adapter）<br/>内部：create_agent + middleware（现状）<br/>对外：只吐出 StreamEvent"]
+    P2b["P2.2 调用方改造：去直连 LangChain<br/>src/agent/core.py 等只依赖 ChatBackend/Message/ToolSpec"]
+    G2{{Gate#2（行为等价）<br/>- Golden 对比通过（差异可解释）<br/>- GUI 流式无卡顿回归<br/>- 全量门禁通过}}
+    P2a --> P2b --> G2
+  end
+
+  G2 --> P3a
+
+  subgraph P3["Phase 3 Native(OpenAI-compatible) 后端（并行灰度，不删旧后端）"]
+    direction TB
+    P3a["P3.1 实现 OpenAICompatibleBackend<br/>- openai SDK：chat.completions + stream<br/>- timeout/max_retries/httpx client<br/>- base_url 兼容（多提供商）"]
+    P3b["P3.2 Streaming 解析（对齐 StreamEvent）<br/>- content.delta → TextDelta<br/>- tool_calls arguments delta 聚合成 JSON 字符串<br/>- done/finish_reason → Done"]
+    G3{{Gate#3（灰度对比）<br/>- 同脚本 LangChain vs Native 对比<br/>- 性能不退化（首包/吞吐）<br/>- 差异清单可解释/可接受}}
+    P3a --> P3b --> G3
+  end
+
+  G3 --> P4a
+
+  subgraph P4["Phase 4 自研 Tool-Loop（替代 LangChain Agent 循环）"]
+    direction TB
+    P4a["P4.1 自研 ToolRunner<br/>- 并发/超时/取消<br/>- 错误隔离（工具失败不崩溃）<br/>- 输出裁剪/安全过滤（与现有策略一致）"]
+    P4b["P4.2 自研 AgentRunner（推理循环）<br/>while tool_calls:<br/>执行工具 → 生成 tool message → 继续模型<br/>直到 finish_reason=stop"]
+    G4{{Gate#4<br/>- 工具链路等价（含失败/超时/限频）<br/>- 流式输出连续性 OK<br/>- 断线兜底策略一致}}
+    P4a --> P4b --> G4
+  end
+
+  G4 --> P5a
+
+  subgraph P5["Phase 5 去 LangGraph/middleware（自研管线化）"]
+    direction TB
+    P5a["P5.1 将中间件替换为 Pipeline（纯函数/可插拔）<br/>- tool selector<br/>- tool trace<br/>- context editing/compress<br/>- tool output scrubber"]
+    P5b["P5.2 自研 Trace/Telemetry（不绑定 LangSmith）<br/>- 事件级 trace（请求/首包/工具/异常）<br/>- 可选 logs/json 输出"]
+    G5{{Gate#5<br/>- 性能指标达标（首包/吞吐/失败率）<br/>- GUI 主线程无阻塞回归<br/>- 全量门禁通过}}
+    P5a --> P5b --> G5
+  end
+
+  G5 --> P6a
+
+  subgraph P6["Phase 6 去 langchain-chroma/embeddings（检索层自研化）"]
+    direction TB
+    P6a["P6.1 VectorStoreAdapter（直连 chromadb）<br/>- 去 langchain_chroma wrapper<br/>- 并发锁/写入节流/flush 策略"]
+    P6b["P6.2 EmbeddingClient 统一接口<br/>- OpenAI-compatible embeddings<br/>- 本地 embedding（可选）"]
+    G6{{Gate#6<br/>- 检索一致性/线程安全/性能<br/>- 向量写入不阻塞流式}}
+    P6a --> P6b --> G6
+  end
+
+  G6 --> STAB
+
+  STAB{{Stabilization（双后端稳定期，TBD 由你确认）<br/>- native 灰度到你满意<br/>- error budget/性能指标达标<br/>- 无关键回归}} -- 未达标/继续灰度 --> P3a
+  STAB -- 达标/你确认进入删依赖 --> P7a
+
+  subgraph P7["Phase 7 全面收尾（彻底移除依赖 + 零残留）"]
+    direction TB
+    P7a["P7.1 全仓零引用扫描<br/>Serena + rg：langchain/langgraph=0 命中"]
+    P7b["P7.2 删除依赖并重锁<br/>pyproject 移除 langchain* langgraph* langsmith* 等<br/>uv lock + uv sync（含 dev 组）"]
+    P7c["P7.3 清理残留与文案<br/>- tests/examples/docs 更新<br/>- dependency_checker/logger 等提示文案去除<br/>- .mypy_cache/__pycache__/data 残留清理"]
+    G7{{Gate#7（最终门禁）<br/>pytest/black/flake8/mypy 全绿<br/>+ GUI/流式/工具/记忆 冒烟}}
+    P7a --> P7b --> P7c --> G7
+  end
+
+  G7 --> Done([DONE<br/>完全移除 LangChain/LangGraph<br/>统一 OpenAI-compatible 接入<br/>稳定运行 + 全量门禁通过])
+
+  %% 现有依赖触点（用于 Phase0 盘点 / Phase7 零引用验收）
+  Touch[\"当前 langchain/langgraph 触点（示例）<br/>- src/agent/core.py（create_agent + middleware + message types）<br/>- src/agent/tool_*（selector/trace 中间件）<br/>- src/agent/tools.py / builtin_tools.py / mcp_manager.py（Tool/StructuredTool）<br/>- src/llm/factory.py（ChatOpenAI）<br/>- src/utils/chroma_helper.py（langchain_chroma/OpenAIEmbeddings）<br/>- src/multimodal/vision.py（HumanMessage）\"]:::note
+  P0a --> Touch
+
+  %% 迁移顺序建议（从叶子到主干，降低风险）
+  Order[\"迁移顺序建议（从叶子到主干）<br/>1) 检索/embedding：src/utils/chroma_helper.py → VectorStoreAdapter/EmbeddingClient<br/>2) 工具协议：builtin_tools/tools/mcp_manager → ToolSpec/ToolRegistry<br/>3) LLM 工厂：src/llm/factory.py → OpenAICompatibleBackend<br/>4) Vision message：src/multimodal/vision.py → 自研 Message blocks<br/>5) tool selector/trace：src/agent/tool_* → Pipeline stages<br/>6) 核心编排：src/agent/core.py → AgentRunner + Tool-Loop（最后做）\"]:::note
+  P0a --> Order
+
+  %% 回滚环（任何 Gate 失败：立即切回 langchain 后端）
+  Rollback[\"回滚策略（强制）<br/>- settings.agent.llm_backend=langchain<br/>- 记录差异/指标 → 修复 → 重新灰度<br/>- 不允许带病进入下一 Phase\"]:::warn
+  G3 -->|发现回归| Rollback --> P3a
+  G4 -->|发现回归| Rollback
+  G5 -->|发现回归| Rollback
+  G6 -->|发现回归| Rollback
+
+  classDef note fill:#eef6ff,stroke:#4a90e2,color:#1b1b1b;
+  classDef warn fill:#fff1f0,stroke:#ff4d4f,color:#1b1b1b;
