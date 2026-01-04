@@ -1,0 +1,150 @@
+{
+  "root": "D:\\MintBot",
+  "patterns": [
+    "\\blangchain\\b",
+    "\\blangchain[_-]\\w+",
+    "\\blanggraph\\b",
+    "\\blangsmith\\b"
+  ],
+  "count": 23,
+  "matches": [
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 5,
+      "text": "- 录制当前（langchain / native）的流式输出 chunks 与关键性能指标，",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 158,
+      "text": "choices=[\"langchain\", \"native\"],",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 159,
+      "text": "default=\"langchain\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 160,
+      "text": "help=\"Backend to capture: langchain (default) or native (OpenAI-compatible).\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 168,
+      "text": "\"If omitted: langchain->agent, native->backend.\"",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 247,
+      "text": "runner = \"agent\" if args.backend == \"langchain\" else \"backend\"",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 283,
+      "text": "if args.backend == \"langchain\" and runner == \"agent\":",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 284,
+      "text": "out_name = \"langchain_stream_golden.json\"",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 291,
+      "text": "elif args.backend == \"langchain\" and runner == \"backend\":",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 293,
+      "text": "\"langchain_backend_tool_loop_golden.json\"",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 295,
+      "text": "else \"langchain_backend_stream_golden.json\"",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 361,
+      "text": "if args.backend == \"langchain\":",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 363,
+      "text": "from src.llm_native.langchain_backend import LangChainBackend  # noqa: E402",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 5,
+      "text": "- 对比两份 golden JSON（通常：langchain 后端 vs native 后端）的流式输出结果，",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 18,
+      "text": "--baseline data\\\\golden\\\\langchain_backend_stream_golden.json ^",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 123,
+      "text": "# Default: Gate#2/#3 langchain vs native.",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 126,
+      "text": "Path(\"data/golden/langchain_backend_stream_golden.json\"),",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 127,
+      "text": "Path(\"data/golden/langchain_stream_golden.json\"),",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 153,
+      "text": "description=\"Compare golden baselines (langchain vs native) for streaming output.\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 157,
+      "text": "choices=[\"gate23-langchain-vs-native\", \"gate5-native-pipeline\"],",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 157,
+      "text": "choices=[\"gate23-langchain-vs-native\", \"gate5-native-pipeline\"],",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 158,
+      "text": "default=\"gate23-langchain-vs-native\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 158,
+      "text": "default=\"gate23-langchain-vs-native\",",
+      "pattern": "\\blangchain[_-]\\w+"
+    }
+  ]
+}

@@ -58,8 +58,6 @@ def check_optional_dependencies() -> DependencyStatus:
     project_root = Path(__file__).resolve().parents[2]
 
     deps: Dict[str, str] = {
-        "langchain": "langchain",
-        "langchain_openai": "langchain-openai",
         "redis": "redis",
     }
 

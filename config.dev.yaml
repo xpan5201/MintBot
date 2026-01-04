@@ -1,0 +1,108 @@
+MCP:
+  enable: false
+  servers: {}
+Agent:
+  # LLM 后端实现：已收敛为 native（该键保留用于兼容旧配置；非 native 会被忽略）
+  llm_backend: native
+  # Phase 5：是否启用 native pipeline（仅影响 llm_backend=native）
+  native_pipeline_enabled: true
+  is_core_mem: true
+  long_term_batch_size: 10
+  long_term_batch_flush_interval_s: 30.0
+  memory_dedup_max_hashes: 50000
+  mem_thresholds: 0.36
+  mood_functions:
+    negative_impact: (sqrt(pi) * x) / (1 + exp(sqrt(e) * 0.8 * (sqrt(pi) - x))) +
+      sqrt(e)
+    positive_impact: 1 + log(3 * pi * x) + 0.8 * sqrt(x)
+  mood_persists: true
+  context_compress_max_tokens: 2000
+  context_compress_keep_recent_messages: 6
+  context_compress_max_important_messages: 12
+  # null => follow context_auto_compress_min_messages
+  context_summary_keep_messages: null
+  # Streaming timeout tuning:
+  # - Some OpenAI-compatible providers may buffer the first SSE chunk (cold start / queued inference).
+  # - Increase first-chunk timeout to avoid premature stream abort + slow failover retries.
+  llm_first_chunk_timeout_s: 30.0
+  llm_stream_disable_after_failures: 2
+  llm_stream_disable_cooldown_s: 60.0
+  # 工具筛选（Phase5：启发式预筛选 stage 会读取这些配置；可选）
+  tool_selector_min_tools: 16
+  tool_selector_max_tools: 4
+  tool_selector_always_include:
+  - get_current_time
+  - get_weather
+  - web_search
+  - map_search
+  tool_selector_timeout_s: 4.0
+  tool_selector_disable_cooldown_s: 300.0
+  # Phase5：工具权限 profile（可选；为空表示不启用）
+  tool_permission_default: default
+  tool_permission_profiles: {}
+  # 运行时选择的 profile（为空则使用 tool_permission_default）
+  tool_profile: ""
+  tool_output_max_chars: 12000
+  # Phase5: total tool calls cap per run (0 disables)
+  tool_call_limit_per_run: 8
+  tool_timeout_s: 30.0
+  tool_rewrite_timeout_s: 8.0
+  memory_character_consistency_weight: 0.1
+  mood_persist_interval_s: 1.0
+  mood_history_max_len: 500
+  emotion_persist_interval_s: 1.0
+  dual_source_emotion: true
+  style_persist_interval_s: 15.0
+  style_persist_every_n_interactions: 10
+  style_history_max_len: 100
+  style_word_counter_max: 100
+  style_topic_counter_max: 50
+  style_learning_max_message_chars: 800
+  style_learning_max_message_lines: 12
+  style_guidance_min_interactions: 6
+  style_guidance_max_chars: 600
+  style_topic_decay: 0.985
+  style_formality_decay: 0.99
+ASR:
+  streaming_model: paraformer-zh-streaming
+  # hf=HuggingFace, ms=ModelScope; null=auto infer from model id
+  streaming_hub: null
+  streaming_chunk_size:
+  - 0
+  - 8
+  - 4
+  streaming_encoder_chunk_look_back: 4
+  streaming_decoder_chunk_look_back: 1
+  dual_emit_streaming_final: true
+  partial_interval_ms: 260
+  partial_window_s: 4.0
+TTS:
+  circuit_break_cooldown: 15.0
+  circuit_break_threshold: 4
+  client_max_retries: 3
+  connect_timeout: 10.0
+  disk_cache_compress: true
+  disk_cache_max_bytes: 268435456
+  disk_cache_max_items: 400
+  disk_cache_ttl_seconds: 1209600
+  http2_enabled: false
+  latency_warning_ms: 2500.0
+  max_parallel_requests: 3
+  paragraph_min_sentence_length: 8
+  pool_keepalive_expiry: 30.0
+  pool_max_connections: 10
+  pool_max_keepalive_connections: 5
+  read_timeout: 30.0
+  request_timeout: 30.0
+  write_timeout: 30.0
+TAVILY:
+  search_depth: basic
+  include_answer: true
+log_json: true
+log_rotation: 50 MB
+log_retention: 14 days
+# Logging noise control:
+# - empty list => use built-in defaults (recommended)
+log_quiet_libs: []
+log_quiet_level: WARNING
+log_drop_keywords: []

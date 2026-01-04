@@ -13,29 +13,30 @@ import shutil
 
 def main() -> int:
     project_root = Path(__file__).resolve().parent.parent
+
     user_config_file = project_root / "config.user.yaml"
     user_example_file = project_root / "config.user.yaml.example"
-    dev_example_file = project_root / "config.dev.yaml.example"
     legacy_config_file = project_root / "config.yaml"
+    dev_config_file = project_root / "config.dev.yaml"
 
     if user_config_file.exists():
-        print(f"[OK] 已存在: {user_config_file}")
+        print(f"[OK] exists: {user_config_file}")
         return 0
 
     if legacy_config_file.exists():
-        print(f"[OK] 检测到 legacy 配置文件: {legacy_config_file}")
-        print(f"建议迁移为: {user_config_file}（可选叠加 config.dev.yaml）")
+        print(f"[OK] detected legacy config: {legacy_config_file}")
+        print(f"Please migrate to {user_config_file} (dev overrides live in {dev_config_file}).")
         return 0
 
     if not user_example_file.exists():
-        print(f"[ERROR] 未找到用户配置模板: {user_example_file}")
+        print(f"[ERROR] missing template: {user_example_file}")
         return 1
 
     shutil.copy(user_example_file, user_config_file)
-    print(f"[OK] 已创建: {user_config_file}")
-    print("请编辑并填入你的 API Key / 配置后再启动 MintChat。")
-    if dev_example_file.exists():
-        print("开发者可选：复制 config.dev.yaml.example 为 config.dev.yaml，用于高级覆盖。")
+    print(f"[OK] created: {user_config_file}")
+    print("Edit it and fill your API key(s), then start MintChat again.")
+    if dev_config_file.exists():
+        print("[INFO] dev config: edit config.dev.yaml (no secrets; committed).")
     return 0
 
 

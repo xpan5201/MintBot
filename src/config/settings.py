@@ -19,7 +19,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.utils.logger import logger  # noqa: E402
 from src.config.config_files import (  # noqa: E402
-    DEFAULT_DEV_CONFIG_EXAMPLE_PATH,
     DEFAULT_DEV_CONFIG_PATH,
     DEFAULT_USER_CONFIG_EXAMPLE_PATH,
     DEFAULT_USER_CONFIG_PATH,
@@ -123,14 +122,20 @@ class VisionLLMConfig(BaseModel):
     )
 
     def resolve(self, base: LLMConfig) -> LLMConfig:
-        """用主 LLM 作为底座补全视觉模型配置，返回可直接用于构建 Chat Model 的 LLMConfig。"""
+        """用主 LLM 作为底座补全视觉模型配置，返回可直接用于构建 Chat Model 的 LLMConfig。
+
+        约定：VISION_LLM.* 的空字符串视为“未配置”，会回退到主 LLM 配置。
+        """
         merged_extra: Dict[str, Any] = dict(base.extra_config or {})
         if self.extra_config:
             merged_extra.update(self.extra_config)
+        resolved_api = (self.api or "").strip() or base.api
+        resolved_key = (self.key or "").strip() or base.key
+        resolved_model = (self.model or "").strip() or base.model
         return LLMConfig(
-            api=self.api if self.api is not None else base.api,
-            key=self.key if self.key is not None else base.key,
-            model=self.model if self.model is not None else base.model,
+            api=resolved_api,
+            key=resolved_key,
+            model=resolved_model,
             temperature=self.temperature if self.temperature is not None else base.temperature,
             max_tokens=self.max_tokens if self.max_tokens is not None else base.max_tokens,
             extra_config=merged_extra,
@@ -643,6 +648,16 @@ class AgentConfig(BaseModel):
         description="Enable tools (compat)",
     )
 
+    llm_backend: str = Field(
+        default="native",
+        description="LLM 后端实现（已收敛为 native；旧值会被忽略）。",
+    )
+
+    native_pipeline_enabled: bool = Field(
+        default=False,
+        description=("是否启用 native(Pipeline stages)（实验性，仅影响 llm_backend=native）。"),
+    )
+
     # 记忆系统配置
     long_memory: bool = Field(
         default=True,
@@ -939,6 +954,14 @@ class AgentConfig(BaseModel):
         ge=0,
         description="工具执行结果最大字符数（避免 prompt 膨胀导致超时），0 表示不限制",
     )
+    tool_call_limit_per_run: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Max tool calls allowed per run (0 disables). "
+            "Used to prevent tool-loop spinning when the model keeps calling tools."
+        ),
+    )
     tool_rewrite_timeout_s: float = Field(
         default=8.0,
         gt=0.0,
@@ -979,6 +1002,39 @@ class AgentConfig(BaseModel):
         ge=0,
         description="当工具数量小于该值时跳过 LLM 工具筛选（性能优化）",
     )
+
+    tool_selector_max_tools: int = Field(
+        default=4,
+        ge=0,
+        description="启发式工具预筛选：目标最大工具数量（0 表示使用内部默认策略）",
+    )
+
+    tool_selector_always_include: list[str] = Field(
+        default_factory=lambda: ["get_current_time", "get_weather", "web_search", "map_search"],
+        description="启发式工具预筛选：始终保留的工具名列表",
+    )
+
+    tool_context_trim_tokens: int = Field(
+        default=1200,
+        ge=0,
+        description="上下文编辑：历史工具调用痕迹的 token 预算（0 表示关闭）",
+    )
+
+    tool_permission_default: str = Field(
+        default="default",
+        description="工具权限 profile 默认值（用于按 profile 白名单裁剪 tools）。",
+    )
+
+    tool_permission_profiles: Dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="工具权限 profiles（profile -> 允许的工具名列表）。为空表示不启用权限裁剪。",
+    )
+
+    tool_profile: str = Field(
+        default="",
+        description="运行时工具权限 profile（为空则使用 tool_permission_default）。",
+    )
+
     context_cache_max_entries: int = Field(
         default=16,
         ge=0,
@@ -1338,7 +1394,7 @@ class Settings(BaseModel):
             raise FileNotFoundError(
                 f"配置文件不存在: {config_file}\n"
                 f"首次运行请复制 {DEFAULT_USER_CONFIG_EXAMPLE_PATH} 为 {DEFAULT_USER_CONFIG_PATH} 并填写配置。\n"
-                f"开发者可选复制 {DEFAULT_DEV_CONFIG_EXAMPLE_PATH} 为 {DEFAULT_DEV_CONFIG_PATH}。"
+                f"开发者配置文件为 {DEFAULT_DEV_CONFIG_PATH}（可提交、不含密钥），可按需调整。"
             )
 
         try:

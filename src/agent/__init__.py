@@ -17,7 +17,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 def __getattr__(name: str) -> Any:  # pragma: no cover - 运行时懒加载
     """
-    懒加载：避免 `import src.agent` 时强制导入 LangChain 等重依赖，提升启动速度与可用性。
+    懒加载：避免 `import src.agent` 时强制导入重依赖，提升启动速度与可用性。
 
     说明：`from src.agent import MintChatAgent` 仍然可用，会在此处按需导入。
     """

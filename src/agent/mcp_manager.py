@@ -3,7 +3,7 @@ MCP (Model Context Protocol) 工具管理器。
 
 目标：
 - 以“可选依赖”的方式集成 MCP（未安装 mcp 时不影响主程序）
-- 支持从配置启动/连接多个 MCP 服务器，并将其工具注册到 LangChain 工具列表
+- 支持从配置启动/连接多个 MCP 服务器，并将其工具注册到 MintChat 工具系统（ToolRegistry/OpenAI ToolSpec）
 - 通过后台事件循环线程复用连接（stdio/http/sse 等），避免每次调用重复建联
 """
 
@@ -35,28 +35,6 @@ except Exception as exc:  # pragma: no cover - 环境依赖差异
     ClientSession = None  # type: ignore[assignment]
     StdioServerParameters = None  # type: ignore[assignment]
     stdio_client = None  # type: ignore[assignment]
-
-
-try:
-    from pydantic import BaseModel, Field, create_model
-
-    HAS_PYDANTIC = True
-except Exception:  # pragma: no cover
-    HAS_PYDANTIC = False
-    BaseModel = object  # type: ignore[assignment]
-    Field = None  # type: ignore[assignment]
-    create_model = None  # type: ignore[assignment]
-
-
-_STRUCTURED_TOOL_IMPORT_ERROR: Optional[BaseException] = None
-try:
-    from langchain_core.tools import StructuredTool  # type: ignore
-
-    HAS_STRUCTURED_TOOL = True
-except Exception as exc:  # pragma: no cover - 环境依赖差异
-    HAS_STRUCTURED_TOOL = False
-    _STRUCTURED_TOOL_IMPORT_ERROR = exc
-    StructuredTool = None  # type: ignore[assignment]
 
 
 _SAFE_NAME_RE = re.compile(r"[^0-9a-zA-Z_]+")
@@ -113,82 +91,6 @@ def _extract_tool_result_text(result: Any) -> str:
     return str(result)
 
 
-def _json_schema_to_pydantic_model(
-    *,
-    model_name: str,
-    schema: Optional[Dict[str, Any]],
-) -> Optional[type[BaseModel]]:
-    """
-    将 MCP 工具的 JSON Schema（常见为 inputSchema）转换为 Pydantic args_schema。
-
-    只实现常用字段：
-    - type: object
-    - properties / required
-    - description / default
-    """
-    if not HAS_PYDANTIC or create_model is None or Field is None:
-        return None
-
-    if not schema or not isinstance(schema, dict):
-        return None
-
-    if schema.get("type") != "object":
-        return None
-
-    properties = schema.get("properties")
-    if not isinstance(properties, dict) or not properties:
-        return None
-
-    required = schema.get("required") or []
-    required_set = set(required) if isinstance(required, list) else set()
-
-    def type_from(prop_schema: Dict[str, Any]) -> Any:
-        t = prop_schema.get("type")
-        if t == "string":
-            return str
-        if t == "integer":
-            return int
-        if t == "number":
-            return float
-        if t == "boolean":
-            return bool
-        if t == "array":
-            return list
-        if t == "object":
-            return dict
-        return Any
-
-    fields: Dict[str, Tuple[Any, Any]] = {}
-    for prop_name, prop_schema in properties.items():
-        if not isinstance(prop_name, str):
-            continue
-        if not isinstance(prop_schema, dict):
-            prop_schema = {}
-
-        field_type = type_from(prop_schema)
-        desc = prop_schema.get("description")
-        default = prop_schema.get("default", None)
-
-        if prop_name in required_set:
-            fields[prop_name] = (
-                field_type,
-                Field(..., description=str(desc) if desc else ""),
-            )  # type: ignore[arg-type]
-        else:
-            fields[prop_name] = (
-                Optional[field_type],  # type: ignore[valid-type]
-                Field(default, description=str(desc) if desc else ""),  # type: ignore[arg-type]
-            )
-
-    if not fields:
-        return None
-
-    try:
-        return create_model(model_name, **fields)  # type: ignore[call-arg]
-    except Exception:
-        return None
-
-
 @dataclass
 class _ServerRuntime:
     name: str
@@ -200,7 +102,7 @@ class _ServerRuntime:
 
 class MCPManager:
     """
-    MCP 管理器：负责连接/维护 MCP 会话，并将其工具适配为 LangChain Tool。
+    MCP 管理器：负责连接/维护 MCP 会话，并将其工具适配为 MintChat ToolRegistry 可用的可调用对象。
     """
 
     def __init__(self) -> None:
@@ -358,15 +260,24 @@ class MCPManager:
             return None
 
     def _adapt_tools(self, server_name: str, tools: Sequence[Any]) -> List[Any]:
-        if not HAS_STRUCTURED_TOOL or StructuredTool is None:
-            logger.warning(
-                "StructuredTool 不可用，无法注册 MCP 工具: %s", _STRUCTURED_TOOL_IMPORT_ERROR
-            )
-            return []
-
-        def make_invoke(raw_tool_name: str):
+        def make_invoke(*, raw_tool_name: str, public_name: str, description: str, schema: Any):
             def _invoke(**kwargs: Any) -> str:
                 return self.call_tool_sync(server_name, raw_tool_name, kwargs)
+
+            # Provide metadata for `src.llm_native.tools.callable_to_toolspec()`
+            _invoke.name = public_name  # type: ignore[attr-defined]
+            _invoke.description = description  # type: ignore[attr-defined]
+
+            params_schema: dict[str, Any]
+            if isinstance(schema, dict):
+                params_schema = dict(schema)
+            else:
+                params_schema = {"type": "object", "properties": {}}
+            params_schema.setdefault("type", "object")
+            params_schema.setdefault("properties", {})
+            params_schema.setdefault("additionalProperties", False)
+
+            _invoke.__tool_parameters__ = params_schema  # type: ignore[attr-defined]
 
             return _invoke
 
@@ -385,27 +296,13 @@ class MCPManager:
                 continue
 
             public_name = f"mcp_{server_name}_{_sanitize_name(tool_name)}"
-            model_name = f"MCP_{server_name}_{_sanitize_name(tool_name)}_Args"
-            args_schema = _json_schema_to_pydantic_model(model_name=model_name, schema=schema)
-
-            invoke_fn = make_invoke(tool_name)
-
-            try:
-                mcp_tool = StructuredTool.from_function(
-                    invoke_fn,
-                    name=public_name,
-                    description=f"[MCP:{server_name}] {description}".strip(),
-                    args_schema=args_schema,
-                )
-            except TypeError:
-                # 兼容旧版 StructuredTool.from_function 签名
-                mcp_tool = StructuredTool.from_function(  # type: ignore[call-arg]
-                    invoke_fn,
-                    name=public_name,
-                    description=f"[MCP:{server_name}] {description}".strip(),
-                )
-
-            adapted.append(mcp_tool)
+            invoke_fn = make_invoke(
+                raw_tool_name=tool_name,
+                public_name=public_name,
+                description=f"[MCP:{server_name}] {description}".strip(),
+                schema=schema,
+            )
+            adapted.append(invoke_fn)
 
         return adapted
 

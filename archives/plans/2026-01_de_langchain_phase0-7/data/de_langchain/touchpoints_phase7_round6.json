@@ -1,0 +1,408 @@
+{
+  "root": "D:\\MintBot",
+  "patterns": [
+    "\\blangchain\\b",
+    "\\blangchain[_-]\\w+",
+    "\\blanggraph\\b",
+    "\\blangsmith\\b"
+  ],
+  "count": 66,
+  "matches": [
+    {
+      "path": "src/config/settings.py",
+      "line": 645,
+      "text": "llm_backend: Literal[\"langchain\", \"native\"] = Field(",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "src/config/settings.py",
+      "line": 646,
+      "text": "default=\"langchain\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "src/config/settings.py",
+      "line": 647,
+      "text": "description=\"LLM 后端实现：langchain（默认）| native（后续 OpenAI-compatible 自研后端）\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "src/llm/factory.py",
+      "line": 178,
+      "text": "from src.llm_native.langchain_providers import get_chat_openai_class",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "src/multimodal/vision.py",
+      "line": 239,
+      "text": "from src.llm_native.langchain_messages import to_langchain_messages",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "src/utils/dependency_checker.py",
+      "line": 61,
+      "text": "\"langchain\": \"langchain\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "src/utils/dependency_checker.py",
+      "line": 62,
+      "text": "\"langchain_openai\": \"langchain-openai\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "src/utils/dependency_checker.py",
+      "line": 62,
+      "text": "\"langchain_openai\": \"langchain-openai\",",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "src/utils/logger.py",
+      "line": 60,
+      "text": "\"langchain\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "tests/test_llm_factory_base_url_normalization.py",
+      "line": 5,
+      "text": "import langchain_openai",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "tests/test_llm_factory_base_url_normalization.py",
+      "line": 51,
+      "text": "monkeypatch.setattr(langchain_openai, \"ChatOpenAI\", DummyChatOpenAI)",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "tests/test_llm_factory_base_url_normalization.py",
+      "line": 94,
+      "text": "monkeypatch.setattr(langchain_openai, \"ChatOpenAI\", DummyChatOpenAI)",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "tests/test_llm_factory_base_url_normalization.py",
+      "line": 137,
+      "text": "monkeypatch.setattr(langchain_openai, \"ChatOpenAI\", DummyChatOpenAI)",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "examples/multimodal_complete_demo.py",
+      "line": 37,
+      "text": "from langchain_openai import ChatOpenAI",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "examples/multimodal_complete_demo.py",
+      "line": 58,
+      "text": "print(\"⚠️  需要安装依赖 langchain-openai，请先执行: uv sync --locked --no-install-project\")",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "examples/multimodal_complete_demo.py",
+      "line": 58,
+      "text": "print(\"⚠️  需要安装依赖 langchain-openai，请先执行: uv sync --locked --no-install-project\")",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "examples/multimodal_complete_demo.py",
+      "line": 70,
+      "text": "from langchain_openai import ChatOpenAI",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "examples/multimodal_complete_demo.py",
+      "line": 88,
+      "text": "print(\"⚠️  需要安装依赖 langchain-openai，请先执行: uv sync --locked --no-install-project\")",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "examples/multimodal_complete_demo.py",
+      "line": 88,
+      "text": "print(\"⚠️  需要安装依赖 langchain-openai，请先执行: uv sync --locked --no-install-project\")",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/check_install.py",
+      "line": 61,
+      "text": "(\"langchain\", \"langchain\"),",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/check_install.py",
+      "line": 62,
+      "text": "(\"langchain_core\", \"langchain-core\"),",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/check_install.py",
+      "line": 62,
+      "text": "(\"langchain_core\", \"langchain-core\"),",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/check_install.py",
+      "line": 63,
+      "text": "(\"langchain_community\", \"langchain-community\"),",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/check_install.py",
+      "line": 63,
+      "text": "(\"langchain_community\", \"langchain-community\"),",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/check_install.py",
+      "line": 64,
+      "text": "(\"langgraph\", \"langgraph\"),",
+      "pattern": "\\blanggraph\\b"
+    },
+    {
+      "path": "scripts/check_install.py",
+      "line": 74,
+      "text": "(\"langchain_openai\", \"langchain-openai\", False),",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/check_install.py",
+      "line": 74,
+      "text": "(\"langchain_openai\", \"langchain-openai\", False),",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/check_install.py",
+      "line": 75,
+      "text": "(\"langchain_anthropic\", \"langchain-anthropic\", True),",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/check_install.py",
+      "line": 75,
+      "text": "(\"langchain_anthropic\", \"langchain-anthropic\", True),",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/check_install.py",
+      "line": 76,
+      "text": "(\"langchain_google_genai\", \"langchain-google-genai\", True),",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/check_install.py",
+      "line": 76,
+      "text": "(\"langchain_google_genai\", \"langchain-google-genai\", True),",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_audit_touchpoints.py",
+      "line": 5,
+      "text": "- 扫描仓库中对 langchain/langgraph/langsmith 的引用位置，输出报告，作为：",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_audit_touchpoints.py",
+      "line": 5,
+      "text": "- 扫描仓库中对 langchain/langgraph/langsmith 的引用位置，输出报告，作为：",
+      "pattern": "\\blanggraph\\b"
+    },
+    {
+      "path": "scripts/de_langchain_audit_touchpoints.py",
+      "line": 5,
+      "text": "- 扫描仓库中对 langchain/langgraph/langsmith 的引用位置，输出报告，作为：",
+      "pattern": "\\blangsmith\\b"
+    },
+    {
+      "path": "scripts/de_langchain_audit_touchpoints.py",
+      "line": 101,
+      "text": "description=\"Audit langchain/langgraph/langsmith touchpoints in this repo.\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_audit_touchpoints.py",
+      "line": 101,
+      "text": "description=\"Audit langchain/langgraph/langsmith touchpoints in this repo.\",",
+      "pattern": "\\blanggraph\\b"
+    },
+    {
+      "path": "scripts/de_langchain_audit_touchpoints.py",
+      "line": 101,
+      "text": "description=\"Audit langchain/langgraph/langsmith touchpoints in this repo.\",",
+      "pattern": "\\blangsmith\\b"
+    },
+    {
+      "path": "scripts/de_langchain_audit_touchpoints.py",
+      "line": 134,
+      "text": "help=\"Regex pattern(s) to search (repeatable). Default: langchain/langgraph/langsmith.\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_audit_touchpoints.py",
+      "line": 134,
+      "text": "help=\"Regex pattern(s) to search (repeatable). Default: langchain/langgraph/langsmith.\",",
+      "pattern": "\\blanggraph\\b"
+    },
+    {
+      "path": "scripts/de_langchain_audit_touchpoints.py",
+      "line": 134,
+      "text": "help=\"Regex pattern(s) to search (repeatable). Default: langchain/langgraph/langsmith.\",",
+      "pattern": "\\blangsmith\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 5,
+      "text": "- 录制当前（langchain / native）的流式输出 chunks 与关键性能指标，",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 158,
+      "text": "choices=[\"langchain\", \"native\"],",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 159,
+      "text": "default=\"langchain\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 160,
+      "text": "help=\"Backend to capture: langchain (default) or native (OpenAI-compatible).\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 168,
+      "text": "\"If omitted: langchain->agent, native->backend.\"",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 247,
+      "text": "runner = \"agent\" if args.backend == \"langchain\" else \"backend\"",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 283,
+      "text": "if args.backend == \"langchain\" and runner == \"agent\":",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 284,
+      "text": "out_name = \"langchain_stream_golden.json\"",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 291,
+      "text": "elif args.backend == \"langchain\" and runner == \"backend\":",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 293,
+      "text": "\"langchain_backend_tool_loop_golden.json\"",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 295,
+      "text": "else \"langchain_backend_stream_golden.json\"",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 361,
+      "text": "if args.backend == \"langchain\":",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_capture_golden.py",
+      "line": 363,
+      "text": "from src.llm_native.langchain_backend import LangChainBackend  # noqa: E402",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 5,
+      "text": "- 对比两份 golden JSON（通常：langchain 后端 vs native 后端）的流式输出结果，",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 18,
+      "text": "--baseline data\\\\golden\\\\langchain_backend_stream_golden.json ^",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 123,
+      "text": "# Default: Gate#2/#3 langchain vs native.",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 126,
+      "text": "Path(\"data/golden/langchain_backend_stream_golden.json\"),",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 127,
+      "text": "Path(\"data/golden/langchain_stream_golden.json\"),",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 153,
+      "text": "description=\"Compare golden baselines (langchain vs native) for streaming output.\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 157,
+      "text": "choices=[\"gate23-langchain-vs-native\", \"gate5-native-pipeline\"],",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 157,
+      "text": "choices=[\"gate23-langchain-vs-native\", \"gate5-native-pipeline\"],",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 158,
+      "text": "default=\"gate23-langchain-vs-native\",",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/de_langchain_compare_golden.py",
+      "line": 158,
+      "text": "default=\"gate23-langchain-vs-native\",",
+      "pattern": "\\blangchain[_-]\\w+"
+    },
+    {
+      "path": "scripts/quick_start.py",
+      "line": 57,
+      "text": "import langchain",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/start.py",
+      "line": 132,
+      "text": "import langchain  # noqa: F401",
+      "pattern": "\\blangchain\\b"
+    },
+    {
+      "path": "scripts/start.py",
+      "line": 133,
+      "text": "import langchain_core  # noqa: F401",
+      "pattern": "\\blangchain[_-]\\w+"
+    }
+  ]
+}

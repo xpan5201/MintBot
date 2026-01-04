@@ -1177,11 +1177,14 @@ class LightStreamingMessageBubble(QWidget):
             self.updateGeometry()
         except Exception:
             pass
-        # 高度变化会改变滚动区域的 maximum，这里异步触发一次“到达底部”，避免文本增长时视图不跟随
+        # 高度变化会改变滚动区域 maximum：交给窗口侧统一节流（避免气泡内部频繁触发滚动）。
         try:
             window = self.window()
-            if window is not None and hasattr(window, "_scroll_to_bottom"):
-                QTimer.singleShot(0, window._scroll_to_bottom)
+            if window is not None:
+                if hasattr(window, "_schedule_stream_scroll"):
+                    QTimer.singleShot(0, window._schedule_stream_scroll)
+                elif hasattr(window, "_scroll_to_bottom"):
+                    QTimer.singleShot(0, window._scroll_to_bottom)
         except Exception:
             pass
 

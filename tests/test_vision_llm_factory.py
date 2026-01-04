@@ -42,4 +42,21 @@ def test_get_vision_llm_enabled_builds_model(sample_config_dict, temp_dir, monke
 
     llm = factory.get_vision_llm()
     assert llm is not None
-    assert hasattr(llm, "invoke")
+    assert callable(getattr(llm, "complete", None))
+
+
+def test_get_vision_llm_empty_key_falls_back_to_llm_key(sample_config_dict, temp_dir, monkeypatch):
+    config = sample_config_dict.copy()
+    config["VISION_LLM"] = {"enabled": True, "model": "vision-model", "key": ""}
+    config_path = temp_dir / "vision_empty_key.yaml"
+    _write_yaml(config_path, config)
+
+    settings = Settings.from_yaml(str(config_path))
+    monkeypatch.setattr(factory, "settings", settings)
+    factory.reset_llm_cache()
+
+    llm = factory.get_vision_llm()
+    assert llm is not None
+    assert (
+        getattr(getattr(llm, "config", None), "api_key", None) == sample_config_dict["LLM"]["key"]
+    )

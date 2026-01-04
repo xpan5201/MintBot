@@ -170,7 +170,9 @@ class CodeQualityChecker:
         """扫描目录"""
         for file_path in directory.rglob("*.py"):
             # 跳过虚拟环境和缓存
-            if any(part in file_path.parts for part in ["venv", "__pycache__", ".git", "build", "dist"]):
+            if any(
+                part in file_path.parts for part in ["venv", "__pycache__", ".git", "build", "dist"]
+            ):
                 continue
 
             print(f"检查: {file_path.relative_to(PROJECT_ROOT)}")
@@ -238,7 +240,9 @@ class CodeQualityChecker:
             report.append("")
 
         report.append("=" * 80)
-        report.append(f"总计: {len(self.issues)} 个问题, {len(self.warnings)} 个警告, {len(self.suggestions)} 个建议")
+        report.append(
+            f"总计: {len(self.issues)} 个问题, {len(self.warnings)} 个警告, {len(self.suggestions)} 个建议"
+        )
         report.append("=" * 80)
 
         return "\n".join(report)
@@ -266,7 +270,9 @@ def main():
     report_file.parent.mkdir(exist_ok=True)
     with open(report_file, "w", encoding="utf-8") as f:
         f.write(f"# 代码质量检查报告\n\n")
-        f.write(f"生成时间: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        f.write(
+            f"生成时间: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        )
         f.write("```\n")
         f.write(report)
         f.write("\n```\n")
@@ -280,4 +286,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

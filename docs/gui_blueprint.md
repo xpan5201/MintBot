@@ -118,7 +118,13 @@ GUI 里重负载任务全部应避免占用主线程：Agent 初始化、历史�
 
 主窗口内已经存在的一些性能护栏（便于后续继续迭代）：
 - 流式渲染节流：`MINTCHAT_GUI_STREAM_RENDER_MS` 等环境变量控制刷新间隔/每次字符量
+  - `MINTCHAT_GUI_STREAM_RENDER_MS`：逐字渲染帧间隔（默认 200ms）
+  - `MINTCHAT_GUI_STREAM_TYPEWRITER_MAX_BACKLOG`：积压 ≤ 阈值时逐字输出（默认 512）
+  - `MINTCHAT_GUI_STREAM_RENDER_CHARS` / `MINTCHAT_GUI_STREAM_RENDER_MAX_CHARS`：追赶模式每帧输出量（默认 8/128）
+  - `MINTCHAT_GUI_STREAM_RENDER_BACKLOG_DIV`：积压→追赶速度映射（默认 80，越大越“慢”越细腻）
+  - `MINTCHAT_GUI_STREAM_EMIT_MS` / `MINTCHAT_GUI_STREAM_EMIT_THRESHOLD`：ChatThread 向 UI 发包节流（默认 16ms/512）
 - 长对话保护：`MAX_RENDERED_MESSAGES`（限制渲染的气泡总数，避免滚动掉帧）
+- 视觉效果（可能影响性能）：`MINTCHAT_GUI_SCROLL_EDGE_BLUR`（消息区上下边缘模糊；默认关闭）
 - 滚动更新优化：`QScrollArea` 使用 `MinimalViewportUpdate`（可用时）
 - 后台加载聊天历史：避免 UI 卡顿
 - 任务引用管理：对 `QRunnable` 任务保留引用，防止 GC 导致崩溃

@@ -1,7 +1,7 @@
 """
 MintChat - 多模态猫娘女仆智能体
 
-一个基于 LangChain 1.0.x 的高质量、沉浸式多模态智能体项目。
+一个高质量、沉浸式多模态角色扮演智能体项目（OpenAI-compatible API + 自研管线）。
 """
 
 __version__ = "0.1.0"

@@ -24,7 +24,7 @@ from src.utils.chroma_helper import create_chroma_vectorstore, get_collection_co
 
 logger = get_logger(__name__)
 
-# 轻量消息结构：避免短期记忆依赖 LangChain 消息类型，提升启动速度与兼容性
+# 轻量消息结构：避免短期记忆依赖第三方消息类型，提升启动速度与兼容性
 _ChatRole = Literal["user", "assistant", "system"]
 _VALID_CHAT_ROLES: set[_ChatRole] = {"user", "assistant", "system"}
 
@@ -399,39 +399,20 @@ class LongTermMemory:
         # v3.3.2: 批量模式 - 添加到缓冲区（线程安全）
         if batch:
             should_flush = False
-            buffer_to_flush = None
             with self._batch_buffer_lock:
                 self._batch_buffer.append({"content": content, "metadata": metadata})
-                # 达到批量大小时自动提交
+
                 now_mono = time.monotonic()
                 due_by_time = (
                     self._batch_flush_interval_s > 0
                     and (now_mono - self._last_batch_flush_mono) >= self._batch_flush_interval_s
                 )
                 if len(self._batch_buffer) >= self._batch_size or due_by_time:
-                    # 在锁外调用flush_batch，避免死锁
-                    buffer_to_flush = self._batch_buffer.copy()
-                    self._batch_buffer.clear()
                     should_flush = True
-            # 在锁外执行批量写入
-            if should_flush and buffer_to_flush:
-                try:
-                    contents = [item["content"] for item in buffer_to_flush]
-                    metadatas = [item["metadata"] for item in buffer_to_flush]
-                    with self._vectorstore_lock:
-                        self.vectorstore.add_texts(
-                            texts=contents,
-                            metadatas=metadatas,
-                        )
-                        self._write_version += len(buffer_to_flush)
-                    self._last_batch_flush_mono = time.monotonic()
-                    logger.info("批量添加了 %d 条记忆", len(buffer_to_flush))
-                except Exception as e:
-                    logger.error("批量添加记忆失败: %s", e)
-                    # 失败时把内容放回缓冲区，避免丢失（尽量保证“至少一次”写入）
-                    with self._batch_buffer_lock:
-                        self._batch_buffer = buffer_to_flush + self._batch_buffer
-                    return False
+
+            # 在锁外执行批量写入（内部会做回写/重试保护），避免死锁与长时间持锁
+            if should_flush:
+                self.flush_batch()
             return True
 
         try:
@@ -545,7 +526,24 @@ class LongTermMemory:
             return count
 
         except Exception as e:
-            logger.error("批量添加记忆失败: %s", e)
+            msg = str(e)
+            msg_lower = msg.lower()
+            is_transient = (
+                "timed out" in msg_lower
+                or "timeout" in msg_lower
+                or "connection" in msg_lower
+                or "temporarily" in msg_lower
+                or "unavailable" in msg_lower
+                or "eof" in msg_lower
+            )
+            if is_transient:
+                logger.warning("批量添加记忆失败(将稍后重试): %s", msg)
+            else:
+                logger.error("批量添加记忆失败: %s", msg)
+
+            # 失败/超时时也更新刷新时间，避免在热路径上短时间内反复刷屏重试
+            self._last_batch_flush_mono = time.monotonic()
+
             # 失败时把内容放回缓冲区，避免丢失（尽量保证“至少一次”写入）
             with self._batch_buffer_lock:
                 self._batch_buffer = buffer_to_flush + self._batch_buffer

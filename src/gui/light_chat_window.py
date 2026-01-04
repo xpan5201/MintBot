@@ -77,14 +77,14 @@ def _guess_sticker_emotion(sticker_path: str) -> str:
     return "表情"
 
 
-# 流式渲染：固定帧率小步追加（更像 ChatGPT 网页端，且避免一次性塞入大段文本导致“段落跳动”）
+# 流式渲染：固定节奏小步追加（更像“打字机/逐字”，且避免一次性塞入大段文本导致“段落跳动”）
 # 兼容：历史环境变量 MINTCHAT_GUI_STREAM_FLUSH_MS 仍可作为渲染间隔的兜底值。
 STREAM_RENDER_INTERVAL_MS = max(
     0,
     int(
         os.getenv(
             "MINTCHAT_GUI_STREAM_RENDER_MS",
-            os.getenv("MINTCHAT_GUI_STREAM_FLUSH_MS", "33"),
+            os.getenv("MINTCHAT_GUI_STREAM_FLUSH_MS", "200"),
         )
     ),
 )
@@ -97,15 +97,24 @@ STREAM_RENDER_TYPEWRITER = os.getenv("MINTCHAT_GUI_STREAM_TYPEWRITER", "1").lowe
 STREAM_RENDER_TYPEWRITER_MAX_BACKLOG = max(
     0, int(os.getenv("MINTCHAT_GUI_STREAM_TYPEWRITER_MAX_BACKLOG", "512"))
 )
-STREAM_RENDER_BASE_CHARS = max(1, int(os.getenv("MINTCHAT_GUI_STREAM_RENDER_CHARS", "16")))
+STREAM_RENDER_BASE_CHARS = max(1, int(os.getenv("MINTCHAT_GUI_STREAM_RENDER_CHARS", "8")))
 STREAM_RENDER_MAX_CHARS = max(
-    STREAM_RENDER_BASE_CHARS, int(os.getenv("MINTCHAT_GUI_STREAM_RENDER_MAX_CHARS", "256"))
+    STREAM_RENDER_BASE_CHARS, int(os.getenv("MINTCHAT_GUI_STREAM_RENDER_MAX_CHARS", "128"))
 )
-CHATTHREAD_EMIT_INTERVAL_MS = max(0, int(os.getenv("MINTCHAT_GUI_STREAM_EMIT_MS", "33")))
-CHATTHREAD_EMIT_THRESHOLD = max(256, int(os.getenv("MINTCHAT_GUI_STREAM_EMIT_THRESHOLD", "2048")))
+STREAM_RENDER_BACKLOG_DIVISOR = max(
+    1, int(os.getenv("MINTCHAT_GUI_STREAM_RENDER_BACKLOG_DIV", "80"))
+)
+CHATTHREAD_EMIT_INTERVAL_MS = max(0, int(os.getenv("MINTCHAT_GUI_STREAM_EMIT_MS", "16")))
+CHATTHREAD_EMIT_THRESHOLD = max(256, int(os.getenv("MINTCHAT_GUI_STREAM_EMIT_THRESHOLD", "512")))
 STREAM_SCROLL_INTERVAL_MS = max(
     0, int(os.getenv("MINTCHAT_GUI_STREAM_SCROLL_MS", str(STREAM_RENDER_INTERVAL_MS)))
 )
+SCROLL_EDGE_BLUR_ENABLED = os.getenv("MINTCHAT_GUI_SCROLL_EDGE_BLUR", "0").lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 # 长对话性能保护：限制一次性渲染的消息气泡数量，避免 widget 数量过多导致滚动掉帧。
 # 为 0 表示禁用（保持旧行为）。
 MAX_RENDERED_MESSAGES = max(0, int(os.getenv("MINTCHAT_GUI_MAX_RENDERED_MESSAGES", "400")))
@@ -1237,19 +1246,20 @@ class LightChatWindow(LightFramelessWindow):
 
         # Soft edge blur while scrolling: makes bubbles fade/blur at viewport boundaries.
         self._edge_blur_overlay = None
-        try:
-            from .scroll_edge_blur_overlay import ScrollEdgeBlurOverlay
-
-            self._edge_blur_overlay = ScrollEdgeBlurOverlay(
-                scroll_area=self.scroll_area, parent=self.scroll_area.viewport()
-            )
+        if SCROLL_EDGE_BLUR_ENABLED:
             try:
-                self._edge_blur_overlay.setGeometry(self.scroll_area.viewport().rect())
+                from .scroll_edge_blur_overlay import ScrollEdgeBlurOverlay
+
+                self._edge_blur_overlay = ScrollEdgeBlurOverlay(
+                    scroll_area=self.scroll_area, parent=self.scroll_area.viewport()
+                )
+                try:
+                    self._edge_blur_overlay.setGeometry(self.scroll_area.viewport().rect())
+                except Exception:
+                    pass
+                self._edge_blur_overlay.show()
             except Exception:
-                pass
-            self._edge_blur_overlay.show()
-        except Exception:
-            self._edge_blur_overlay = None
+                self._edge_blur_overlay = None
 
         # 输入区域 - ChatGPT Web 风格输入卡片（按钮与预览内聚到 EnhancedInputWidget）
         input_area = QWidget()
@@ -1758,7 +1768,8 @@ class LightChatWindow(LightFramelessWindow):
         live2d_directive_applied = False
         if not bulk_loading:
             try:
-                if "[[live2d:" in str(message).lower():
+                lower_msg = str(message).lower()
+                if "[[live2d:" in lower_msg or "[live2d:" in lower_msg:
                     from src.gui.live2d_state_event import extract_explicit_state_directive
 
                     cleaned, directive = extract_explicit_state_directive(message)
@@ -1801,8 +1812,7 @@ class LightChatWindow(LightFramelessWindow):
             if not bulk_loading:
                 # v2.30.8: 强制显示气泡
                 bubble.show()
-                self.messages_layout.update()
-                self._schedule_messages_geometry_update()
+                self._schedule_messages_layout_update()
         elif image_only:
             image_path = image_only.group(1)
             bubble = LightImageMessageBubble(
@@ -1818,8 +1828,7 @@ class LightChatWindow(LightFramelessWindow):
 
             if not bulk_loading:
                 bubble.show()
-                self.messages_layout.update()
-                self._schedule_messages_geometry_update()
+                self._schedule_messages_layout_update()
         elif STICKER_PATTERN.search(message):
             # 混合消息：需要分段处理
             self._add_mixed_message(message, is_user, with_animation)
@@ -1837,8 +1846,7 @@ class LightChatWindow(LightFramelessWindow):
                 bubble.show()  # 确保气泡可见
 
                 # v2.30.13: 立即更新布局，避免错位
-                self.messages_layout.update()
-                self._schedule_messages_geometry_update()
+                self._schedule_messages_layout_update()
                 if enable_entry_animation:
                     bubble.show_with_animation()
 
@@ -2224,8 +2232,7 @@ class LightChatWindow(LightFramelessWindow):
             except Exception:
                 pass
 
-        self.messages_layout.update()
-        self._schedule_messages_geometry_update()
+        self._schedule_messages_layout_update()
         if getattr(self, "_auto_scroll_enabled", True):
             self._ensure_scroll_to_bottom()
         self._schedule_animated_image_budget()
@@ -2397,6 +2404,32 @@ class LightChatWindow(LightFramelessWindow):
         # 延迟到下一轮事件循环，让 Qt 先完成插入/尺寸 hint 计算
         QTimer.singleShot(0, do_update)
 
+    def _schedule_messages_layout_update(self) -> None:
+        """合并消息区的 update 调用，避免频繁插入/裁剪导致卡顿。"""
+        if getattr(self, "_messages_layout_update_pending", False):
+            return
+        self._messages_layout_update_pending = True
+
+        def do_update() -> None:
+            self._messages_layout_update_pending = False
+            try:
+                layout = getattr(self, "messages_layout", None)
+                if layout is not None:
+                    try:
+                        layout.activate()
+                    except Exception:
+                        pass
+                widget = getattr(self, "messages_outer_widget", None) or getattr(
+                    self, "messages_widget", None
+                )
+                if widget is not None:
+                    widget.update()
+            except Exception:
+                pass
+
+        self._schedule_messages_geometry_update()
+        QTimer.singleShot(0, do_update)
+
     def _show_typing_indicator(self):
         """显示打字指示器 - v2.30.8 修复：确保插入到正确位置"""
         # 先移除旧的打字指示器（如果存在）
@@ -2415,8 +2448,7 @@ class LightChatWindow(LightFramelessWindow):
 
         # v2.30.8: 强制显示和更新
         self.typing_indicator.show()
-        self.messages_layout.update()
-        self._schedule_messages_geometry_update()
+        self._schedule_messages_layout_update()
 
     def _ensure_stream_render_state(self) -> None:
         """初始化流式渲染队列与定时器（用于更丝滑的“逐步显示”效果）。"""
@@ -2429,6 +2461,10 @@ class LightChatWindow(LightFramelessWindow):
         if not hasattr(self, "_stream_render_timer"):
             self._stream_render_timer = QTimer(self)
             self._stream_render_timer.setInterval(STREAM_RENDER_INTERVAL_MS)
+            try:
+                self._stream_render_timer.setTimerType(Qt.TimerType.PreciseTimer)
+            except Exception:
+                pass
             self._stream_render_timer.timeout.connect(self._drain_stream_render_queue)
 
     def _reset_stream_render_state(self) -> None:
@@ -2450,6 +2486,14 @@ class LightChatWindow(LightFramelessWindow):
         try:
             self._live2d_stream_directive_buf = ""
             self._live2d_stream_text_buf = ""
+        except Exception:
+            pass
+        # Live2D: cancel deferred directive dispatch (avoid late events after cancel/error).
+        try:
+            timer = getattr(self, "_live2d_stream_dispatch_timer", None)
+            if timer is not None and timer.isActive():
+                timer.stop()
+            self._live2d_stream_dispatch_pending = None
         except Exception:
             pass
 
@@ -2486,9 +2530,44 @@ class LightChatWindow(LightFramelessWindow):
                 return 1
         base = int(STREAM_RENDER_BASE_CHARS)
         max_chars = int(STREAM_RENDER_MAX_CHARS)
-        # 平滑加速：积压越大，每帧输出越多；积压较小时保持“ChatGPT 风格”的细粒度流式观感。
-        budget = max(base, backlog // 50)
+        # 平滑加速：积压越大，每帧输出越多；积压较小时保持“细粒度逐字”的流式观感。
+        budget = max(base, backlog // max(1, int(STREAM_RENDER_BACKLOG_DIVISOR)))
         return max(1, min(max_chars, budget))
+
+    def _ensure_live2d_stream_dispatcher(self) -> None:
+        if not hasattr(self, "_live2d_stream_dispatch_timer"):
+            self._live2d_stream_dispatch_timer = QTimer(self)
+            self._live2d_stream_dispatch_timer.setSingleShot(True)
+            try:
+                self._live2d_stream_dispatch_timer.setTimerType(Qt.TimerType.PreciseTimer)
+            except Exception:
+                pass
+            self._live2d_stream_dispatch_timer.timeout.connect(self._drain_live2d_stream_dispatcher)
+        if not hasattr(self, "_live2d_stream_dispatch_pending"):
+            self._live2d_stream_dispatch_pending = None
+
+    def _queue_live2d_state_directive(self, directive, *, source: str) -> None:
+        if directive is None:
+            return
+        try:
+            self._ensure_live2d_stream_dispatcher()
+            self._live2d_stream_dispatch_pending = (directive, str(source or ""))
+            timer = getattr(self, "_live2d_stream_dispatch_timer", None)
+            if timer is not None and not timer.isActive():
+                timer.start(0)
+        except Exception:
+            pass
+
+    def _drain_live2d_stream_dispatcher(self) -> None:
+        pending = getattr(self, "_live2d_stream_dispatch_pending", None)
+        self._live2d_stream_dispatch_pending = None
+        if not pending:
+            return
+        directive, source = pending
+        try:
+            self._apply_live2d_state_directive(directive, source=str(source or ""))
+        except Exception:
+            pass
 
     def _enqueue_stream_render_text(self, text: str) -> None:
         """将文本入队，交由渲染定时器按帧追加到气泡。"""
@@ -2554,7 +2633,7 @@ class LightChatWindow(LightFramelessWindow):
         return "".join(out_parts)
 
     def _drain_stream_render_queue(self) -> None:
-        """按帧把队列里的文本追加到气泡（默认 30fps），实现更自然的流式观感。"""
+        """按固定间隔把队列里的文本追加到气泡（默认 200ms，可配置），实现更自然的逐字流式观感。"""
         if self.current_streaming_bubble is None:
             self._reset_stream_render_state()
             return
@@ -2995,10 +3074,7 @@ class LightChatWindow(LightFramelessWindow):
                 clean, new_buf, directive = filter_explicit_state_directives_stream(buf, chunk)
                 self._live2d_stream_directive_buf = new_buf
                 if directive is not None:
-                    try:
-                        self._apply_live2d_state_directive(directive, source="assistant_stream")
-                    except Exception:
-                        pass
+                    self._queue_live2d_state_directive(directive, source="assistant_stream")
                 chunk = clean
         except Exception:
             pass
@@ -3072,8 +3148,7 @@ class LightChatWindow(LightFramelessWindow):
             self.messages_layout.insertWidget(
                 self.messages_layout.count() - 1, self.current_streaming_bubble
             )
-            self.messages_layout.update()
-            self._schedule_messages_geometry_update()
+            self._schedule_messages_layout_update()
 
         # 入队：由渲染定时器分帧追加，避免“大段跳动”
         self._enqueue_stream_render_text(chunk)
@@ -3428,8 +3503,7 @@ class LightChatWindow(LightFramelessWindow):
                             pass
                         self._bulk_loading_messages = old_bulk_loading
 
-                    self.messages_layout.update()
-                    self._schedule_messages_geometry_update()
+                    self._schedule_messages_layout_update()
                     self._enforce_shadow_budget()
                     self._schedule_animated_image_budget()
                     self._schedule_trim_rendered_messages(force=False)
@@ -4927,8 +5001,7 @@ class LightChatWindow(LightFramelessWindow):
             if scroll_widget is not None:
                 scroll_widget.setUpdatesEnabled(True)
             self.scroll_area.setUpdatesEnabled(True)
-            self.messages_layout.update()
-            self._schedule_messages_geometry_update()
+            self._schedule_messages_layout_update()
             self._ensure_scroll_to_bottom()
 
             if total_count > len(messages):
@@ -5018,8 +5091,7 @@ class LightChatWindow(LightFramelessWindow):
                     pass
                 self._bulk_loading_messages = old_bulk_loading
 
-            self.messages_layout.update()
-            self._schedule_messages_geometry_update()
+            self._schedule_messages_layout_update()
             QTimer.singleShot(100, lambda: self._restore_scroll_position(old_value, old_max))
 
             logger.info(

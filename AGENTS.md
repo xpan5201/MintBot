@@ -28,6 +28,8 @@
 **补充强制项（依赖频繁更新，必须遵守）**
 
 - **每次任务必须实际使用 MCP 工具链定位与验证**：至少调用一次 Serena/rg/Git/Filesystem（不可只口头说明）。
+- **Phase/Gate 类计划期间，MCP Research Loop 视为强制项**：每轮必须实际调用 Context7 + tavily_local + Fetch（若 Fetch 被 403/阻断则改用 tavily-extract），并把关键来源链接与取舍结论写入该计划的归档目录（`archives/plans/<plan_id>/docs/decision_record_*.md`），禁止“凭记忆猜”。（历史：去 LangChain 计划已归档到 `archives/plans/2026-01_de_langchain_phase0-7/`）
+- **查询类 MCP 资料必须“领域/方向相关”（核心硬规范）**：使用 Context7/tavily_local/Fetch 获取的资料，必须直接服务于 MintChat 的方向（AI 伴侣 / 角色扮演型智能体：低延迟流式体验、角色一致性与情绪表达、可控工具调用、隐私与本地优先、多模态/GUI 不阻塞、以及“关系/偏好/事件”类记忆）。禁止为了“看起来先进”引入偏离方向的技术路线（例如把记忆系统默认等同于 RAG/知识库问答）。若确需引入跨领域技术，必须在对应 `decision_record_phase*.md` 中写清：为何适配本项目方向、替代方案对比、以及不采纳方案的理由；并在可能引入行为改变/大重构前先与 Owner 确认。
 - **第三方依赖/接口禁止“凭记忆猜”**：涉及第三方库/API/迁移/报错/行为不确定时，优先 Context7；不足再用 tavily_local + Fetch。
 - **工具不可用必须说明与替代**：若某 MCP 工具暂时不可用，最终回复必须记录原因，并给出替代定位/验证步骤。
 
@@ -260,8 +262,10 @@ Makefile 快捷（可选）：`make install` / `make dev` / `make test` / `make 
 
 ## 6) 配置与安全（Config & Security）
 
-- `config.user.yaml` / `config.dev.yaml` 为本机私有配置（git 忽略），禁止提交任何密钥
-- `config.user.yaml.example` / `config.dev.yaml.example` 为提交模板：新增/变更配置项必须同步更新（`config.yaml.example` 为 legacy 单文件模板，可选维护）
+- `config.user.yaml` 为本机私有配置（git 忽略），禁止提交任何密钥
+- `config.user.yaml.example` 为提交模板：新增/变更用户配置项必须同步更新（`config.yaml.example` 为 legacy 单文件模板，可选维护）
+- `config.dev.yaml` 为开发者/调试配置（允许提交到 git），**必须保持不含密钥/账号/敏感信息**；如需密钥请使用环境变量或 `config.user.yaml`
+- 约定：已允许 Codex 在维护/调试时直接修改 `config.dev.yaml`（不含密钥）；如涉及共享配置变更可直接更新并提交该文件
 - `.env` 同样忽略；敏感覆盖优先使用环境变量
 - 不要把 token / key / 账号写入代码、测试、日志、示例
 
@@ -281,3 +285,5 @@ Makefile 快捷（可选）：`make install` / `make dev` / `make test` / `make 
 8. **交付说明必须包含**：原因、改动点、验证方式、潜在风险/回滚点 + 本次 MCP 工具使用记录（用/不用都要说明）。
 9. **范围内打扫（必须）**：本轮维护会由用户指定“抽象范围”（例如：登录-注册-修改密码）。在完成功能后，必须对该范围内做一次收尾整理：删除冗余/未引用代码与文件、统一样式与命名、补充必要注释/类型/测试（按需）、确认无破坏性改动与可回滚点。
 10. **范围策略（重要）**：用户给定范围是为了减少大幅度的跨文件操作与误伤风险，而不是为了“偷懒”。在定位/实现过程中若发现真实问题（尤其是检索 bug、崩溃、明显错误、回归），必须修复，即使超出范围；严禁遗留“已发现但未修复”的问题。若修复将引入大范围行为变更/大重构，应先与用户确认再推进。
+
+11. **计划归档（重要）**：凡是 Phase/Gate 类的长期计划，在完成验收后必须归档：\n+    - 产物进入 `archives/plans/<plan_id>/`（文档/脚本/测试数据/规划图等）\n+    - 用 SQLite 档案库索引登记到 `archives/archive.sqlite3`（见 `archives/README.md` 与 `scripts/archive_manager.py`）\n+    - 归档完成后清理运行时产物（`*.egg-info`、`__pycache__`、`.pytest_cache`、`.mypy_cache` 等），保持仓库整洁

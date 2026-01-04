@@ -58,28 +58,12 @@ def main():
     # 检查核心依赖
     print("检查核心依赖...")
     core_deps = [
-        ("langchain", "langchain"),
-        ("langchain_core", "langchain-core"),
-        ("langchain_community", "langchain-community"),
-        ("langgraph", "langgraph"),
+        ("openai", "openai"),
+        ("httpx", "httpx"),
     ]
     for module, package in core_deps:
         if not check_module(module, package):
             all_ok = False
-    print()
-
-    # 检查 LLM 提供商
-    print("检查 LLM 提供商...")
-    llm_providers = [
-        ("langchain_openai", "langchain-openai", False),
-        ("langchain_anthropic", "langchain-anthropic", True),
-        ("langchain_google_genai", "langchain-google-genai", True),
-        ("openai", "openai", False),
-    ]
-    for module, package, optional in llm_providers:
-        if not check_module(module, package, optional):
-            if not optional:
-                all_ok = False
     print()
 
     # 检查多模态支持
@@ -131,7 +115,9 @@ def main():
             print("  ! CUDA 不可用（将使用 CPU；如需 GPU 请检查 NVIDIA 驱动与环境）")
 
         if sys.platform != "darwin" and "+cu130" not in str(torch_version):
-            print("  ! 当前 torch 非 cu130 构建，建议执行: uv sync --locked --no-install-project --reinstall-package torch")
+            print(
+                "  ! 当前 torch 非 cu130 构建，建议执行: uv sync --locked --no-install-project --reinstall-package torch"
+            )
     except Exception:
         print("  ✗ torch (缺失)")
         all_ok = False
@@ -206,4 +192,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

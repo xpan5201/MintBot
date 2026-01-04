@@ -22,22 +22,15 @@ from datetime import datetime
 from functools import wraps
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
-try:
-    # LangChain < 0.2
-    from langchain.tools import tool  # type: ignore
-except Exception:  # pragma: no cover - 兼容不同 LangChain 版本
-    try:
-        # LangChain >= 0.2（工具在 langchain_core）
-        from langchain_core.tools import tool  # type: ignore
-    except Exception:  # pragma: no cover - 环境依赖差异
-        # 允许在缺少 LangChain 的环境下导入本模块（例如仅运行部分测试/工具）
-        def tool(func: Callable) -> Callable:  # type: ignore[misc]
-            return func
+from src.llm_native.tools import tool
+
+if TYPE_CHECKING:
+    from src.llm_native.tools import ToolSpec
 
 
 from src.config.settings import settings
@@ -1457,6 +1450,7 @@ class ToolRegistry:
         self._cache_version = 0
         self._cached_tool_names: Optional[Tuple[int, List[str]]] = None
         self._cached_tools_description: Optional[Tuple[int, List[Dict[str, str]]]] = None
+        self._cached_tool_specs: Optional[Tuple[int, bool | None, List["ToolSpec"]]] = None
         # MCP 工具（可选）单独保留列表，便于诊断/兼容脚本
         self._mcp_tools: List[Callable] = []
         self._optional_tools_loaded = False
@@ -1471,7 +1465,7 @@ class ToolRegistry:
 
     @staticmethod
     def _get_tool_name(tool_fn: Callable) -> str:
-        """安全获取工具名称，兼容 LangChain StructuredTool 等对象"""
+        """安全获取工具名称，兼容常见工具包装器等对象。"""
         return (
             getattr(tool_fn, "name", None)
             or getattr(tool_fn, "__name__", None)
@@ -1602,6 +1596,7 @@ class ToolRegistry:
             self._cache_version += 1
             self._cached_tool_names = None
             self._cached_tools_description = None
+            self._cached_tool_specs = None
         logger.debug("注册工具: %s", name)
 
     def unregister_tool(self, name: str) -> None:
@@ -1617,6 +1612,7 @@ class ToolRegistry:
                 self._cache_version += 1
                 self._cached_tool_names = None
                 self._cached_tools_description = None
+                self._cached_tool_specs = None
                 logger.debug("注销工具: %s", name)
 
     def get_tool(self, name: str) -> Optional[Callable]:
@@ -1697,6 +1693,50 @@ class ToolRegistry:
                 self._cached_tools_description = (version, descriptions)
         return list(descriptions)
 
+    def get_tool_specs(self, *, strict: bool | None = None) -> List["ToolSpec"]:
+        """
+        导出 ToolSpec 列表（OpenAI-compatible tools schema），供自研后端使用。
+
+        注意：该方法不影响当前对话主链路，只是提供协议层导出能力。
+        """
+        if not self._tools_enabled:
+            return []
+        self._ensure_optional_tools_loaded()
+
+        from src.llm_native.tools import ToolSpec, callable_to_toolspec
+
+        with self._lock:
+            version = self._cache_version
+            cached = self._cached_tool_specs
+            if cached is not None and cached[0] == version and cached[1] == strict:
+                return list(cached[2])
+            tools = list(self._tools.values())
+
+        specs: List[ToolSpec] = []
+        for tool_fn in tools:
+            spec = callable_to_toolspec(tool_fn, strict=strict)
+            if spec is None:
+                continue
+
+            if not spec.description:
+                desc = (
+                    getattr(tool_fn, "description", None) or getattr(tool_fn, "__doc__", None) or ""
+                )
+                if desc:
+                    spec = ToolSpec(
+                        name=spec.name,
+                        description=str(desc),
+                        parameters=spec.parameters,
+                        strict=spec.strict,
+                    )
+
+            specs.append(spec)
+
+        with self._lock:
+            if self._cache_version == version:
+                self._cached_tool_specs = (version, strict, specs)
+        return list(specs)
+
     def execute_tool(self, name: str, timeout: float = DEFAULT_TOOL_TIMEOUT, **kwargs: Any) -> str:
         """
         v3.3.4: 执行工具 - 增强版（实际超时控制）
@@ -1752,7 +1792,7 @@ class ToolRegistry:
             logger.debug("开始执行工具 '%s'，参数: %s", name, args_repr)
 
             def _execute():
-                # LangChain 工具需要使用 invoke 方法
+                # 部分工具包装器需要使用 invoke 方法
                 if hasattr(tool_func, "invoke"):
                     return tool_func.invoke(kwargs) if kwargs else tool_func.invoke({})
                 else:

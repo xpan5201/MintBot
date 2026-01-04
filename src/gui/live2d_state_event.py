@@ -161,6 +161,26 @@ def infer_state_event_from_text(text: str) -> tuple[str, float] | None:
 
 _LIVE2D_DIRECTIVE_PREFIX = "[[live2d:"
 _LIVE2D_DIRECTIVE_SUFFIX = "]]"
+# Compatibility: some models may emit a single-bracket form (missing one '['/']').
+# We keep the double-bracket JSON directive as the recommended/authoritative syntax,
+# but accept the single-bracket variant to avoid leaking control tags into the UI.
+_LIVE2D_DIRECTIVE_PATTERNS: tuple[tuple[str, str], ...] = (
+    (_LIVE2D_DIRECTIVE_PREFIX, _LIVE2D_DIRECTIVE_SUFFIX),
+    ("[live2d:", "]"),
+)
+
+
+def _find_next_directive_start(
+    low: str, start: int
+) -> tuple[int, str, str] | None:  # (pos, prefix, suffix)
+    best: tuple[int, str, str] | None = None
+    for prefix, suffix in _LIVE2D_DIRECTIVE_PATTERNS:
+        pos = low.find(prefix, start)
+        if pos == -1:
+            continue
+        if best is None or pos < best[0]:
+            best = (pos, prefix, suffix)
+    return best
 
 
 def _parse_state_event_payload(payload: str) -> tuple[str, float | None, float | None] | None:
@@ -291,21 +311,22 @@ def extract_explicit_state_directive(
     i = 0
     out_parts: list[str] = []
     while True:
-        start = low.find(_LIVE2D_DIRECTIVE_PREFIX, i)
-        if start == -1:
+        found = _find_next_directive_start(low, i)
+        if found is None:
             out_parts.append(msg[i:])
             break
+        start, prefix, suffix = found
         out_parts.append(msg[i:start])
-        end = low.find(_LIVE2D_DIRECTIVE_SUFFIX, start + len(_LIVE2D_DIRECTIVE_PREFIX))
+        end = low.find(suffix, start + len(prefix))
         if end == -1:
             # Incomplete directive: keep it as plain text (avoid losing content).
             out_parts.append(msg[start:])
             break
-        payload = msg[start + len(_LIVE2D_DIRECTIVE_PREFIX) : end]
+        payload = msg[start + len(prefix) : end]
         parsed = parse_payload(payload)
         if parsed is not None:
             directive = parsed
-        i = end + len(_LIVE2D_DIRECTIVE_SUFFIX)
+        i = end + len(suffix)
 
     cleaned = "".join(out_parts)
     # Avoid leaving behind ugly blank lines/spaces.
@@ -331,8 +352,6 @@ def filter_explicit_state_directives_stream(
 
     data = buf + chunk
     low = data.lower()
-    prefix = _LIVE2D_DIRECTIVE_PREFIX
-    suffix = _LIVE2D_DIRECTIVE_SUFFIX
     directive: tuple[str, float | None, float | None] | None = None
 
     def parse_payload(payload: str) -> tuple[str, float | None, float | None] | None:
@@ -342,23 +361,29 @@ def filter_explicit_state_directives_stream(
     i = 0
     max_buf = 4096
     while True:
-        start = low.find(prefix, i)
-        if start == -1:
+        found = _find_next_directive_start(low, i)
+        if found is None:
             tail = data[i:]
             # Keep a small suffix if it can be a partial prefix (to handle boundary splits).
             keep = ""
             try:
-                max_k = len(prefix) - 1
-                for k in range(max_k, 0, -1):
-                    if tail.lower().endswith(prefix[:k]):
-                        keep = tail[-k:]
-                        tail = tail[:-k]
-                        break
+                best_k = 0
+                for prefix, _suffix in _LIVE2D_DIRECTIVE_PATTERNS:
+                    max_k = len(prefix) - 1
+                    for k in range(max_k, 0, -1):
+                        if tail.lower().endswith(prefix[:k]):
+                            if k > best_k:
+                                best_k = k
+                            break
+                if best_k > 0:
+                    keep = tail[-best_k:]
+                    tail = tail[:-best_k]
             except Exception:
                 keep = ""
             out_parts.append(tail)
             new_buffer = keep
             break
+        start, prefix, suffix = found
         out_parts.append(data[i:start])
         end = low.find(suffix, start + len(prefix))
         if end == -1:

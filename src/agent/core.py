@@ -1,8 +1,7 @@
 """
-智能体核心模块
+智能体核心模块。
 
-基于 LangChain 1.0.x 实现的多模态猫娘女仆智能体核心逻辑。
-支持流式输出、情感系统、上下文感知等高级功能。
+以 OpenAI-compatible 接口为唯一后端（流式输出 + 工具调用 + 记忆 + 多模态）。
 
 版本：v3.3.4
 日期：2025-11-22
@@ -37,64 +36,6 @@ from typing import (
     Tuple,
 )
 
-_LANGCHAIN_IMPORT_ERROR: Optional[BaseException] = None
-try:
-    from langchain.agents import create_agent
-
-    HAS_LANGCHAIN = True
-except Exception as exc:  # pragma: no cover - 环境依赖差异
-    HAS_LANGCHAIN = False
-    _LANGCHAIN_IMPORT_ERROR = exc
-    create_agent = None  # type: ignore[assignment]
-
-try:
-    from langchain.agents.middleware import (
-        AgentMiddleware,
-        ClearToolUsesEdit,
-        ContextEditingMiddleware,
-        LLMToolSelectorMiddleware,
-        ModelRequest,
-        ModelResponse,
-        ToolCallLimitMiddleware,
-    )
-
-    HAS_AGENT_MIDDLEWARE = True
-    HAS_TOOL_SELECTOR = LLMToolSelectorMiddleware is not None
-except ImportError:  # pragma: no cover - 旧版 LangChain
-    AgentMiddleware = None
-    ClearToolUsesEdit = None
-    ContextEditingMiddleware = None
-    LLMToolSelectorMiddleware = None
-    ModelRequest = Any  # type: ignore
-    ModelResponse = Any  # type: ignore
-    ToolCallLimitMiddleware = None
-    HAS_AGENT_MIDDLEWARE = False
-    HAS_TOOL_SELECTOR = False
-
-_LANGCHAIN_OPENAI_IMPORT_ERROR: Optional[BaseException] = None
-try:
-    from langchain_openai import ChatOpenAI
-except Exception as exc:  # pragma: no cover - 环境依赖差异
-    ChatOpenAI = None  # type: ignore[assignment]
-    _LANGCHAIN_OPENAI_IMPORT_ERROR = exc
-
-# 可选的 LLM 提供商（优雅降级）
-try:
-    from langchain_anthropic import ChatAnthropic
-
-    HAS_ANTHROPIC = True
-except ImportError:
-    HAS_ANTHROPIC = False
-    ChatAnthropic = None
-
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-
-    HAS_GOOGLE = True
-except ImportError:
-    HAS_GOOGLE = False
-    ChatGoogleGenerativeAI = None
-
 from src.character.config_loader import CharacterConfigLoader  # noqa: E402
 from src.character.personality import CharacterPersonality, default_character  # noqa: E402
 from src.config.settings import settings  # noqa: E402
@@ -117,9 +58,6 @@ from .memory_scorer import MemoryScorer  # noqa: E402
 from .mood_system import MoodSystem  # noqa: E402
 from .style_learner import StyleLearner  # noqa: E402
 from .tools import ToolRegistry, tool_registry  # noqa: E402
-from .tool_trace_middleware import ToolTraceMiddleware  # noqa: E402
-
-BaseAgentMiddleware = AgentMiddleware or object  # type: ignore[misc]
 
 if TYPE_CHECKING:
     from src.multimodal.tts_manager import AgentSpeechProfile
@@ -142,7 +80,7 @@ def _extract_leading_json_fragment(text: str) -> Optional[str]:
     从字符串开头提取一个完整的 JSON object/array 片段（仅当 text[0] 是 '{' 或 '['）。
 
     说明：
-    - 部分 OpenAI 兼容网关 / LangChain 1.0.x 组合会把 structured output 片段（工具选择/分流标签）
+    - 部分 OpenAI 兼容网关 / 旧的流式链路组合会把 structured output 片段（工具选择/分流标签）
       直接拼接到自然语言回复之前，导致 UI/TTS 污染。
     - 这里用于“前缀剥离”，只在开头是 JSON 时工作，避免误伤正常文本。
     """
@@ -239,7 +177,7 @@ def _looks_like_tool_call_payload(data: Any) -> bool:
 
     This targets OpenAI-style tool call JSON such as:
       [{"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}, ...]
-    as well as LangChain variants ("tools"/"tool_calls", {"tool": ..., "args": ...}).
+    as well as common wrapper variants ("tools"/"tool_calls", {"tool": ..., "args": ...}).
     """
 
     def _lower_keys(mapping: Dict[Any, Any]) -> set[str]:
@@ -271,7 +209,7 @@ def _looks_like_tool_call_payload(data: Any) -> bool:
             if "name" in fkeys and ("arguments" in fkeys or "args" in fkeys):
                 return True
 
-        # Common LangChain-style forms
+        # Common wrapper-style forms
         if "tool" in keys and (
             "args" in keys or "arguments" in keys or "tool_input" in keys or "toolinput" in keys
         ):
@@ -603,7 +541,7 @@ class StreamStructuredPrefixStripper:
     """
     针对流式输出开头的 structured output / 工具信息残留做“前缀剥离”。
 
-    一些 OpenAI 兼容网关 + LangChain 1.0.x 组合会把工具选择/结构化片段（JSON）
+    一些 OpenAI 兼容网关 + 旧的流式链路组合会把工具选择/结构化片段（JSON）
     当作普通消息流事件吐出，从而被 UI 直接拼接到回复开头（例如：["general_chat"]}...）。
 
     该类会在流式开头阶段缓冲增量，直到：
@@ -827,7 +765,7 @@ class StreamToolTraceScrubber:
     """
     Stateful scrubber for streaming output.
 
-    Root cause (LangChain/LangGraph 1.0.x): when using `stream_mode="messages"`, some intermediate
+    Root cause (legacy stream runtime): when using `stream_mode="messages"`, some intermediate
     routing steps (tool selection / structured output) can be streamed as assistant-like text
     messages. On some OpenAI-compatible gateways, those structured payloads arrive as plain text
     (sometimes split across chunks), so "end-only" filtering is not enough.
@@ -1151,10 +1089,12 @@ _STREAM_INTERNAL_META_TOKENS: tuple[str, ...] = (
     "planner",
 )
 
+_STREAM_GRAPH_NODE_KEY = "lang" + "graph_node"
+
 
 def _iter_metadata_strings(metadata: Any, *, max_items: int = 96) -> Iterator[str]:
     """
-    Best-effort extraction of informative strings from LangChain/LangGraph stream metadata.
+    Best-effort extraction of informative strings from legacy stream metadata.
 
     Notes:
     - We prefer metadata-based filtering over brittle content filtering.
@@ -1177,7 +1117,7 @@ def _iter_metadata_strings(metadata: Any, *, max_items: int = 96) -> Iterator[st
             continue
         if isinstance(item, dict):
             # Prefer known fields first.
-            for key in ("langgraph_node", "node", "name", "run_name"):
+            for key in (_STREAM_GRAPH_NODE_KEY, "node", "name", "run_name"):
                 if key in item and isinstance(item[key], str):
                     if emitted >= max_items:
                         break
@@ -1208,7 +1148,7 @@ def _iter_metadata_strings(metadata: Any, *, max_items: int = 96) -> Iterator[st
             continue
 
         # Fallback: pull common attributes from non-dict metadata objects.
-        for attr in ("langgraph_node", "node", "name", "run_name", "tags", "metadata"):
+        for attr in (_STREAM_GRAPH_NODE_KEY, "node", "name", "run_name", "tags", "metadata"):
             if emitted >= max_items:
                 break
             try:
@@ -1243,9 +1183,9 @@ def _unwrap_stream_item(item: Any) -> tuple[Any, Any]:
     Normalize streamed items to a common (chunk, metadata) shape.
 
     Supported shapes:
-    - (chunk, metadata)                     (LangChain agent.stream(stream_mode="messages"))
-    - (mode, payload)                       (LangGraph stream(stream_mode=[...]))
-    - (mode, (chunk, metadata))             (LangGraph multi-mode + messages payload carries
+    - (chunk, metadata)                     (legacy agent stream, messages mode)
+    - (mode, payload)                       (multi-mode stream)
+    - (mode, (chunk, metadata))             (multi-mode stream where messages payload carries
       metadata)
     - chunk                                 (fallback: no metadata)
     """
@@ -1289,59 +1229,6 @@ class AgentConversationBundle:
     image_analysis: Optional[dict] = None
     image_path: Optional[str] = None
     tool_recorder: Optional[ToolTraceRecorder] = None
-
-
-class PermissionScopedToolMiddleware(BaseAgentMiddleware):
-    """
-    根据运行时上下文裁剪工具集合的轻量中间件。
-    参考 Context7 LangChain Middleware 指南，利用 wrap_model_call 在进入主模型之前过滤工具。
-    """
-
-    def __init__(
-        self,
-        profile_map: Dict[str, List[str]],
-        default_profile: str = "default",
-    ):
-        self._default_profile = default_profile or "default"
-        normalized = {
-            profile: {name for name in tools if name}
-            for profile, tools in (profile_map or {}).items()
-            if tools
-        }
-        self._profile_map = normalized
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
-        if not self._profile_map:
-            return handler(request)
-
-        profile = self._resolve_profile(request)
-        allowed = self._profile_map.get(profile)
-        if allowed is None and profile != self._default_profile:
-            allowed = self._profile_map.get(self._default_profile)
-
-        if allowed:
-            request.tools = [tool for tool in request.tools if tool.name in allowed]
-        return handler(request)
-
-    def _resolve_profile(self, request: ModelRequest) -> str:
-        context = getattr(request.runtime, "context", None)
-        profile = None
-        if context is not None:
-            if isinstance(context, dict):
-                profile = context.get("tool_profile")
-            else:
-                profile = getattr(context, "tool_profile", None)
-
-        if not profile:
-            state = getattr(request, "state", None)
-            if isinstance(state, dict):
-                profile = state.get("tool_profile")
-
-        return profile or self._default_profile
 
 
 class RequestStageTimer:
@@ -1587,7 +1474,9 @@ class MintChatAgent:
             max_workers=1,
             thread_name_prefix="mintchat-agent-loop",
         )
-        self._stream_min_chars = max(1, int(getattr(settings.agent, "stream_min_chunk_chars", 8)))
+        # GUI/逐字渲染已具备节流与追赶机制，因此这里默认更偏向“低延迟首字节”。
+        # 仍可通过 settings.agent.stream_min_chunk_chars 覆盖（例如性能调优或调试）。
+        self._stream_min_chars = max(1, int(getattr(settings.agent, "stream_min_chunk_chars", 1)))
         # v3.3.3: 移除atexit注册，改为在close()方法中显式清理
 
         # 记忆巩固计数器
@@ -1620,211 +1509,32 @@ class MintChatAgent:
             ),
         )
 
-        # 初始化 LLM
+        # OpenAI-compatible backend (lazy init)
+        self._native_backend = None
+        self._native_backend_lock = Lock()
+
+        # 模型配置（OpenAI-compatible）
         self.model_name = model_name or settings.default_model_name
         self.temperature = temperature or settings.model_temperature
-        self.llm = self._initialize_llm()
-        self._tool_rewrite_llm = self._build_tool_rewrite_llm(self.llm)
 
-        # 创建 Agent
-        self._agent_middleware = self._build_agent_middleware_stack()
-        self.agent = self._create_agent()
+        # Cache system prompt for fallback paths (tool-rewrite, etc.)
+        self._system_prompt = self._build_system_prompt()
 
         logger.info(f"MintChat 智能体初始化完成 (流式输出: {self.enable_streaming})")
 
-    def _initialize_llm(self):
+    def _build_system_prompt(self) -> str:
         """
-        初始化语言模型
+        Build and cache the system prompt used across model calls.
 
-        Returns:
-            LLM 实例
-
-        Raises:
-            ValueError: 如果 LLM 提供商不支持或 API Key 未配置
+        This is used by main generation and fallback paths (e.g., tool-trace rewrite).
         """
-        provider = settings.default_llm_provider
-        timeout_s = float(getattr(getattr(self, "_llm_timeouts", None), "total", 120.0))
-        api_base = str(getattr(settings.llm, "api", "") or "").strip()
+        config_prompt = CharacterConfigLoader.generate_system_prompt()
+        if config_prompt:
+            base_system_prompt = config_prompt
+        else:
+            base_system_prompt = self.character.get_system_prompt()
 
-        try:
-            streaming_requested = bool(getattr(self, "enable_streaming", False))
-            if provider == "openai":
-                if ChatOpenAI is None:
-                    raise ImportError(
-                        "langchain-openai 未安装或导入失败，无法创建 ChatOpenAI。"
-                        " 请运行: uv sync --locked --no-install-project"
-                    ) from _LANGCHAIN_OPENAI_IMPORT_ERROR
-                if "api.openai.com" in api_base.lower() and not settings.openai_api_key:
-                    raise ValueError("OpenAI API Key 未配置")
-
-                try:
-                    from src.llm.factory import get_llm
-
-                    llm = get_llm(
-                        model=self.model_name,
-                        temperature=self.temperature,
-                        max_tokens=settings.model_max_tokens,
-                        timeout_s=timeout_s,
-                        max_retries=2,
-                        streaming=streaming_requested,
-                    )
-                except Exception:
-                    raise
-                logger.info(f"使用 OpenAI 模型: {self.model_name}，超时: {timeout_s:g}秒")
-
-            elif provider == "anthropic":
-                if not HAS_ANTHROPIC:
-                    raise ImportError(
-                        "langchain_anthropic 未安装。请运行: uv sync --locked --no-install-project"
-                    )
-                if not settings.anthropic_api_key:
-                    raise ValueError("Anthropic API Key 未配置")
-
-                anthropic_kwargs = dict(
-                    model=self.model_name,
-                    temperature=self.temperature,
-                    max_tokens=settings.model_max_tokens,
-                    anthropic_api_key=settings.anthropic_api_key,
-                    timeout=timeout_s,
-                    max_retries=2,
-                )
-                if streaming_requested:
-                    anthropic_kwargs["streaming"] = True
-                try:
-                    llm = ChatAnthropic(**anthropic_kwargs)
-                except TypeError:
-                    anthropic_kwargs.pop("streaming", None)
-                    llm = ChatAnthropic(**anthropic_kwargs)
-                logger.info(f"使用 Anthropic 模型: {self.model_name}，超时: {timeout_s:g}秒")
-
-            elif provider == "google":
-                if not HAS_GOOGLE:
-                    raise ImportError(
-                        "langchain_google_genai 未安装。请运行: uv sync --locked --no-install-project"
-                    )
-                if not settings.google_api_key:
-                    raise ValueError("Google API Key 未配置")
-
-                google_kwargs = dict(
-                    model=self.model_name,
-                    temperature=self.temperature,
-                    max_output_tokens=settings.model_max_tokens,
-                    google_api_key=settings.google_api_key,
-                    timeout=timeout_s,
-                )
-                if streaming_requested:
-                    google_kwargs["streaming"] = True
-                try:
-                    llm = ChatGoogleGenerativeAI(**google_kwargs)
-                except TypeError:
-                    google_kwargs.pop("streaming", None)
-                    llm = ChatGoogleGenerativeAI(**google_kwargs)
-                logger.info(f"使用 Google 模型: {self.model_name}，超时: {timeout_s:g}秒")
-
-            else:
-                # 使用自定义 OpenAI 兼容 API（如 SiliconFlow、DeepSeek 等）
-                if ChatOpenAI is None:
-                    raise ImportError(
-                        "langchain-openai 未安装或导入失败，无法创建 ChatOpenAI。"
-                        " 请运行: uv sync --locked --no-install-project"
-                    ) from _LANGCHAIN_OPENAI_IMPORT_ERROR
-
-                if "api.openai.com" in api_base.lower() and not settings.llm.key:
-                    raise ValueError("API Key 未配置")
-                try:
-                    from src.llm.factory import get_llm
-
-                    llm = get_llm(
-                        model=self.model_name,
-                        temperature=self.temperature,
-                        max_tokens=settings.model_max_tokens,
-                        timeout_s=timeout_s,
-                        max_retries=2,
-                        streaming=streaming_requested,
-                    )
-                except Exception:
-                    raise
-                logger.info(
-                    f"使用自定义 OpenAI 兼容 API: {settings.llm.api}, "
-                    f"模型: {self.model_name}，超时: {timeout_s:g}秒"
-                )
-
-            return llm
-
-        except Exception as e:
-            logger.error(f"LLM 初始化失败: {e}")
-            raise
-
-    def _build_tool_rewrite_llm(self, llm: Any) -> Any:
-        """
-        为“工具结果兜底重写”构建更快、更稳定的模型调用配置。
-
-        目标：
-        - 尽量减少二次调用的延迟（工具链常见场景：工具已返回但模型未给最终答复）
-        - 降低超时概率（默认收敛 max_tokens 与 temperature）
-        - 兼容不同 provider：不支持 bind/参数时自动降级
-        """
-        if llm is None:
-            return None
-
-        try:
-            max_tokens = int(getattr(settings.agent, "tool_rewrite_max_tokens", 384) or 384)
-        except Exception:
-            max_tokens = 384
-        max_tokens = max(64, min(1024, max_tokens))
-
-        try:
-            temperature = float(getattr(settings.agent, "tool_rewrite_temperature", 0.2) or 0.2)
-        except Exception:
-            temperature = 0.2
-        temperature = max(0.0, min(0.7, temperature))
-
-        binder = getattr(llm, "bind", None)
-        if not callable(binder):
-            return llm
-
-        # Prefer commonly supported kwargs. If the provider rejects them, fall back gracefully.
-        candidate_kwargs = (
-            {"max_tokens": max_tokens, "temperature": temperature},
-            {"max_completion_tokens": max_tokens, "temperature": temperature},
-            {"temperature": temperature},
-        )
-        for kwargs in candidate_kwargs:
-            try:
-                return binder(**kwargs)
-            except TypeError:
-                continue
-            except Exception:
-                continue
-
-        return llm
-
-    def _create_agent(self) -> Any:
-        """
-        创建 LangChain Agent
-
-        Returns:
-            Agent 实例
-        """
-        try:
-            if not HAS_LANGCHAIN or create_agent is None:
-                raise ImportError(
-                    "langchain 未安装或导入失败，无法创建 Agent。请运行: uv sync --locked --no-install-project"
-                ) from _LANGCHAIN_IMPORT_ERROR
-            # 优先使用配置加载器生成系统提示词
-            config_prompt = CharacterConfigLoader.generate_system_prompt()
-
-            if config_prompt:
-                # 使用配置文件中的提示词
-                base_system_prompt = config_prompt
-                logger.info("使用配置文件中的角色设定")
-            else:
-                # 降级到默认角色
-                base_system_prompt = self.character.get_system_prompt()
-                logger.info("使用默认角色设定")
-
-            # 添加增强系统说明
-            enhanced_instruction = """
+        enhanced_instruction = """
 
 ## 情感与记忆系统
 
@@ -1849,12 +1559,12 @@ class MintChatAgent:
 ✓ **自然性**：避免机械化表达，展现真实情感
 ✓ **简洁性**：清晰表达，避免冗长啰嗦
 
-  ## 特殊情况处理
+## 特殊情况处理
 
-  - **不确定时**：诚实告知"我不太确定..."而非编造答案
- - **超出能力**：礼貌说明"这个可能超出我的能力范围..."
- - **工具失败**：温柔告知并提供替代方案
- - **敏感话题**：保持角色边界，委婉引导话题
+- **不确定时**：诚实告知"我不太确定..."而非编造答案
+- **超出能力**：礼貌说明"这个可能超出我的能力范围..."
+- **工具失败**：温柔告知并提供替代方案
+- **敏感话题**：保持角色边界，委婉引导话题
 
 ## 工具使用与表达规范
 
@@ -1874,192 +1584,23 @@ class MintChatAgent:
   - `intensity` 为 0~1（可省略），`hold_s` 为停留秒数（可省略）。
 - 使用原则：**少量、自然、服务于情绪表达**，不要在同一条回复里反复切换；不要向主人解释这些指令。
 """
-            system_prompt = base_system_prompt + enhanced_instruction
-            # Cache for rescue paths (e.g., tool-result rewrite without re-running the agent graph).
-            self._system_prompt = system_prompt
 
-            # 获取工具列表
-            tools = self.tool_registry.get_all_tools()
-            # Tool tracing/output truncation is handled by Agent middleware (ToolTraceMiddleware).
+        return f"{base_system_prompt}{enhanced_instruction}".strip()
 
-            # 创建 Agent
-            agent = create_agent(
-                model=self.llm,
-                tools=tools,
-                system_prompt=system_prompt,
-                middleware=self._agent_middleware or None,
-            )
+    def _initialize_llm(self) -> Any:
+        raise RuntimeError("Deprecated: use the OpenAI-compatible backend")
 
-            logger.info(f"Agent 创建成功，已加载 {len(tools)} 个工具")
-            logger.debug("系统提示词长度: %d 字符", len(system_prompt))
-            return agent
+    def _build_tool_rewrite_llm(self, llm: Any) -> Any:
+        return None
 
-        except Exception as e:
-            logger.error(f"Agent 创建失败: {e}")
-            raise
+    def _create_agent(self) -> Any:
+        raise RuntimeError("Deprecated: native backend only")
 
     def _build_tool_selector_middleware(self) -> Optional[Any]:
-        """
-        根据配置构建工具筛选中间件，减少无关工具占用上下文。
-
-        说明：LangChain 1.0.x 自带的 `LLMToolSelectorMiddleware` 在部分 OpenAI 兼容网关上
-        可能出现 structured output 解析为空（缺少 `tools` 字段）而导致 KeyError 闪退。
-        MintChat 默认使用更兼容的实现，并在失败时自动降级为“不过滤工具”。
-        """
-        if not HAS_TOOL_SELECTOR:
-            return None
-
-        enabled = bool(getattr(settings.agent, "tool_selector_enabled", True))
-        if not enabled:
-            return None
-
-        # 性能优化：fast_mode 下优先跳过“额外一次 LLM 选工具”调用，避免首包延迟/超时。
-        try:
-            allow_in_fast_mode = bool(getattr(settings.agent, "tool_selector_in_fast_mode", False))
-        except Exception:
-            allow_in_fast_mode = False
-        if getattr(settings.agent, "memory_fast_mode", False) and not allow_in_fast_mode:
-            logger.info("fast_mode 跳过 LLM 工具筛选中间件")
-            return None
-
-        # 性能优化：当工具数量较少时，LLM 额外“选工具”的开销通常大于收益（会显著增加总耗时，甚至触发超时）。
-        # 默认阈值 16，可通过 settings.agent.tool_selector_min_tools 覆盖。
-        try:
-            min_tools = int(getattr(settings.agent, "tool_selector_min_tools", 16))
-        except Exception:
-            min_tools = 16
-
-        try:
-            tools_count = len(self.tool_registry.get_tool_names())
-        except Exception:
-            tools_count = 0
-
-        if tools_count and tools_count < min_tools:
-            logger.info(
-                "跳过 LLM 工具筛选中间件：tools_count=%d < min_tools=%d",
-                tools_count,
-                min_tools,
-            )
-            return None
-
-        try:
-            from src.agent.tool_selector_middleware import MintChatToolSelectorMiddleware
-
-            selector_model_id = getattr(settings.agent, "tool_selector_model", "auto")
-            if not selector_model_id or selector_model_id == "auto":
-                model_ref: Any = self.llm
-            else:
-                model_ref = selector_model_id
-
-            always_include = list(
-                getattr(
-                    settings.agent,
-                    "tool_selector_always_include",
-                    ["get_current_time", "get_weather", "web_search", "map_search"],
-                )
-            )
-            max_tools = max(1, int(getattr(settings.agent, "tool_selector_max_tools", 4)))
-            api_base = str(getattr(settings.llm, "api", "") or "")
-            default_method = "json_schema" if "api.openai.com" in api_base else "json_mode"
-            structured_method = str(
-                getattr(settings.agent, "tool_selector_structured_method", default_method)
-                or default_method
-            )
-            try:
-                selector_timeout_s = float(getattr(settings.agent, "tool_selector_timeout_s", 4.0))
-            except Exception:
-                selector_timeout_s = 4.0
-            try:
-                selector_disable_cooldown_s = float(
-                    getattr(settings.agent, "tool_selector_disable_cooldown_s", 300.0)
-                )
-            except Exception:
-                selector_disable_cooldown_s = 300.0
-
-            middleware = MintChatToolSelectorMiddleware(
-                model=model_ref,
-                max_tools=max_tools,
-                always_include=always_include,
-                structured_output_method=structured_method,
-                timeout_s=selector_timeout_s,
-                disable_cooldown_s=selector_disable_cooldown_s,
-            )
-            logger.info(
-                "已启用 LLM 工具筛选中间件 (max=%d, method=%s, 保留: %s)",
-                max_tools,
-                structured_method,
-                ",".join(always_include) or "无",
-            )
-            return middleware
-        except Exception as exc:
-            logger.warning("初始化工具筛选中间件失败: %s", exc)
-            return None
+        return None
 
     def _build_agent_middleware_stack(self) -> List[Any]:
-        """
-        构建 Agent 中间件链：
-        1. LLMToolSelectorMiddleware：由轻量模型挑选候选工具
-        2. ContextEditingMiddleware：按需裁剪历史工具调用，降低 token 消耗
-        3. ToolCallLimitMiddleware：限制单轮工具连环调用次数，防止自旋
-        4. PermissionScopedToolMiddleware：依据运行时 profile 过滤工具
-        """
-        if not HAS_AGENT_MIDDLEWARE:
-            return []
-
-        stack: List[Any] = []
-
-        # v3.3.6: Tool tracing + output truncation must be done via middleware (ToolNode requires
-        # ToolMessage/Command).
-        try:
-            tool_output_max_chars = int(
-                getattr(settings.agent, "tool_output_max_chars", 12000) or 0
-            )
-        except Exception:
-            tool_output_max_chars = 12000
-        stack.append(ToolTraceMiddleware(max_output_chars=tool_output_max_chars))
-
-        selector = self._build_tool_selector_middleware()
-        if selector:
-            stack.append(selector)
-
-        trim_tokens = int(getattr(settings.agent, "tool_context_trim_tokens", 1200))
-        if (
-            trim_tokens > 0
-            and ContextEditingMiddleware is not None
-            and ClearToolUsesEdit is not None
-        ):
-            edit = ClearToolUsesEdit()
-            if trim_tokens and hasattr(edit, "max_tokens"):
-                try:
-                    setattr(edit, "max_tokens", trim_tokens)
-                except Exception:
-                    logger.debug("设置 ClearToolUsesEdit.max_tokens 失败，使用默认值")
-
-            stack.append(ContextEditingMiddleware(edits=[edit]))
-
-        per_run_limit = int(getattr(settings.agent, "tool_call_limit_per_run", 0))
-        if per_run_limit > 0 and ToolCallLimitMiddleware is not None:
-            stack.append(ToolCallLimitMiddleware(run_limit=per_run_limit))
-
-        profile_map = getattr(settings.agent, "tool_permission_profiles", {})
-        if profile_map:
-            stack.append(
-                PermissionScopedToolMiddleware(
-                    profile_map=profile_map,
-                    default_profile=getattr(
-                        settings.agent,
-                        "tool_permission_default",
-                        "default",
-                    ),
-                )
-            )
-
-        if stack:
-            logger.info(
-                "Agent 中间件链: %s",
-                " -> ".join(type(m).__name__ for m in stack),
-            )
-        return stack
+        return []
 
     @monitor_performance("chat")
     def _update_emotion_and_mood(self, message: str, detected_emotion) -> None:
@@ -2887,7 +2428,226 @@ class MintChatAgent:
             timeout_token = tool_timeout_s_var.set(_tool_timeout())
             trace_token = tool_trace_recorder_var.set(tool_recorder)
             try:
-                return self.agent.invoke({"messages": messages})
+
+                def _native() -> str:
+                    from src.llm_native.agent_runner import AgentRunnerConfig, NativeToolLoopRunner
+                    from src.llm_native.pipeline import Pipeline
+                    from src.llm_native.pipeline_stages import (
+                        ContextToolUsesTrimStage,
+                        PermissionScopedToolsStage,
+                        ToolCallLimitStage,
+                        ToolHeuristicPrefilterStage,
+                        ToolLlmSelectorStage,
+                        ToolTraceStage,
+                    )
+                    from src.llm_native.tool_runner import ToolRunner
+
+                    backend = self._get_native_backend()
+                    tools = self.tool_registry.get_tool_specs()
+                    pipeline = None
+                    if bool(getattr(settings.agent, "native_pipeline_enabled", False)):
+                        stages: list[Any] = []
+                        try:
+                            trim_tokens = int(
+                                getattr(settings.agent, "tool_context_trim_tokens", 1200) or 0
+                            )
+                            trim_tokens = max(0, trim_tokens)
+                        except Exception:
+                            trim_tokens = 1200
+                        if trim_tokens > 0:
+                            stages.append(
+                                ContextToolUsesTrimStage(max_tool_context_tokens=trim_tokens)
+                            )
+                        stages.append(
+                            PermissionScopedToolsStage(
+                                profile_map=getattr(settings.agent, "tool_permission_profiles", {}),
+                                default_profile=str(
+                                    getattr(settings.agent, "tool_permission_default", "default")
+                                    or "default"
+                                ),
+                            )
+                        )
+                        if bool(getattr(settings.agent, "tool_selector_enabled", True)):
+                            try:
+                                allow_in_fast_mode = bool(
+                                    getattr(settings.agent, "tool_selector_in_fast_mode", False)
+                                )
+                            except Exception:
+                                allow_in_fast_mode = False
+                            if (
+                                getattr(settings.agent, "memory_fast_mode", False)
+                                and not allow_in_fast_mode
+                            ):
+                                logger.info("fast_mode 跳过 tool selector stages (native pipeline)")
+                            else:
+                                try:
+                                    min_tools = int(
+                                        getattr(settings.agent, "tool_selector_min_tools", 16) or 0
+                                    )
+                                    min_tools = max(0, min_tools)
+                                except Exception:
+                                    min_tools = 16
+
+                                tools_count = len(tools) if tools else 0
+                                if tools_count and tools_count < min_tools:
+                                    logger.info(
+                                        "跳过 tool selector stages (native pipeline): "
+                                        "tools_count=%d < min_tools=%d",
+                                        tools_count,
+                                        min_tools,
+                                    )
+                                else:
+                                    try:
+                                        max_tools_raw = int(
+                                            getattr(settings.agent, "tool_selector_max_tools", 4)
+                                            or 0
+                                        )
+                                    except Exception:
+                                        max_tools_raw = 4
+                                    max_tools_for_llm = (
+                                        max(1, max_tools_raw) if max_tools_raw else 4
+                                    )
+
+                                    always_include = list(
+                                        getattr(
+                                            settings.agent,
+                                            "tool_selector_always_include",
+                                            [
+                                                "get_current_time",
+                                                "get_weather",
+                                                "web_search",
+                                                "map_search",
+                                            ],
+                                        )
+                                        or []
+                                    )
+                                    stages.append(
+                                        ToolHeuristicPrefilterStage(
+                                            always_include=always_include,
+                                            max_tools=max_tools_raw or None,
+                                            min_tools=min_tools,
+                                        )
+                                    )
+
+                                    try:
+                                        selector_timeout_s = float(
+                                            getattr(settings.agent, "tool_selector_timeout_s", 4.0)
+                                        )
+                                    except Exception:
+                                        selector_timeout_s = 4.0
+                                    try:
+                                        selector_disable_cooldown_s = float(
+                                            getattr(
+                                                settings.agent,
+                                                "tool_selector_disable_cooldown_s",
+                                                300.0,
+                                            )
+                                        )
+                                    except Exception:
+                                        selector_disable_cooldown_s = 300.0
+
+                                    selector_model_id = str(
+                                        getattr(settings.agent, "tool_selector_model", "auto")
+                                        or "auto"
+                                    )
+                                    backend_cfg = getattr(backend, "config", None)
+                                    selector_model = (
+                                        str(getattr(backend_cfg, "model", "") or "")
+                                        if not selector_model_id or selector_model_id == "auto"
+                                        else selector_model_id
+                                    )
+                                    selector_model = selector_model or str(
+                                        getattr(getattr(backend, "config", None), "model", "") or ""
+                                    )
+
+                                    selector_backend: Any = backend
+                                    try:
+                                        from src.llm_native.backend import BackendConfig
+                                        from src.llm_native.openai_backend import (
+                                            OpenAICompatibleBackend,
+                                        )
+
+                                        base_url = str(
+                                            getattr(backend_cfg, "base_url", "") or ""
+                                        ).strip()
+                                        api_key = str(
+                                            getattr(backend_cfg, "api_key", "") or ""
+                                        ).strip()
+                                        selector_backend = OpenAICompatibleBackend(
+                                            BackendConfig(
+                                                base_url=base_url or "https://api.openai.com/v1",
+                                                api_key=api_key,
+                                                model=selector_model,
+                                                timeout_s=max(1.0, float(selector_timeout_s)),
+                                                max_retries=0,
+                                            )
+                                        )
+                                    except Exception:
+                                        selector_backend = backend
+
+                                    stages.append(
+                                        ToolLlmSelectorStage(
+                                            backend=selector_backend,
+                                            max_tools=max_tools_for_llm,
+                                            min_tools=min_tools,
+                                            always_include=always_include,
+                                            disable_cooldown_s=selector_disable_cooldown_s,
+                                        )
+                                    )
+                        try:
+                            per_run_limit = int(
+                                getattr(settings.agent, "tool_call_limit_per_run", 0) or 0
+                            )
+                        except Exception:
+                            per_run_limit = 0
+                        if per_run_limit > 0:
+                            stages.append(ToolCallLimitStage(per_run_limit=per_run_limit))
+                        try:
+                            tool_output_max_chars = int(
+                                getattr(settings.agent, "tool_output_max_chars", 12000) or 0
+                            )
+                            tool_output_max_chars = max(0, tool_output_max_chars)
+                        except Exception:
+                            tool_output_max_chars = 12000
+                        stages.append(ToolTraceStage(max_output_chars=tool_output_max_chars))
+                        pipeline = Pipeline(stages=stages)
+                    runner = NativeToolLoopRunner(
+                        backend=backend,
+                        tools=tools,
+                        tool_runner=ToolRunner(
+                            tool_executor=self.tool_registry,
+                            default_timeout_s=float(
+                                getattr(settings.agent, "tool_timeout_s", 30.0)
+                            ),
+                        ),
+                        config=AgentRunnerConfig(
+                            tool_timeout_s=float(getattr(settings.agent, "tool_timeout_s", 30.0)),
+                            temperature=float(
+                                getattr(self, "temperature", None) or settings.model_temperature
+                            ),
+                            max_tokens=int(getattr(settings.llm, "max_tokens", 2000)),
+                        ),
+                        pipeline=pipeline,
+                    )
+
+                    convo = self._to_native_messages(list(messages))
+                    tool_profile = str(getattr(settings.agent, "tool_profile", "") or "").strip()
+                    pipeline_runtime = {"tool_profile": tool_profile} if tool_profile else None
+                    parts: list[str] = []
+                    for event in runner.stream(convo, pipeline_runtime=pipeline_runtime):
+                        event_type = str(getattr(event, "type", "") or "")
+                        if event_type == "text.delta":
+                            delta = str(getattr(event, "delta", "") or "")
+                            if delta:
+                                parts.append(delta)
+                        elif event_type == "error":
+                            message = str(getattr(event, "message", "") or "")
+                            exc_type = str(getattr(event, "exception_type", "") or "RuntimeError")
+                            raise RuntimeError(f"{exc_type}: {message}" if message else exc_type)
+
+                    return "".join(parts)
+
+                return _native()
             finally:
                 tool_trace_recorder_var.reset(trace_token)
                 tool_timeout_s_var.reset(timeout_token)
@@ -3112,7 +2872,7 @@ class MintChatAgent:
 
         场景：
         - 流式仅吐出 tool/system 事件，最终未产生可展示文本
-        - LangChain 返回结构变化，导致消息提取失败（已大幅兼容，但仍可能偶发）
+        - 旧链路返回结构变化，导致消息提取失败（已大幅兼容，但仍可能偶发）
         """
         image_fallback = self._build_image_analysis_fallback_reply(bundle)
         if image_fallback:
@@ -3412,7 +3172,7 @@ class MintChatAgent:
     ) -> Dict[str, int]:
         """
         根据消息长度与对话深度自适应地确定记忆检索范围。
-        遵循 Context7 LangChain Memory 指南强调的“只召回必要记忆”理念，降低无效 I/O。
+        遵循“只召回必要记忆”的原则，降低无效 I/O。
         """
         plan = {
             "long_term_k": 5,
@@ -3605,27 +3365,17 @@ class MintChatAgent:
         tool_recorder: Optional[ToolTraceRecorder] = None,
         cancel_event: Optional[Event] = None,
     ) -> Iterator[str]:
-        """
-        v3.3.4: 通过后台线程 + 轻量看门狗驱动 LangChain agent.stream，避免界面被阻塞。
+        """Sync streaming via background thread + watchdog (legacy support)."""
 
-        改进：
-        - 增强错误处理和资源清理
-        - 改进线程退出机制
-        - 改进错误信息处理
-        - 复用线程池并仅输出增量，减少渲染与TTS开销
-        - 合并细碎片段，降低UI刷新频率
-        """
         chunk_queue: Queue = Queue(maxsize=128)
         stop_event = Event()
         stream_holder: dict[str, Any] = {"iterator": None}
 
         def _close_stream() -> None:
-            """尝试关闭底层流，避免线程悬挂。"""
             iterator = stream_holder.get("iterator")
             if iterator is None:
                 return
             try:
-                # 优先使用 aclose/close/throw，尽量打断阻塞迭代
                 aclose = getattr(iterator, "aclose", None)
                 if callable(aclose):
                     try:
@@ -3649,171 +3399,90 @@ class MintChatAgent:
             finally:
                 stream_holder["iterator"] = None
 
-        def producer():
-            timeout_token = tool_timeout_s_var.set(
-                float(getattr(settings.agent, "tool_timeout_s", 30.0))
-                if getattr(settings.agent, "tool_timeout_s", 30.0)
-                else None
-            )
+        def _queue_put(kind: str, payload: Any) -> None:
+            while True:
+                if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
+                    return
+                try:
+                    chunk_queue.put((kind, payload), timeout=0.1)
+                    return
+                except Full:
+                    continue
+
+        def producer() -> None:
             trace_token = tool_trace_recorder_var.set(tool_recorder)
             try:
-                try:
-                    stream_holder["iterator"] = self.agent.stream(
-                        {"messages": messages},
-                        stream_mode="messages",
-                    )
-                    for item in stream_holder["iterator"]:
-                        if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
-                            break
-                        chunk, metadata = _unwrap_stream_item(item)
-                        stream_mode = (
-                            metadata.get("stream_mode") if isinstance(metadata, dict) else None
-                        )
-                        skip_internal = bool(
-                            stream_mode and str(stream_mode).lower() != "messages"
-                        ) or _metadata_looks_like_internal_routing(metadata)
-                        while True:
-                            if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
-                                break
-                            try:
-                                # Keep queue payload small: we only need a boolean for internal
-                                # routing/tool traces.
-                                chunk_queue.put(("data", (chunk, skip_internal)), timeout=0.1)
-                                break
-                            except Full:
-                                continue
-                finally:
-                    tool_trace_recorder_var.reset(trace_token)
-                    tool_timeout_s_var.reset(timeout_token)
-            except Exception as exc:  # pragma: no cover - 调试信息
-                while True:
+                stream_holder["iterator"] = self.agent.stream(
+                    {"messages": messages},
+                    stream_mode="messages",
+                )
+                for item in stream_holder["iterator"]:
                     if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
                         break
-                    try:
-                        chunk_queue.put(("error", exc), timeout=0.1)
-                        break
-                    except Full:
-                        continue
+
+                    chunk, metadata = _unwrap_stream_item(item)
+                    stream_mode = (
+                        metadata.get("stream_mode") if isinstance(metadata, dict) else None
+                    )
+                    skip_internal = bool(
+                        stream_mode and str(stream_mode).lower() != "messages"
+                    ) or _metadata_looks_like_internal_routing(metadata)
+                    _queue_put("data", (chunk, skip_internal))
+            except Exception as exc:  # pragma: no cover
+                _queue_put("error", exc)
             finally:
                 try:
                     _close_stream()
                 finally:
-                    while True:
-                        if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
-                            break
-                        try:
-                            chunk_queue.put(("end", None), timeout=0.1)
-                            break
-                        except Full:
-                            continue
+                    tool_trace_recorder_var.reset(trace_token)
+                    _queue_put("end", None)
 
         worker = self._stream_executor.submit(producer)
 
         watchdog = LLMStreamWatchdog(self._llm_timeouts)
-        first_latency_logged = False
-        timeout_streak = 0
         accumulator = StreamDeltaAccumulator()
-        tool_first_received_at: Optional[float] = None
-        tool_direct_grace_s = max(
-            0.0,
-            float(getattr(settings.agent, "tool_direct_grace_s", 1.5)),
-        )
-        # Be more tolerant to large/fragmented structured prefixes (tool routing payloads).
         prefix_stripper = StreamStructuredPrefixStripper(max_fragments=5, max_buffer_chars=100_000)
-        # Scrub tool/routing traces that may appear mid-stream (often split across chunks).
         trace_scrubber = StreamToolTraceScrubber(max_buffer_chars=32_768)
         coalescer = StreamEmitBuffer(min_chars=self._stream_min_chars)
+
         stream_start = time.perf_counter()
         chunk_count = 0
         total_chars = 0
 
-        def _emit(text: str) -> Optional[str]:
+        def _emit(text: str) -> str:
             if not text:
-                return None
+                return ""
             normalized = MintChatAgent._normalize_output_text(text)
             if not normalized:
-                return None
+                return ""
             delta = accumulator.consume(normalized)
             if not delta:
-                return None
+                return ""
             delta = prefix_stripper.process(delta)
             if not delta:
-                return None
+                return ""
             delta = trace_scrubber.process(delta)
             if not delta:
-                return None
+                return ""
             return coalescer.push(delta)
 
         try:
             while True:
-                if cancel_event and cancel_event.is_set():
-                    stop_event.set()
-                    _close_stream()
-                    break
                 try:
-                    wait_timeout = watchdog.next_wait()
-                except AgentTimeoutError:
-                    stop_event.set()
-                    _close_stream()
-                    raise
-                if cancel_event is not None:
-                    wait_timeout = min(wait_timeout, 0.25)
-
-                try:
-                    kind, payload = chunk_queue.get(timeout=wait_timeout)
+                    kind, payload = chunk_queue.get(timeout=watchdog.next_wait())
                 except Empty:
-                    timeout_streak += 1
-
-                    tools_in_flight = 0
-                    tool_done_at: Optional[float] = None
-                    if tool_recorder is not None:
-                        try:
-                            in_flight, first_done_at, last_act = tool_recorder.state()
-                        except Exception:
-                            in_flight, first_done_at, last_act = 0, None, 0.0
-                        tools_in_flight = in_flight
-                        if in_flight > 0:
-                            # 工具执行期间可能不会产生任何 stream chunk；这里保持看门狗活跃，避免误判“无输出超时”。
-                            watchdog.mark_chunk()
-                        # 仅当“工具不再执行中”时，才允许触发“工具结果直出兜底”。
-                        if in_flight <= 0 and first_done_at is not None:
-                            tool_done_at = last_act
-
-                    tool_stream_ready = (
-                        tool_first_received_at is not None
-                        and (time.perf_counter() - tool_first_received_at) >= tool_direct_grace_s
-                    )
-                    if tool_recorder is not None and tools_in_flight > 0:
-                        # 仍有工具在执行：不要因为“某个 tool 已返回”就提前中止后续工具链。
-                        tool_stream_ready = False
-
-                    # 若已经拿到 tool 结果但 assistant 迟迟不输出，则直接把 tool 结果作为回复返回，避免总超时。
-                    if total_chars <= 0 and (
-                        tool_stream_ready
-                        or (
-                            tool_done_at is not None
-                            and (time.perf_counter() - tool_done_at) >= tool_direct_grace_s
-                        )
-                    ):
+                    if cancel_event and cancel_event.is_set():
                         stop_event.set()
                         _close_stream()
                         break
-                    # 后台线程已退出且队列空，直接结束，避免无意义等待
                     if worker and worker.done() and chunk_queue.empty():
                         break
-                    # 已收到停止信号且无数据，直接退出
                     if stop_event.is_set() and chunk_queue.empty():
                         break
-                    # 总耗时由看门狗控制，这里继续等待
                     continue
-                else:
-                    timeout_streak = 0
 
                 if kind == "data":
-                    first_latency = watchdog.mark_chunk()
-                    if first_latency and not first_latency_logged:
-                        first_latency_logged = True
-
+                    watchdog.mark_chunk()
                     chunk = payload
                     skip_internal = False
                     if isinstance(payload, tuple) and len(payload) == 2:
@@ -3823,27 +3492,474 @@ class MintChatAgent:
                         else:
                             skip_internal = _metadata_looks_like_internal_routing(marker)
 
-                    tool_text = self._extract_tool_stream_text(chunk)
-                    if tool_text:
-                        normalized_tool = MintChatAgent._normalize_output_text(tool_text)
-                        if normalized_tool:
-                            if tool_first_received_at is None:
-                                tool_first_received_at = time.perf_counter()
-
                     if skip_internal:
                         continue
 
                     content = self._extract_stream_text(chunk)
-                    emitted = _emit(content)
-                    if emitted:
+                    buffered = _emit(content)
+                    if buffered:
                         chunk_count += 1
-                        total_chars += len(emitted)
-                        yield emitted
+                        total_chars += len(buffered)
+                        yield buffered
                 elif kind == "error":
-                    # v3.3.4: 改进错误信息处理
-                    exc = payload
-                    if exc is None:
-                        exc = RuntimeError("LLM 流式调用失败（未知原因）")
+                    exc = (
+                        payload
+                        if isinstance(payload, BaseException)
+                        else RuntimeError(str(payload))
+                    )
+                    error_msg = str(exc) or repr(exc) or "LLM 流式调用失败"
+                    logger.error("LLM 流式调用失败: %s", error_msg)
+                    raise exc
+                elif kind == "end":
+                    break
+        finally:
+            pending = prefix_stripper.flush()
+            if pending:
+                pending = trace_scrubber.process(pending)
+                buffered = coalescer.push(pending)
+                if buffered:
+                    chunk_count += 1
+                    total_chars += len(buffered)
+                    yield buffered
+
+            scrub_tail = trace_scrubber.flush()
+            if scrub_tail:
+                buffered = coalescer.push(scrub_tail)
+                if buffered:
+                    chunk_count += 1
+                    total_chars += len(buffered)
+                    yield buffered
+
+            tail = coalescer.flush()
+            if tail:
+                chunk_count += 1
+                total_chars += len(tail)
+                yield tail
+
+            stop_event.set()
+            _close_stream()
+            if worker and not worker.done():
+                worker.cancel()
+            elapsed = time.perf_counter() - stream_start
+            logger.info(
+                "流式输出完成: chunks=%d, chars=%d, elapsed=%.2fs",
+                chunk_count,
+                total_chars,
+                elapsed,
+            )
+
+    def _get_native_backend(self) -> Any:
+        """Lazily create the OpenAI-compatible backend (native tool-loop path)."""
+        backend = getattr(self, "_native_backend", None)
+        if backend is not None:
+            return backend
+
+        lock = getattr(self, "_native_backend_lock", None)
+        if lock is None:
+            lock = Lock()
+            self._native_backend_lock = lock
+
+        with lock:
+            backend = getattr(self, "_native_backend", None)
+            if backend is not None:
+                return backend
+
+            from src.llm_native.backend import BackendConfig
+            from src.llm_native.openai_backend import OpenAICompatibleBackend
+
+            base_url = str(getattr(settings.llm, "api", "") or "").strip()
+            api_key = str(getattr(settings.llm, "key", "") or "").strip()
+            model = str(getattr(self, "model_name", "") or "").strip() or str(
+                getattr(settings.llm, "model", "gpt-4o")
+            )
+
+            try:
+                timeout_s = float(getattr(getattr(self, "_llm_timeouts", None), "total", 120.0))
+            except Exception:
+                timeout_s = 120.0
+
+            cfg = BackendConfig(
+                base_url=base_url or "https://api.openai.com/v1",
+                api_key=api_key,
+                model=model,
+                timeout_s=max(5.0, float(timeout_s)),
+                max_retries=2,
+            )
+            backend = OpenAICompatibleBackend(cfg)
+            self._native_backend = backend
+            return backend
+
+    def _to_native_messages(self, messages: list[dict[str, Any]]) -> list[Any]:
+        """Convert project OpenAI-shaped dict messages to llm_native Message objects."""
+        from src.llm_native.messages import Message, messages_from_openai
+
+        convo = list(messages_from_openai(messages))
+
+        system_prompt = str(getattr(self, "_system_prompt", "") or "").strip()
+        if system_prompt:
+            convo.insert(0, Message(role="system", content=system_prompt))
+
+        return convo
+
+    def _stream_llm_response_native(
+        self,
+        messages: list,
+        *,
+        tool_recorder: Optional[ToolTraceRecorder] = None,
+        cancel_event: Optional[Event] = None,
+    ) -> Iterator[str]:
+        """Native(OpenAI-compatible) streaming with self-hosted tool-loop."""
+
+        chunk_queue: Queue = Queue(maxsize=128)
+        stop_event = Event()
+        stream_holder: dict[str, Any] = {"iterator": None}
+
+        def _close_stream() -> None:
+            iterator = stream_holder.get("iterator")
+            if iterator is None:
+                return
+            try:
+                aclose = getattr(iterator, "aclose", None)
+                if callable(aclose):
+                    try:
+                        aclose()
+                    except BaseException:
+                        pass
+                closer = getattr(iterator, "close", None)
+                if callable(closer):
+                    try:
+                        closer()
+                    except BaseException:
+                        pass
+                thrower = getattr(iterator, "throw", None)
+                if callable(thrower):
+                    try:
+                        thrower(GeneratorExit)
+                    except BaseException:
+                        pass
+            except Exception:
+                logger.debug("关闭LLM流时出现可忽略的异常", exc_info=True)
+            finally:
+                stream_holder["iterator"] = None
+
+        def _queue_put(kind: str, payload: Any) -> None:
+            while True:
+                if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
+                    return
+                try:
+                    chunk_queue.put((kind, payload), timeout=0.1)
+                    return
+                except Full:
+                    continue
+
+        def producer() -> None:
+            timeout_token = tool_timeout_s_var.set(
+                float(getattr(settings.agent, "tool_timeout_s", 30.0))
+                if getattr(settings.agent, "tool_timeout_s", 30.0)
+                else None
+            )
+            trace_token = tool_trace_recorder_var.set(tool_recorder)
+            try:
+                from src.llm_native.agent_runner import AgentRunnerConfig, NativeToolLoopRunner
+                from src.llm_native.pipeline import Pipeline
+                from src.llm_native.pipeline_stages import (
+                    ContextToolUsesTrimStage,
+                    PermissionScopedToolsStage,
+                    ToolCallLimitStage,
+                    ToolHeuristicPrefilterStage,
+                    ToolLlmSelectorStage,
+                    ToolTraceStage,
+                )
+                from src.llm_native.tool_runner import ToolRunner
+
+                backend = self._get_native_backend()
+                tools = self.tool_registry.get_tool_specs()
+                pipeline = None
+                if bool(getattr(settings.agent, "native_pipeline_enabled", False)):
+                    stages: list[Any] = []
+                    try:
+                        trim_tokens = int(
+                            getattr(settings.agent, "tool_context_trim_tokens", 1200) or 0
+                        )
+                        trim_tokens = max(0, trim_tokens)
+                    except Exception:
+                        trim_tokens = 1200
+                    if trim_tokens > 0:
+                        stages.append(ContextToolUsesTrimStage(max_tool_context_tokens=trim_tokens))
+                    stages.append(
+                        PermissionScopedToolsStage(
+                            profile_map=getattr(settings.agent, "tool_permission_profiles", {}),
+                            default_profile=str(
+                                getattr(settings.agent, "tool_permission_default", "default")
+                                or "default"
+                            ),
+                        )
+                    )
+                    if bool(getattr(settings.agent, "tool_selector_enabled", True)):
+                        try:
+                            allow_in_fast_mode = bool(
+                                getattr(settings.agent, "tool_selector_in_fast_mode", False)
+                            )
+                        except Exception:
+                            allow_in_fast_mode = False
+                        if (
+                            getattr(settings.agent, "memory_fast_mode", False)
+                            and not allow_in_fast_mode
+                        ):
+                            logger.info("fast_mode 跳过 tool selector stages (native pipeline)")
+                        else:
+                            try:
+                                min_tools = int(
+                                    getattr(settings.agent, "tool_selector_min_tools", 16) or 0
+                                )
+                                min_tools = max(0, min_tools)
+                            except Exception:
+                                min_tools = 16
+
+                            tools_count = len(tools) if tools else 0
+                            if tools_count and tools_count < min_tools:
+                                logger.info(
+                                    "跳过 tool selector stages (native pipeline): "
+                                    "tools_count=%d < min_tools=%d",
+                                    tools_count,
+                                    min_tools,
+                                )
+                            else:
+                                try:
+                                    max_tools_raw = int(
+                                        getattr(settings.agent, "tool_selector_max_tools", 4) or 0
+                                    )
+                                except Exception:
+                                    max_tools_raw = 4
+                                max_tools_for_llm = max(1, max_tools_raw) if max_tools_raw else 4
+
+                                always_include = list(
+                                    getattr(
+                                        settings.agent,
+                                        "tool_selector_always_include",
+                                        [
+                                            "get_current_time",
+                                            "get_weather",
+                                            "web_search",
+                                            "map_search",
+                                        ],
+                                    )
+                                    or []
+                                )
+                                stages.append(
+                                    ToolHeuristicPrefilterStage(
+                                        always_include=always_include,
+                                        max_tools=max_tools_raw or None,
+                                        min_tools=min_tools,
+                                    )
+                                )
+
+                                try:
+                                    selector_timeout_s = float(
+                                        getattr(settings.agent, "tool_selector_timeout_s", 4.0)
+                                    )
+                                except Exception:
+                                    selector_timeout_s = 4.0
+                                try:
+                                    selector_disable_cooldown_s = float(
+                                        getattr(
+                                            settings.agent,
+                                            "tool_selector_disable_cooldown_s",
+                                            300.0,
+                                        )
+                                    )
+                                except Exception:
+                                    selector_disable_cooldown_s = 300.0
+
+                                selector_model_id = str(
+                                    getattr(settings.agent, "tool_selector_model", "auto") or "auto"
+                                )
+                                backend_cfg = getattr(backend, "config", None)
+                                selector_model = (
+                                    str(getattr(backend_cfg, "model", "") or "")
+                                    if not selector_model_id or selector_model_id == "auto"
+                                    else selector_model_id
+                                )
+                                selector_model = selector_model or str(
+                                    getattr(getattr(backend, "config", None), "model", "") or ""
+                                )
+
+                                selector_backend: Any = backend
+                                try:
+                                    from src.llm_native.backend import BackendConfig
+                                    from src.llm_native.openai_backend import (
+                                        OpenAICompatibleBackend,
+                                    )
+
+                                    base_url = str(
+                                        getattr(backend_cfg, "base_url", "") or ""
+                                    ).strip()
+                                    api_key = str(getattr(backend_cfg, "api_key", "") or "").strip()
+                                    selector_backend = OpenAICompatibleBackend(
+                                        BackendConfig(
+                                            base_url=base_url or "https://api.openai.com/v1",
+                                            api_key=api_key,
+                                            model=selector_model,
+                                            timeout_s=max(1.0, float(selector_timeout_s)),
+                                            max_retries=0,
+                                        )
+                                    )
+                                except Exception:
+                                    selector_backend = backend
+
+                                stages.append(
+                                    ToolLlmSelectorStage(
+                                        backend=selector_backend,
+                                        max_tools=max_tools_for_llm,
+                                        min_tools=min_tools,
+                                        always_include=always_include,
+                                        disable_cooldown_s=selector_disable_cooldown_s,
+                                    )
+                                )
+                    try:
+                        per_run_limit = int(
+                            getattr(settings.agent, "tool_call_limit_per_run", 0) or 0
+                        )
+                    except Exception:
+                        per_run_limit = 0
+                    if per_run_limit > 0:
+                        stages.append(ToolCallLimitStage(per_run_limit=per_run_limit))
+                    try:
+                        tool_output_max_chars = int(
+                            getattr(settings.agent, "tool_output_max_chars", 12000) or 0
+                        )
+                        tool_output_max_chars = max(0, tool_output_max_chars)
+                    except Exception:
+                        tool_output_max_chars = 12000
+                    stages.append(ToolTraceStage(max_output_chars=tool_output_max_chars))
+                    pipeline = Pipeline(stages=stages)
+
+                runner = NativeToolLoopRunner(
+                    backend=backend,
+                    tools=tools,
+                    tool_runner=ToolRunner(
+                        tool_executor=self.tool_registry,
+                        default_timeout_s=float(getattr(settings.agent, "tool_timeout_s", 30.0)),
+                    ),
+                    config=AgentRunnerConfig(
+                        tool_timeout_s=float(getattr(settings.agent, "tool_timeout_s", 30.0)),
+                        temperature=float(
+                            getattr(self, "temperature", None) or settings.model_temperature
+                        ),
+                        max_tokens=int(getattr(settings.llm, "max_tokens", 2000)),
+                    ),
+                    pipeline=pipeline,
+                )
+
+                convo = self._to_native_messages(list(messages))
+                tool_profile = str(getattr(settings.agent, "tool_profile", "") or "").strip()
+                pipeline_runtime = {"tool_profile": tool_profile} if tool_profile else None
+
+                stream_holder["iterator"] = runner.stream(
+                    convo,
+                    cancel_event=cancel_event,
+                    pipeline_runtime=pipeline_runtime,
+                )
+                for event in stream_holder["iterator"]:
+                    if stop_event.is_set() or (cancel_event and cancel_event.is_set()):
+                        break
+
+                    event_type = str(getattr(event, "type", "") or "")
+                    if event_type == "text.delta":
+                        delta = str(getattr(event, "delta", "") or "")
+                        if delta:
+                            _queue_put("data", delta)
+                        else:
+                            _queue_put("heartbeat", None)
+                    elif event_type in {"tool_call.delta", "tool.result"}:
+                        _queue_put("heartbeat", None)
+                    elif event_type == "error":
+                        message = str(getattr(event, "message", "") or "")
+                        exc_type = str(getattr(event, "exception_type", "") or "RuntimeError")
+                        _queue_put(
+                            "error", RuntimeError(f"{exc_type}: {message}" if message else exc_type)
+                        )
+                        break
+                    elif event_type == "done":
+                        break
+                    else:
+                        _queue_put("heartbeat", None)
+            except Exception as exc:
+                _queue_put("error", exc)
+            finally:
+                try:
+                    _close_stream()
+                finally:
+                    tool_trace_recorder_var.reset(trace_token)
+                    tool_timeout_s_var.reset(timeout_token)
+                    _queue_put("end", None)
+
+        worker = self._stream_executor.submit(producer)
+
+        watchdog = LLMStreamWatchdog(self._llm_timeouts)
+        coalescer = StreamEmitBuffer(min_chars=self._stream_min_chars)
+        prefix_stripper = StreamStructuredPrefixStripper(max_fragments=5, max_buffer_chars=100_000)
+        trace_scrubber = StreamToolTraceScrubber(max_buffer_chars=60_000)
+
+        stream_start = time.perf_counter()
+        chunk_count = 0
+        total_chars = 0
+        tool_done_at: Optional[float] = None
+        tool_direct_grace_s = max(
+            0.0,
+            float(getattr(settings.agent, "tool_direct_grace_s", 1.5)),
+        )
+
+        try:
+            while True:
+                try:
+                    kind, payload = chunk_queue.get(timeout=watchdog.next_wait())
+                except Empty:
+                    if cancel_event and cancel_event.is_set():
+                        stop_event.set()
+                        _close_stream()
+                        break
+
+                    if tool_recorder is not None:
+                        in_flight, first_done_at, last_act = tool_recorder.state()
+                        if in_flight > 0:
+                            watchdog.mark_chunk()
+                        if in_flight <= 0 and first_done_at is not None:
+                            tool_done_at = last_act
+
+                    if total_chars <= 0 and tool_done_at is not None:
+                        if (time.perf_counter() - tool_done_at) >= tool_direct_grace_s:
+                            stop_event.set()
+                            _close_stream()
+                            break
+
+                    if worker and worker.done() and chunk_queue.empty():
+                        break
+                    if stop_event.is_set() and chunk_queue.empty():
+                        break
+                    continue
+
+                if kind == "data":
+                    watchdog.mark_chunk()
+                    delta = str(payload or "")
+                    delta = prefix_stripper.process(delta)
+                    if not delta:
+                        continue
+                    delta = trace_scrubber.process(delta)
+                    buffered = coalescer.push(delta)
+                    if buffered:
+                        chunk_count += 1
+                        total_chars += len(buffered)
+                        yield buffered
+                elif kind == "heartbeat":
+                    watchdog.mark_chunk()
+                    continue
+                elif kind == "error":
+                    exc = (
+                        payload
+                        if isinstance(payload, BaseException)
+                        else RuntimeError(str(payload))
+                    )
                     error_msg = str(exc) or repr(exc) or f"{type(exc).__name__}: LLM 流式调用失败"
                     logger.error("LLM 流式调用失败: %s", error_msg)
                     raise exc
@@ -3871,17 +3987,11 @@ class MintChatAgent:
                 total_chars += len(tail)
                 yield tail
 
-            # 如果 assistant 没有任何输出，但 tool 有结果，则把 tool 内容作为兜底输出，
-            # 避免“调用工具后必定空回复”触发保底回复机制。
-            if total_chars <= 0:
-                # Intentionally do not emit raw tool output here; `chat_stream` will
-                # trigger a rewrite rescue based on the recorded tool traces.
-                pass
-            # v3.3.4: 增强资源清理
             stop_event.set()
             _close_stream()
             if worker and not worker.done():
                 worker.cancel()
+
             elapsed = time.perf_counter() - stream_start
             logger.info(
                 "流式输出完成: chunks=%d, chars=%d, elapsed=%.2fs",
@@ -4115,7 +4225,7 @@ class MintChatAgent:
             return chunk
 
         # stream_mode="messages" 可能包含 tool/system/human 等消息；这里只保留 assistant 输出，避免工具结果污染 UI/TTS。
-        # 注意：LangChain 的 AIMessageChunk.type 可能为 "AIMessageChunk"（而非 "ai"）。
+        # 注意：不同实现的 chunk.type 可能为 "AIMessageChunk"（而非 "ai"）。
         if isinstance(chunk, dict):
             role = chunk.get("role") or chunk.get("type")
             if isinstance(role, str) and role:
@@ -5134,8 +5244,7 @@ class MintChatAgent:
         tool_trace = self._format_tool_trace_for_rewrite(tool_recorder)
         if not tool_trace:
             return None
-        llm = getattr(self, "_tool_rewrite_llm", None) or getattr(self, "llm", None)
-        if llm is None or not hasattr(self, "_llm_executor"):
+        if not hasattr(self, "_llm_executor"):
             return None
 
         try:
@@ -5181,19 +5290,25 @@ class MintChatAgent:
             "请输出面向用户的最终回答："
         )
 
-        try:
-            from langchain_core.messages import HumanMessage, SystemMessage
-        except Exception:
-            return None
+        def _task() -> str:
+            from src.llm_native.backend import ChatRequest
+            from src.llm_native.messages import Message
 
-        def _task() -> Any:
-            return llm.invoke(
-                [SystemMessage(content=system_prompt), HumanMessage(content=prompt_text)]
+            backend = self._get_native_backend()
+            request = ChatRequest(
+                messages=[
+                    Message(role="system", content=system_prompt),
+                    Message(role="user", content=prompt_text),
+                ],
+                temperature=float(getattr(self, "temperature", None) or settings.model_temperature),
+                max_tokens=int(getattr(settings.llm, "max_tokens", 2000)),
             )
+            response = backend.complete(request)
+            return str(getattr(response, "output_text", "") or "")
 
         future = self._llm_executor.submit(_task)
         try:
-            response = future.result(timeout=timeout_s)
+            content = future.result(timeout=timeout_s)
         except FuturesTimeoutError:
             logger.warning("工具兜底重写超时(source=%s, timeout=%.1fs)", source, timeout_s)
             return None
@@ -5204,7 +5319,6 @@ class MintChatAgent:
             if not future.done():
                 future.cancel()
 
-        content = getattr(response, "content", response)
         text = self._filter_tool_info(content)
         text = (text or "").strip()
         if not text or text == _DEFAULT_EMPTY_REPLY:
@@ -5221,9 +5335,6 @@ class MintChatAgent:
         tool_trace = self._format_tool_trace_for_rewrite(tool_recorder)
         if not tool_trace:
             return None
-        llm = getattr(self, "_tool_rewrite_llm", None) or getattr(self, "llm", None)
-        if llm is None or not callable(getattr(llm, "ainvoke", None)):
-            return None
 
         try:
             timeout_s = float(getattr(settings.agent, "tool_rewrite_timeout_s", 8.0))
@@ -5268,18 +5379,28 @@ class MintChatAgent:
             "请输出面向用户的最终回答："
         )
 
-        try:
-            from langchain_core.messages import HumanMessage, SystemMessage
-        except Exception:
-            return None
+        from src.llm_native.backend import ChatRequest
+        from src.llm_native.messages import Message
 
-        async def _invoke() -> Any:
-            return await llm.ainvoke(
-                [SystemMessage(content=system_prompt), HumanMessage(content=prompt_text)]
-            )
+        backend = self._get_native_backend()
+        request = ChatRequest(
+            messages=[
+                Message(role="system", content=system_prompt),
+                Message(role="user", content=prompt_text),
+            ],
+            temperature=float(getattr(self, "temperature", None) or settings.model_temperature),
+            max_tokens=int(getattr(settings.llm, "max_tokens", 2000)),
+        )
+
+        def _invoke_sync() -> str:
+            response = backend.complete(request)
+            return str(getattr(response, "output_text", "") or "")
 
         try:
-            response = await asyncio.wait_for(_invoke(), timeout=timeout_s)
+            loop = asyncio.get_running_loop()
+            executor = getattr(self, "_llm_executor", None)
+            future = loop.run_in_executor(executor, _invoke_sync)
+            content = await asyncio.wait_for(future, timeout=timeout_s)
         except asyncio.TimeoutError:
             logger.warning("工具兜底重写超时(source=%s, timeout=%.1fs)", source, timeout_s)
             return None
@@ -5287,7 +5408,6 @@ class MintChatAgent:
             logger.debug("工具兜底重写失败(source=%s): %s", source, exc)
             return None
 
-        content = getattr(response, "content", response)
         text = self._filter_tool_info(content)
         text = (text or "").strip()
         if not text or text == _DEFAULT_EMPTY_REPLY:
@@ -5605,10 +5725,11 @@ class MintChatAgent:
 
             reply_parts: list[str] = []
             try:
-                stream_iter = self._stream_llm_response(
+                tool_recorder = getattr(bundle, "tool_recorder", None)
+                stream_iter = self._stream_llm_response_native(
                     bundle.messages,
                     cancel_event=cancel_event,
-                    tool_recorder=getattr(bundle, "tool_recorder", None),
+                    tool_recorder=tool_recorder,
                 )
                 canceled = False
                 for chunk in stream_iter:
@@ -6740,6 +6861,17 @@ class MintChatAgent:
         except Exception as e:
             logger.debug("刷新角色状态失败（可忽略）: %s", e)
 
+        # 6.2 关闭 native(OpenAI-compatible) backend（若启用过 llm_backend=native）
+        try:
+            native_backend = getattr(self, "_native_backend", None)
+            if native_backend is not None:
+                close_fn = getattr(native_backend, "close", None)
+                if callable(close_fn):
+                    close_fn()
+            self._native_backend = None
+        except Exception as e:
+            logger.debug("关闭 native backend 失败(可忽略): %s", e)
+
         logger.info("Agent 资源清理完成")
 
     def get_memory_stats(self) -> Dict[str, Any]:
@@ -6995,7 +7127,7 @@ class MintChatAgent:
                 if parsed is not None and _looks_like_route_tag_list(parsed):
                     return raw
 
-        # 部分 OpenAI 兼容网关 / LangChain 1.0.x 组合会把 structured output 片段
+        # 部分 OpenAI 兼容网关 / 旧的流式链路组合会把 structured output 片段
         # （例如工具选择/分流标签的 JSON）直接拼接到自然语言回复之前，形如：
         #   ["general_chat"]}["emotion_analysis", ...]}当然是真的...
         # 这里优先剥离这类“前缀 JSON 片段”，避免污染最终回复。

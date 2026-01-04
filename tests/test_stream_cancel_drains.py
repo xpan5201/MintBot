@@ -31,7 +31,7 @@ def test_chat_stream_drains_iterator_on_cancel_event() -> None:
         finally:
             cleaned["done"] = True
 
-    agent._stream_llm_response = stream_llm  # type: ignore[assignment]
+    agent._stream_llm_response_native = stream_llm  # type: ignore[assignment]
     agent._filter_tool_info = lambda text: str(text)  # type: ignore[assignment]
     agent._post_reply_actions = (  # type: ignore[assignment]
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("should not persist on cancel"))

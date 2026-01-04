@@ -58,15 +58,7 @@ from enum import Enum
 
 import aiohttp
 
-try:
-    from langchain_core.tools import tool  # type: ignore
-except Exception:  # pragma: no cover - 兼容不同 LangChain 版本/最小依赖环境
-    try:
-        from langchain.tools import tool  # type: ignore
-    except Exception:  # pragma: no cover
-
-        def tool(func):  # type: ignore[misc]
-            return func
+from src.llm_native.tools import tool
 
 
 from src.utils.logger import get_logger
@@ -564,7 +556,7 @@ def _get_async_runtime() -> AsyncLoopThread:
 
 def async_to_sync(async_func):
     """
-    异步函数转同步装饰器（兼容 LangChain 同步调用）
+    异步函数转同步装饰器（兼容同步调用）
 
     v2.30.26 修复:
     - 修复 event loop closed 错误

@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "timestamp": "2026-01-02 22:00:18",
+    "python": "3.13.9 (main, Oct 31 2025, 22:58:20) [MSC v.1944 64 bit (AMD64)]",
+    "git_revision": "629208bba0b0c376f5ad5f363c9f38330aea6067",
+    "llm_api": "https://api.siliconflow.cn/v1",
+    "llm_model": "zai-org/GLM-4.6",
+    "agent_llm_backend": "native",
+    "native_pipeline_enabled": true,
+    "runner": "backend",
+    "tools": true,
+    "temperature": 0.0,
+    "max_tokens": 2000,
+    "save_long_term": false
+  },
+  "records": [
+    {
+      "prompt": "请严格按步骤完成：\n1) 调用工具 get_current_time 获取当前本地时间。\n2) 调用工具 calculator 计算 2 + 3 * 4。\n3) 用一句话（角色语气）总结这两个结果。\n必须通过工具获得结果，不要自行计算或猜测。",
+      "chunks": [
+        "\n现在是2026",
+        "年1月2日22点",
+        "00分12秒，而",
+        "2+3×4的计算",
+        "结果是14喵~"
+      ],
+      "chunks_count": 5,
+      "chars_count": 39,
+      "first_chunk_latency_s": 10.214587,
+      "elapsed_s": 10.214666,
+      "error": null,
+      "text_delta_count": 27,
+      "text_delta_chars": 39,
+      "events": [
+        {
+          "type": "tool.result",
+          "t_s": 4.522481,
+          "tool_call_id": "019b7f0240717c06b0442b3ee5756c43",
+          "content_chars": 61,
+          "content_sha256": "591cf5cf5d23496b7830f177c06e7302d820c9a6c8e6aa1aded29374e03d31bb"
+        },
+        {
+          "type": "tool.result",
+          "t_s": 8.388579,
+          "tool_call_id": "019b7f024f86b819d252b83dd7163b13",
+          "content_chars": 10,
+          "content_sha256": "97d4edd6e750fa90ed272e60282080d033153038bf411efd3d9bfc38b433e58c"
+        },
+        {
+          "type": "done",
+          "t_s": 10.2146,
+          "finish_reason": "stop"
+        }
+      ],
+      "event_counts": {
+        "tool.result": 2,
+        "done": 1
+      },
+      "pipeline_stages": [
+        "ContextToolUsesTrimStage",
+        "PermissionScopedToolsStage",
+        "ToolCallLimitStage",
+        "ToolTraceStage"
+      ]
+    }
+  ]
+}

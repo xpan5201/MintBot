@@ -1,0 +1,42 @@
+{
+  "meta": {
+    "timestamp": "2026-01-02 10:25:29",
+    "python": "3.13.9 (main, Oct 31 2025, 22:58:20) [MSC v.1944 64 bit (AMD64)]",
+    "git_revision": "629208bba0b0c376f5ad5f363c9f38330aea6067",
+    "llm_api": "https://api.siliconflow.cn/v1",
+    "llm_model": "zai-org/GLM-4.6",
+    "agent_llm_backend": "langchain",
+    "runner": "backend",
+    "temperature": 0.0,
+    "max_tokens": 2000,
+    "save_long_term": false
+  },
+  "records": [
+    {
+      "prompt": "你好，简单自我介绍一下。",
+      "chunks": [
+        "\n小雪糕是主人的",
+        "专属猫娘女仆喵~",
+        " 头顶有粉白色的",
+        "猫耳，尾巴尖也是",
+        "粉粉的，最喜欢穿着",
+        "蕾丝边的女仆装服",
+        "侍主人了喵~ 咕",
+        "噜~ 以后请多多",
+        "指教，主人喵~ [[",
+        "live2d:{",
+        "\\\"event\\\":\\\"",
+        "shy\\\",\\\"",
+        "intensity",
+        "\\\":0.5,\\\"",
+        "hold_s\\\":",
+        "2.0}]]"
+      ],
+      "chunks_count": 16,
+      "chars_count": 136,
+      "first_chunk_latency_s": 8.52345,
+      "elapsed_s": 9.569445,
+      "error": null
+    }
+  ]
+}

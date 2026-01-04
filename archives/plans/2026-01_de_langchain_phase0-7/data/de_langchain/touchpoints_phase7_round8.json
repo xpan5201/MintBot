@@ -1,0 +1,11 @@
+{
+  "root": "D:\\MintBot",
+  "patterns": [
+    "\\blangchain\\b",
+    "\\blangchain[_-]\\w+",
+    "\\blanggraph\\b",
+    "\\blangsmith\\b"
+  ],
+  "count": 0,
+  "matches": []
+}

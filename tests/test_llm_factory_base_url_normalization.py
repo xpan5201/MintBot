@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import json
-
-import langchain_openai
-
 from src.llm import factory
 from src.llm.factory import _normalize_openai_base_url
 
@@ -20,130 +16,46 @@ def test_normalize_openai_base_url_keeps_existing_path() -> None:
     )
 
 
-def test_build_openai_llm_streaming_false_overrides_extra_config(monkeypatch) -> None:
+def test_build_openai_backend_uses_normalized_base_url_in_cache_key() -> None:
     factory.reset_llm_cache()
 
-    captured: dict[str, object] = {}
-    streaming_sentinel = object()
-
-    class DummyChatOpenAI:  # pragma: no cover - used via monkeypatch
-        def __init__(
-            self,
-            *,
-            model: str,
-            temperature: float,
-            max_completion_tokens: int | None = None,
-            base_url: str | None = None,
-            api_key: object | None = None,
-            streaming: object = streaming_sentinel,
-            model_kwargs: dict[str, object] | None = None,
-            **kwargs: object,
-        ) -> None:
-            captured["model"] = model
-            captured["temperature"] = temperature
-            captured["max_completion_tokens"] = max_completion_tokens
-            captured["base_url"] = base_url
-            captured["api_key"] = api_key
-            captured["streaming"] = streaming
-            captured["model_kwargs"] = model_kwargs
-            captured.update(kwargs)
-
-    monkeypatch.setattr(langchain_openai, "ChatOpenAI", DummyChatOpenAI)
-
-    factory._build_openai_llm(
+    backend_a = factory._build_openai_backend(
         model="test-model",
-        temperature=0.0,
-        max_tokens=1,
         base_url="https://api.example.com",
         api_key="test-key",
-        extra_json=json.dumps({"streaming": True}),
-        streaming=False,
+        timeout_s=3.0,
+        max_retries=0,
+    )
+    backend_b = factory._build_openai_backend(
+        model="test-model",
+        base_url="https://api.example.com/",
+        api_key="test-key",
+        timeout_s=3.0,
+        max_retries=0,
     )
 
-    assert captured["streaming"] is streaming_sentinel
+    assert backend_a is backend_b
 
 
-def test_build_openai_llm_streaming_none_respects_extra_config(monkeypatch) -> None:
+def test_build_openai_backend_applies_defaults_and_reset() -> None:
     factory.reset_llm_cache()
-
-    captured: dict[str, object] = {}
-    streaming_sentinel = object()
-
-    class DummyChatOpenAI:  # pragma: no cover - used via monkeypatch
-        def __init__(
-            self,
-            *,
-            model: str,
-            temperature: float,
-            max_completion_tokens: int | None = None,
-            base_url: str | None = None,
-            api_key: object | None = None,
-            streaming: object = streaming_sentinel,
-            model_kwargs: dict[str, object] | None = None,
-            **kwargs: object,
-        ) -> None:
-            captured["model"] = model
-            captured["temperature"] = temperature
-            captured["max_completion_tokens"] = max_completion_tokens
-            captured["base_url"] = base_url
-            captured["api_key"] = api_key
-            captured["streaming"] = streaming
-            captured["model_kwargs"] = model_kwargs
-            captured.update(kwargs)
-
-    monkeypatch.setattr(langchain_openai, "ChatOpenAI", DummyChatOpenAI)
-
-    factory._build_openai_llm(
+    backend_a = factory._build_openai_backend(
         model="test-model",
-        temperature=0.0,
-        max_tokens=1,
-        base_url="https://api.example.com",
+        base_url="",
         api_key="test-key",
-        extra_json=json.dumps({"streaming": True}),
-        streaming=None,
+        timeout_s=2.0,
+        max_retries=0,
     )
 
-    assert captured.get("streaming") is True
+    assert getattr(backend_a, "config").base_url == "https://api.openai.com/v1"
+    assert getattr(backend_a, "config").model == "test-model"
 
-
-def test_build_openai_llm_unknown_extra_goes_to_model_kwargs(monkeypatch) -> None:
     factory.reset_llm_cache()
-
-    captured: dict[str, object] = {}
-    streaming_sentinel = object()
-
-    class DummyChatOpenAI:  # pragma: no cover - used via monkeypatch
-        def __init__(
-            self,
-            *,
-            model: str,
-            temperature: float,
-            max_completion_tokens: int | None = None,
-            base_url: str | None = None,
-            api_key: object | None = None,
-            streaming: object = streaming_sentinel,
-            model_kwargs: dict[str, object] | None = None,
-            **kwargs: object,
-        ) -> None:
-            captured["model"] = model
-            captured["temperature"] = temperature
-            captured["max_completion_tokens"] = max_completion_tokens
-            captured["base_url"] = base_url
-            captured["api_key"] = api_key
-            captured["streaming"] = streaming
-            captured["model_kwargs"] = model_kwargs
-            captured.update(kwargs)
-
-    monkeypatch.setattr(langchain_openai, "ChatOpenAI", DummyChatOpenAI)
-
-    factory._build_openai_llm(
+    backend_b = factory._build_openai_backend(
         model="test-model",
-        temperature=0.0,
-        max_tokens=1,
-        base_url="https://api.example.com",
+        base_url="",
         api_key="test-key",
-        extra_json=json.dumps({"provider_param": "value"}),
-        streaming=None,
+        timeout_s=2.0,
+        max_retries=0,
     )
-
-    assert captured.get("model_kwargs") == {"provider_param": "value"}
+    assert backend_a is not backend_b

@@ -81,7 +81,7 @@ USER_EXAMPLE_REQUIRED_PATHS: tuple[str, ...] = (
 )
 
 
-DEV_EXAMPLE_REQUIRED_PATHS: tuple[str, ...] = (
+DEV_CONFIG_REQUIRED_PATHS: tuple[str, ...] = (
     # MCP
     "MCP.enable",
     "MCP.servers",

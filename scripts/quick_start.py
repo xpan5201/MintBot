@@ -23,7 +23,7 @@ def main():
     print("  MintChat v2.8.0 - 多模态猫娘女仆智能体 (快速启动)")
     print("=" * 60)
     print()
-    
+
     # 检查 Python 版本
     if sys.version_info < (3, 13):
         print("[错误] Python 版本过低")
@@ -31,7 +31,7 @@ def main():
         print("需要版本: 3.13+")
         print()
         return 1
-    
+
     # 检查配置文件
     config_file = Path("config.user.yaml")
     legacy_file = Path("config.yaml")
@@ -51,10 +51,10 @@ def main():
             print("  cp config.user.yaml.example config.user.yaml")
         print()
         return 1
-    
+
     # 检查依赖
     try:
-        import langchain
+        import openai  # noqa: F401
     except ImportError:
         print("[错误] 依赖未安装")
         print()
@@ -62,17 +62,18 @@ def main():
         print("  uv sync --locked --no-install-project")
         print()
         return 1
-    
+
     # 启动基础对话
     print("[启动] 正在启动 MintChat...")
     print()
     print("=" * 60)
     print()
-    
+
     try:
         # 导入并运行
         sys.path.insert(0, str(project_root))
         from examples.basic_chat import main as chat_main
+
         chat_main()
         return 0
     except Exception as e:
@@ -82,11 +83,13 @@ def main():
         try:
             from src.utils.exceptions import handle_exception
             from src.utils.logger import get_logger
+
             logger = get_logger(__name__)
             handle_exception(e, logger, "启动失败")
         except:
             # 如果导入失败，使用基本错误输出
             import traceback
+
             traceback.print_exc()
         return 1
 
@@ -102,4 +105,3 @@ if __name__ == "__main__":
         print("=" * 60)
         print()
         sys.exit(0)
-

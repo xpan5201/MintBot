@@ -32,11 +32,16 @@ def demo_image_analysis():
     print("📸 图像分析演示")
     print("=" * 60)
 
-    # 注意：需要支持视觉的 LLM（如 GPT-4V）
+    # 注意：需要支持视觉的 OpenAI-compatible 后端（可在 config.user.yaml 配置 VISION_LLM）。
     try:
-        from langchain_openai import ChatOpenAI
+        from src.llm.factory import get_vision_llm
 
-        llm = ChatOpenAI(model="gpt-4-vision-preview")
+        llm = get_vision_llm()
+        if llm is None:
+            print(
+                "⚠️  未启用视觉模型：请在 config.user.yaml 启用 VISION_LLM.enabled 并配置模型/API Key"
+            )
+            return
 
         # 示例：分析图像
         print("\n1. 分析图像内容")
@@ -54,8 +59,6 @@ def demo_image_analysis():
             print(f"⚠️  图像文件不存在: {image_path}")
             print("提示：请替换为实际的图像路径")
 
-    except ImportError:
-        print("⚠️  需要安装依赖 langchain-openai，请先执行: uv sync --locked --no-install-project")
     except Exception as e:
         print(f"❌ 图像分析失败: {e}")
 
@@ -67,9 +70,14 @@ def demo_ocr():
     print("=" * 60)
 
     try:
-        from langchain_openai import ChatOpenAI
+        from src.llm.factory import get_vision_llm
 
-        llm = ChatOpenAI(model="gpt-4-vision-preview")
+        llm = get_vision_llm()
+        if llm is None:
+            print(
+                "⚠️  未启用视觉模型：请在 config.user.yaml 启用 VISION_LLM.enabled 并配置模型/API Key"
+            )
+            return
 
         print("\n1. 从图片中提取文字")
         print("-" * 60)
@@ -84,8 +92,6 @@ def demo_ocr():
             print(f"⚠️  图像文件不存在: {image_path}")
             print("提示：请替换为实际的图像路径")
 
-    except ImportError:
-        print("⚠️  需要安装依赖 langchain-openai，请先执行: uv sync --locked --no-install-project")
     except Exception as e:
         print(f"❌ OCR 失败: {e}")
 

@@ -41,15 +41,11 @@ env/
 
 # Configuration (keep example)
 config.user.yaml
-config.dev.yaml
 config.user.yml
-config.dev.yml
 
-
-
-# Data and logs
-data/
-logs/
+# Data and logs (runtime only)
+/data/
+/logs/
 *.log
 
 # Jupyter Notebook
@@ -69,6 +65,9 @@ dmypy.json
 # Project specific
 *.db
 *.sqlite
+archives/*.sqlite3-journal
+archives/*.sqlite3-wal
+archives/*.sqlite3-shm
 temp/
 cache/
 out/
@@ -78,5 +77,3 @@ third_party/*
 !third_party/README.md
 
 live2d/Blue_cat/
-
-times.txt

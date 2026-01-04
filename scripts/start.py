@@ -59,19 +59,12 @@ def check_env():
 
 def check_python_version():
     """检查 Python 版本"""
-    version = (
-        f"{sys.version_info.major}."
-        f"{sys.version_info.minor}."
-        f"{sys.version_info.micro}"
-    )
+    version = f"{sys.version_info.major}." f"{sys.version_info.minor}." f"{sys.version_info.micro}"
     print(f"[信息] Python 版本: {version}")
 
     if sys.version_info < (3, 13):
         print("[错误] Python 版本过低")
-        print(
-            f"当前版本: "
-            f"{sys.version_info.major}.{sys.version_info.minor}"
-        )
+        print(f"当前版本: " f"{sys.version_info.major}.{sys.version_info.minor}")
         print("需要版本: 3.13+")
         print()
         return False
@@ -118,7 +111,7 @@ def check_config():
         print("  2. LLM.api - API 地址（如使用 SiliconFlow）")
         print("  3. LLM.model - 模型名称")
         print()
-        print("开发者可选：复制 config.dev.yaml.example 为 config.dev.yaml，用于高级覆盖。")
+        print("开发者配置：可直接编辑 config.dev.yaml（不含密钥，可提交）。")
         print()
         print("编辑完成后，请重新运行此脚本")
         print()
@@ -136,10 +129,10 @@ def check_dependencies():
     print("[检查] 正在检查依赖...")
 
     try:
-        import langchain  # noqa: F401
-        import langchain_core  # noqa: F401
+        import openai  # noqa: F401
         import pydantic  # noqa: F401
         import yaml  # noqa: F401
+
         print("[成功] 依赖检查通过")
         return True
     except ImportError as e:

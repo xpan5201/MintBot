@@ -43,7 +43,7 @@ def test_chat_stream_falls_back_on_connection_error() -> None:
         saved["reply"] = reply
 
     agent._build_agent_bundle = build_bundle  # type: ignore[assignment]
-    agent._stream_llm_response = stream_llm  # type: ignore[assignment]
+    agent._stream_llm_response_native = stream_llm  # type: ignore[assignment]
     agent._invoke_with_failover = invoke_failover  # type: ignore[assignment]
     agent._extract_reply_from_response = extract_reply  # type: ignore[assignment]
     agent._filter_tool_info = filter_tool_info  # type: ignore[assignment]
@@ -90,7 +90,7 @@ def test_chat_stream_returns_user_friendly_message_when_failover_also_fails() ->
         saved["reply"] = reply
 
     agent._build_agent_bundle = build_bundle  # type: ignore[assignment]
-    agent._stream_llm_response = stream_llm  # type: ignore[assignment]
+    agent._stream_llm_response_native = stream_llm  # type: ignore[assignment]
     agent._invoke_with_failover = invoke_failover  # type: ignore[assignment]
     agent._filter_tool_info = filter_tool_info  # type: ignore[assignment]
     agent._rescue_empty_reply = rescue_empty_reply  # type: ignore[assignment]

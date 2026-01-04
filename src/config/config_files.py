@@ -19,7 +19,6 @@ DEFAULT_DEV_CONFIG_PATH = "config.dev.yaml"
 LEGACY_CONFIG_PATH = "config.yaml"
 
 DEFAULT_USER_CONFIG_EXAMPLE_PATH = "config.user.yaml.example"
-DEFAULT_DEV_CONFIG_EXAMPLE_PATH = "config.dev.yaml.example"
 LEGACY_CONFIG_EXAMPLE_PATH = "config.yaml.example"
 
 

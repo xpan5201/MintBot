@@ -57,7 +57,6 @@ DEFAULT_QUIET_LIBS = [
     "openai",
     "chromadb",
     "posthog",
-    "langchain",
     "src.agent.performance_optimizer",
 ]
 DEFAULT_QUIET_LEVEL = os.getenv("MINTCHAT_LOG_QUIET_LEVEL", "WARNING")

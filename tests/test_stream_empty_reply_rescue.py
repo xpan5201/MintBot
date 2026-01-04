@@ -38,7 +38,7 @@ def test_chat_stream_uses_rescue_on_empty_reply() -> None:
         saved["reply"] = reply
 
     agent._build_agent_bundle = build_bundle  # type: ignore[assignment]
-    agent._stream_llm_response = stream_llm  # type: ignore[assignment]
+    agent._stream_llm_response_native = stream_llm  # type: ignore[assignment]
     agent._filter_tool_info = filter_tool_info  # type: ignore[assignment]
     agent._rescue_empty_reply = rescue_empty_reply  # type: ignore[assignment]
     agent._post_reply_actions = post_actions  # type: ignore[assignment]
@@ -79,7 +79,7 @@ def test_chat_stream_does_not_append_default_when_filtered_empty_but_streamed() 
         saved["reply"] = reply
 
     agent._build_agent_bundle = build_bundle  # type: ignore[assignment]
-    agent._stream_llm_response = stream_llm  # type: ignore[assignment]
+    agent._stream_llm_response_native = stream_llm  # type: ignore[assignment]
     agent._filter_tool_info = filter_tool_info  # type: ignore[assignment]
     agent._rescue_empty_reply = rescue_empty_reply  # type: ignore[assignment]
     agent._post_reply_actions = post_actions  # type: ignore[assignment]
@@ -236,7 +236,7 @@ def test_chat_stream_appends_fallback_when_reply_echoes_tool_output() -> None:
     def stream_llm(*_args, **_kwargs) -> Iterator[str]:
         yield "TOOL_RESULT: web_search\nquery: x\nresults:\n1. a | https://example.com"
 
-    agent._stream_llm_response = stream_llm  # type: ignore[assignment]
+    agent._stream_llm_response_native = stream_llm  # type: ignore[assignment]
     agent._filter_tool_info = lambda text: str(text)  # type: ignore[assignment]
     agent._rescue_empty_reply = lambda *_a, **_k: None  # type: ignore[assignment]
     agent._post_reply_actions = lambda *_a, **_k: None  # type: ignore[assignment]
@@ -271,7 +271,7 @@ def test_chat_stream_runs_rescue_when_reply_not_meaningful() -> None:
         return "rescued"
 
     agent._build_agent_bundle = build_bundle  # type: ignore[assignment]
-    agent._stream_llm_response = stream_llm  # type: ignore[assignment]
+    agent._stream_llm_response_native = stream_llm  # type: ignore[assignment]
     agent._filter_tool_info = filter_tool_info  # type: ignore[assignment]
     agent._rescue_empty_reply = rescue_empty_reply  # type: ignore[assignment]
     agent._post_reply_actions = lambda *_args, **_kwargs: None  # type: ignore[assignment]

@@ -46,6 +46,7 @@ def _iter_py_files() -> Iterable[Path]:
             continue
         yield from base.rglob("*.py")
 
+
 def _extract_settings_chain_from_expr(
     node: ast.AST, *, env: Mapping[str, list[str]] | None = None
 ) -> list[str] | None:
@@ -117,7 +118,9 @@ def collect_used_settings_paths() -> set[str]:
                 merged_env.update(env)
             return _extract_settings_chain_from_expr(expr, env=merged_env)
 
-        def _detect_getattr_wrapper_base(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+        def _detect_getattr_wrapper_base(
+            self, node: ast.FunctionDef | ast.AsyncFunctionDef
+        ) -> str | None:
             """
             Detect simple wrapper functions like:
                 def _cfg_int(name, default):
@@ -251,7 +254,9 @@ def _unwrap_pydantic_model_type(tp: Any) -> Any | None:
     return None
 
 
-def _collect_model_paths(prefix: str, model: Any, out: set[str], *, _stack: set[tuple[Any, str]]) -> None:
+def _collect_model_paths(
+    prefix: str, model: Any, out: set[str], *, _stack: set[tuple[Any, str]]
+) -> None:
     try:
         fields = getattr(model, "model_fields", {}) or {}
     except Exception:
@@ -346,9 +351,15 @@ def _audit_example(name: str, path: Path, required_paths: Iterable[str]) -> Exam
             missing.append(key_path)
 
     extra_top_level = sorted(
-        [k for k in data.keys() if isinstance(k, str) and k not in {"LLM", "VISION_LLM", "Agent", "TTS", "ASR", "MCP"}]
+        [
+            k
+            for k in data.keys()
+            if isinstance(k, str) and k not in {"LLM", "VISION_LLM", "Agent", "TTS", "ASR", "MCP"}
+        ]
     )
-    return ExampleAudit(name=name, path=path, missing_paths=sorted(missing), extra_top_level_keys=extra_top_level)
+    return ExampleAudit(
+        name=name, path=path, missing_paths=sorted(missing), extra_top_level_keys=extra_top_level
+    )
 
 
 def _iter_yaml_paths(mapping: Mapping[str, Any], *, prefix: str = "") -> set[str]:
@@ -426,7 +437,11 @@ class _ConfigUseVisitor(ast.NodeVisitor):
             return []
 
         # Nested mapping access: base.get("key")
-        if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "get":
+        if (
+            isinstance(expr, ast.Call)
+            and isinstance(expr.func, ast.Attribute)
+            and expr.func.attr == "get"
+        ):
             if not expr.args:
                 return None
             key_node = expr.args[0]
@@ -563,14 +578,14 @@ def _is_covered_by_used(path: str, used: set[str], used_prefixes: set[str]) -> b
 def main() -> int:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-    from src.config.config_surface import DEV_EXAMPLE_REQUIRED_PATHS, USER_EXAMPLE_REQUIRED_PATHS
+    from src.config.config_surface import DEV_CONFIG_REQUIRED_PATHS, USER_EXAMPLE_REQUIRED_PATHS
 
     user_example = PROJECT_ROOT / "config.user.yaml.example"
-    dev_example = PROJECT_ROOT / "config.dev.yaml.example"
+    dev_example = PROJECT_ROOT / "config.dev.yaml"
 
     audits = [
         _audit_example("user", user_example, USER_EXAMPLE_REQUIRED_PATHS),
-        _audit_example("dev", dev_example, DEV_EXAMPLE_REQUIRED_PATHS),
+        _audit_example("dev", dev_example, DEV_CONFIG_REQUIRED_PATHS),
     ]
 
     ok = True
@@ -589,7 +604,7 @@ def main() -> int:
     defined_settings = collect_defined_settings_fields()
 
     used_settings_defined = sorted([p for p in used_settings_yaml if p in defined_settings])
-    surface_paths = set(USER_EXAMPLE_REQUIRED_PATHS) | set(DEV_EXAMPLE_REQUIRED_PATHS)
+    surface_paths = set(USER_EXAMPLE_REQUIRED_PATHS) | set(DEV_CONFIG_REQUIRED_PATHS)
     unused_settings_candidates = sorted(
         [
             p
@@ -630,7 +645,9 @@ def main() -> int:
     )
     if example_unused:
         print()
-        print(f"[WARN] example yaml paths not referenced by code (review/remove if stale): {len(example_unused)}")
+        print(
+            f"[WARN] example yaml paths not referenced by code (review/remove if stale): {len(example_unused)}"
+        )
         print("  sample:", ", ".join(example_unused[:20]))
 
     # Local config file hints (if present): never prints values
@@ -656,7 +673,9 @@ def main() -> int:
 
         if unused_local:
             print()
-            print(f"[WARN] {local_path} contains paths not referenced by code (review/remove): {len(unused_local)}")
+            print(
+                f"[WARN] {local_path} contains paths not referenced by code (review/remove): {len(unused_local)}"
+            )
             print("  sample:", ", ".join(unused_local[:20]))
 
     return 0 if ok else 2

@@ -42,4 +42,4 @@ set_log_level("DEBUG")
 - JSON 日志：`logs/mintchat.jsonl`（可通过 `log_json` 关闭）
 - 默认轮转：`50 MB`，默认保留：`14 days`
 
-如需调整，将配置写入 `config.user.yaml`（或 `config.dev.yaml`）或设置对应环境变量，程序启动时会自动应用。***
+如需调整，将配置写入 `config.user.yaml`（或 `config.dev.yaml`）或设置对应环境变量，程序启动时会自动应用。

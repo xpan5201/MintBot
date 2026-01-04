@@ -150,7 +150,7 @@ class VisionProcessor:
         format: str = "JPEG",
         max_size: Optional[int] = None,
     ) -> dict:
-        """将已加载的 PIL Image 转为 LangChain 视觉输入格式，避免重复磁盘读取。"""
+        """将已加载的 PIL Image 转为 OpenAI-compatible image_url 内容块，避免重复磁盘读取。"""
         # 调整大小
         image = self.resize_image(image, max_size=max_size)
 
@@ -171,7 +171,7 @@ class VisionProcessor:
         # 确定 MIME 类型
         mime_type = "image/jpeg" if format.upper() == "JPEG" else "image/png"
 
-        # 构建 LangChain 消息格式
+        # 构建 OpenAI-compatible image_url 内容块
         return {
             "type": "image_url",
             "image_url": {
@@ -193,7 +193,7 @@ class VisionProcessor:
             format: 输出格式（JPEG 或 PNG），默认 JPEG（更小）
 
         Returns:
-            dict: 包含图像数据的字典，格式适用于 LangChain
+            dict: 包含图像数据的字典，格式适用于 OpenAI-compatible Chat Completions
         """
         try:
             # 加载图像
@@ -236,7 +236,8 @@ class VisionProcessor:
         try:
             # 如果提供了支持视觉的 LLM，使用它进行分析
             if llm is not None:
-                from langchain_core.messages import HumanMessage
+                from src.llm_native.backend import ChatRequest
+                from src.llm_native.messages import Message, TextPart
 
                 # 准备图像数据（尽量复用，避免重复读取与 base64 编码）
                 if image_data is None:
@@ -247,17 +248,28 @@ class VisionProcessor:
                     )
 
                 # 构建消息
-                message = HumanMessage(
-                    content=[
-                        {"type": "text", "text": prompt},
-                        image_data,
-                    ]
-                )
-
-                # 调用 LLM
-                response = llm.invoke([message])
+                message = Message(role="user", content=[TextPart(prompt), image_data])
+                request = ChatRequest(messages=[message], tools=[], temperature=0.0)
+                try:
+                    response = llm.complete(request)
+                except Exception as exc:
+                    err_text = str(exc)
+                    if ("not a VLM" in err_text) or ("Vision Language Model" in err_text):
+                        model_name = ""
+                        try:
+                            model_name = str(
+                                getattr(getattr(llm, "config", None), "model", "") or ""
+                            )
+                        except Exception:
+                            model_name = ""
+                        model_hint = f"（当前: {model_name}）" if model_name else ""
+                        return (
+                            "图像分析失败：当前配置的模型不支持图片（VLM）。"
+                            f"{model_hint} 请在 config.user.yaml 配置 VISION_LLM.model 为视觉模型后重试。"
+                        )
+                    raise
                 logger.info("图像分析完成: %s", image_path)
-                return response.content
+                return str(getattr(response, "output_text", "") or "")
 
             # 如果没有提供 LLM，返回基本信息
             if image is None:

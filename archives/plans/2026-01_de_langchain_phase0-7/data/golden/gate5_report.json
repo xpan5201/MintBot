@@ -1,0 +1,51 @@
+{
+  "preset": "gate5-native-pipeline",
+  "baseline": "data\\golden\\native_backend_tool_loop_golden.json",
+  "candidate": "data\\golden\\native_backend_tool_loop_pipeline_golden.json",
+  "requirements": {
+    "event_types": [
+      "tool.result"
+    ],
+    "pipeline_stages": [
+      "ContextToolUsesTrimStage",
+      "PermissionScopedToolsStage",
+      "ToolCallLimitStage",
+      "ToolTraceStage"
+    ]
+  },
+  "event_totals": {
+    "baseline": {
+      "tool.result": 2,
+      "done": 1
+    },
+    "candidate": {
+      "tool.result": 2,
+      "done": 1
+    }
+  },
+  "candidate_pipeline_stages_found": [
+    "ContextToolUsesTrimStage",
+    "PermissionScopedToolsStage",
+    "ToolCallLimitStage",
+    "ToolTraceStage"
+  ],
+  "thresholds": {
+    "min_text_similarity": 0.8,
+    "max_first_chunk_latency_delta_s": 60.0,
+    "max_chars_delta": 800,
+    "max_chunks_delta": 100
+  },
+  "diffs": [
+    {
+      "prompt": "请严格按步骤完成：\n1) 调用工具 get_current_time 获取当前本地时间。\n2) 调用工具 calculator 计算 2 + 3 * 4。\n3) 用一句话（角色语气）总结这两个结果。\n必须通过工具获得结果，不要自行计算或猜测。",
+      "baseline_chunks": 5,
+      "candidate_chunks": 5,
+      "baseline_chars": 37,
+      "candidate_chars": 39,
+      "baseline_first_chunk_latency_s": 15.852752,
+      "candidate_first_chunk_latency_s": 10.214587,
+      "text_similarity": 0.789474,
+      "ok": false
+    }
+  ]
+}
