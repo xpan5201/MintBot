@@ -1,117 +1,155 @@
 flowchart TD
-  %% MintChat 记忆系统重构计划（L1-L4）— 流程图（待 Owner 确认后实施）
-  %% 目标：放弃现有记忆系统所有代码逻辑，构建全新四层记忆体系：
-  %%  - L1：短期记忆区（Redis）
-  %%  - L2-L3：长期记忆/核心记忆（FAISS + 日记子系统：SQLite 元数据 + Markdown 原文）
-  %%  - L4：心智云图（Neo4j 关系网 + Web 可视化）
-  %%  - 检索：时间范围推断（当前时间 + 时间词） + 语义召回（在范围内召回）
+  %% MintChat 记忆系统重构计划（L1-L4）— 流程图（Phase 0 起）
+  %% 目标：丢弃现有记忆实现（仅保留兼容壳/回滚开关），重建四层记忆体系：
+  %%  - L1：短期/会话热上下文（Redis；可降级到进程内 ring buffer）
+  %%  - L2：长期记忆（Episode/Turn 持久化：SQLite）
+  %%  - L3：核心记忆（稳定偏好/长期触发点；SQLite + 可选 Markdown 人类可读镜像）
+  %%  - L4：心智云图（Neo4j；默认关闭，仅索引与可视化）
+  %%  - 检索：时间范围推断（now + 时间词/时区）→ 候选过滤 → 语义/关键词召回 → 重排 → 证据展开
+  %%
+  %% 产物与纪律（与 AGENTS.md 对齐）
+  %% - 不在 archives/ 下做进行中工作；决策/行动轨迹写入 plans/PLAN_ID/phaseN_dev.md；进度/验收写入 plans/PLAN_ID/phaseN_checklist.md（每 Phase 仅 2 个 .md）
+  %% - 代码/脚本/fixtures 必须落在 src/ tests/ scripts/（不要丢进 plans/）
   %%
   %% 核心原则（稳定优先）
-  %% - 双实现 + 总开关：Agent.memory_backend = legacy | v2（默认 legacy，v2 灰度）
-  %% - GUI 主线程禁止阻塞 I/O：写入/检索/索引/图谱抽取必须后台执行，可取消可降级
-  %% - 每个 Gate：先 MCP Research Loop（Context7+tavily+Fetch）产出《决策记录》，再实现；并跑 pytest/black/flake8/mypy + GUI/流式冒烟
-  %% - 任一 Gate 失败：立即回滚到 legacy；不带病进入下一 Phase
+  %% - 双实现 + 总开关：Agent.memory_backend = legacy | v2（默认 legacy；v2 灰度；一键回滚）
+  %% - GUI 主线程禁止阻塞 I/O：写入/检索/索引/图谱抽取均后台执行；支持取消/超时；失败可降级
+  %% - “证据可追溯”：任何回忆必须能指回 episode_id + turn_id 或 markdown_anchor（便于 debug/纠错）
+  %% - Gate 失败：立即切回 legacy；不带病进入下一 Phase
+  %%
+  %% 指标建议（可在 Phase 0 调整）
+  %% - 预检索（准备上下文）p95 < 300ms（纯本地）；若依赖网络 embeddings：设置超时（如 1.5s）并自动降级到关键词/时间检索
+  %% - 写入路径不阻塞流式：主链路只 enqueue；后台写入可重试/可暂停；进程退出前 flush（有上限）
   %%
   %% Owner 已确认决策点（2026-01-03）
   %% 1) 旧记忆（Chroma）= 清空重建（不做迁移导入；新系统从空白开始）
   %% 2) Redis/Neo4j 运行方式 = 本机服务（并提供最佳降级方案）
-  %% 3) Embeddings = 只走 OpenAI-compatible embeddings（base_url+api_key+model）
+  %% 3) Embeddings = 只走 OpenAI-compatible embeddings（base_url + api_key + model）
   %% 4) L4 predicate 白名单（先用，后续再扩）= PREFERS/DISLIKES/CARES_ABOUT/RELATES_TO/MENTIONED/CAUSED_BY
-  %% 5) “情绪线索”允许入图谱：仅记“长期触发点/稳定偏好”（映射到白名单 predicate + trigger_emotion 属性；短期情绪忽略）
-  %% 6) L2-L3-L4 时间戳为一等公民：turn_time_unix（对话发生/记录时间，UTC）+ mentioned_time_start/end_unix（内容提及时间，可选）
-  %%    - episodes/Scene 优先使用 mentioned_time 作为“场景时间轴”，缺失时回退到 turn_time（确保时间检索可用）
-  %% 7) L1 Redis 可为 L2-L3-L4 提供“热援助”（hot context/alias hints/recency boost），但不替代持久层
-  %% 8) L4 的 Scene/Event 节点 = “时间范围内发生的情景/场景”，由 L2-L3 的记忆群（episodes）组成；L4 只做索引关联，不复制每条记忆为分支节点
+  %% 5) “情绪线索”允许入图谱：仅记“长期触发点/稳定偏好”（trigger_emotion；短期情绪忽略）
+  %% 6) 时间戳一等公民：turn_time_unix(UTC) + mentioned_time_start/end_unix?（内容提及时间）+ timezone?
+  %%    - Scene 时间轴优先 mentioned_time；缺失回退 turn_time（保证时间检索可用）
+  %% 7) L1 可为 L2-L4 提供热援助（recency/alias hints），但不替代持久层
+  %% 8) L4 Scene/Event 节点只做 episode 索引关联，不复制每条 turn 为图节点（避免爆炸）
 
   Start([START<br/>开始“记忆系统重构（L1-L4）”计划]) --> RS0a
 
   subgraph RS["MCP Research Loop（每个 Phase/Gate 之前必做）"]
     direction TB
-    RS0a[/Context7：查官方 SDK/接口/示例（redis/neo4j 等）/]
+    RS0a[/Context7：查官方 SDK/接口/示例（redis/neo4j/faiss 等）/]
     RS0b[/tavily_local：检索最新最佳实践/已知坑/生态变化/]
     RS0c[/Fetch：抓取关键页面细节并提炼关键段落/]
-    RS0d["产出《决策记录》<br/>- 领域适配性（AI 伴侣/角色扮演）<br/>- 取舍/不变量/风险<br/>- 测试点/指标/回滚点"]
+    RS0d["把《决策记录》写入 phaseN_dev.md<br/>- 领域适配性（AI 伴侣/角色扮演）<br/>- 取舍/不变量/风险/回滚点<br/>- 测试点/指标/降级策略"]
     RS0a --> RS0b --> RS0c --> RS0d
   end
 
   RS0d --> P0a
 
+  %% Phase 0 技术点（只建护栏，不改行为）
+  %% - 统一“行为不变量”与“性能/稳定指标”：首包、吞吐、取消、错误率、重启后回忆一致性
+  %% - 建立 golden 回归：时间词查询、跨重启回忆、降级路径（无 Redis/无 Embeddings/无 Neo4j）
+  %% - 盘点触点：现有 memory 入口、数据目录、旧向量库/缓存；明确哪些需要在 Phase 6 才能删
+
   subgraph P0["Phase 0 盘点&冻结（建立护栏，禁止贸然改行为）"]
     direction TB
-    P0a["P0.1 明确“不变量/验收指标”<br/>- 流式输出不中断/不卡顿（首包/吞吐/取消）<br/>- GUI 主线程无阻塞（写入/检索后台）<br/>- 失败可降级：无 Redis/无 Neo4j 也可运行"]
-    P0b["P0.2 触点盘点（Serena/rg/Git）<br/>- 现有 MemoryManager/MemoryRetriever 入口<br/>- 存储路径与数据格式（旧向量库/缓存）"]
-    P0c["P0.3 设计“双后端 + 总开关”<br/>Agent.memory_backend = legacy | v2<br/>默认 legacy；v2 灰度；一键回滚"]
-    P0d["P0.4 建立 Golden/回归基线<br/>- 录制：写入→检索→注入上下文→回复<br/>- 覆盖：时间词查询、跨重启可回忆"]
-    P0e["P0.5 本机服务前置检查（不影响运行）<br/>- Redis：PING + 连接池参数基线<br/>- Neo4j：driver.execute_query('RETURN 1') 基线<br/>- 不可用时：进入降级模式（不中断聊天）"]
-    G0{{Gate#0（不改行为）<br/>- 《决策记录》完成<br/>- 触点地图完成<br/>- Golden/fixtures 建立<br/>- pytest/black/flake8/mypy + GUI 冒烟通过}}
+    P0a["P0.1 明确不变量/验收指标<br/>- 流式：不中断/可取消/错误可恢复<br/>- GUI：主线程无阻塞（I/O 全后台）<br/>- 降级：无 Redis/无 Neo4j 也可运行"]
+    P0b["P0.2 触点盘点（Serena/rg/Git）<br/>- MemoryManager/MemoryRetriever 入口<br/>- 数据路径/格式（旧向量库/缓存）"]
+    P0c["P0.3 双后端 + 总开关<br/>Agent.memory_backend = legacy | v2<br/>默认 legacy；v2 灰度；一键回滚"]
+    P0d["P0.4 Golden/回归基线（落 tests/）<br/>- 写入→检索→注入→回复<br/>- 覆盖：时间词/跨重启/降级"]
+    P0e["P0.5 本机服务前置检查（不影响运行）<br/>- Redis：PING + 连接池/超时基线<br/>- Neo4j：轻量查询基线<br/>- 不可用：断路器 + 自动降级"]
+    G0{{Gate#0（不改行为）<br/>- phase0_dev.md 记录完成<br/>- 触点地图完成<br/>- Golden/fixtures 建立<br/>- pytest/black/flake8/mypy + GUI 冒烟通过}}
     P0a --> P0b --> P0c --> P0d --> P0e --> G0
   end
 
   G0 --> P1a
 
+  %% Phase 1 技术点（先统一契约，再替换实现）
+  %% - MemoryBackend 接口必须“非阻塞”：写入只 enqueue；retrieve 设定超时并可降级
+  %% - 数据模型结构化：TurnRecord/Episode/CoreItem/GraphEdge；所有时间字段统一 unix(UTC)
+  %% - 失败语义明确：不得让记忆异常中断聊天；默认返回空并上报日志/指标
+
   subgraph P1["Phase 1 新记忆协议层（先统一契约，再替换实现）"]
     direction TB
-    P1a["P1.1 Memory API（唯一入口）<br/>write_turn()/write_event()<br/>retrieve(query, now, k)<br/>flush()/close()"]
-    P1b["P1.2 数据模型（结构化，时间戳一等公民）<br/>- MemoryItem：id/user_id/role/text/tags/importance(1-10)/emotion?<br/>- Access：last_accessed_unix?（用于 recency/巩固）<br/>- Timestamps：turn_time_unix（UTC）+ mentioned_time_start/end_unix? + timezone?<br/>- Evidence：turn_id 或 markdown_anchor（可追溯到 L2-L3 原文）<br/>- GraphEdge：sub/pred/obj + evidence_episode_id + evidence_anchor? + first_seen_unix/last_seen_unix（turn_time）+ mentioned_time_start/end_unix?"]
-    P1c["P1.3 Pipeline 语义（后台）<br/>- 写入队列（不阻塞流式/GUI）<br/>- 可取消/可限速/可重试<br/>- 失败降级与告警"]
-    P1d["P1.4 与现有 Agent 的兼容桥（过渡）<br/>- 保持输出形状：Dict[str, List[str]]（long_term/core）<br/>- 兼容 ConcurrentMemoryRetriever（早期复用）<br/>- 逐步替换为 MemoryRetrieverV2（后期）"]
+    P1a["P1.1 MemoryBackend API（唯一入口）<br/>write_turn()/write_event()<br/>retrieve(query, now, k, budget_ms)<br/>flush()/close()"]
+    P1b["P1.2 数据模型 & 约束（结构化）<br/>TurnRecord/Episode/CoreItem/GraphEdge<br/>证据：turn_id 或 markdown_anchor"]
+    P1c["P1.3 Pipeline 语义（后台）<br/>- 队列/背压/可取消/可限速<br/>- 超时/重试/降级/告警"]
+    P1d["P1.4 与现有 Agent 的兼容桥（过渡）<br/>- 保持输出形状与注入位置<br/>- 逐步替换 Retriever 实现"]
     G1{{Gate#1<br/>- 仅新增协议层/空实现，不影响现有链路<br/>- pytest/black/flake8/mypy 全绿}}
     P1a --> P1b --> P1c --> P1d --> G1
   end
 
   G1 --> P2a
 
+  %% Phase 2 技术点（L1：热上下文）
+  %% - Redis down 时必须无感降级：进程内 ring buffer（同一 schema），不阻塞/不中断
+  %% - 只存“最近 N turn + TTL”，避免隐私与存储膨胀；支持 session 切换
+
   subgraph P2["Phase 2 L1 短期记忆（Redis）"]
     direction TB
-    P2a["P2.1 Redis schema 设计（本机服务）<br/>key=mem:l1:{user}:{session}<br/>结构：LIST（JSON）+ TTL + LTRIM"]
-    P2b["P2.2 写入策略（pipeline，非阻塞）<br/>RPUSH + LTRIM + EXPIRE（批量）<br/>ConnectionPool 复用 + health_check_interval"]
-    P2c["P2.3 读取策略<br/>LRANGE 取最近 N turn<br/>支持 session 切换/多窗口"]
-    P2d["P2.4 最佳降级方案（Redis down）<br/>- CircuitBreaker：短时间失败后快速熔断<br/>- Fallback：进程内 ring buffer（仅本次会话）<br/>- 后台探活：指数退避 ping，恢复后自动切回 Redis"]
-    P2e["P2.5 热援助（Hot Assist，不替代持久层）<br/>- 提供近期对话窗口给 L2-L4：recency boost / alias hints<br/>- 用于：实体归一化、时间词消歧、抽取门控<br/>- 重要：重启后长期回忆只依赖 L2-L4"]
-    G2{{Gate#2<br/>- 无 Redis 也可运行（fallback）<br/>- 写入不阻塞流式（后台）<br/>- 单测覆盖：TTL/trim/并发}}
-    P2a --> P2b --> P2c --> P2d --> P2e --> G2
+    P2a["P2.1 Redis schema（本机服务）<br/>key=mem:v2:l1:{user}:{session}<br/>value=LIST(JSON TurnRecord) + TTL + LTRIM"]
+    P2b["P2.2 写入策略（非阻塞）<br/>- enqueue → 后台 RPUSH/LTRIM/EXPIRE（批量）<br/>- ConnectionPool 复用 + health check"]
+    P2c["P2.3 读取策略<br/>- LRANGE 最近 N turn<br/>- 支持多会话/多窗口"]
+    P2d["P2.4 最佳降级（Redis down）<br/>- CircuitBreaker：快速熔断/恢复探测<br/>- Fallback：进程内 deque（同 schema）"]
+    G2{{Gate#2<br/>- L1 写入/读取/降级路径可用<br/>- 不影响流式与 GUI（后台/可取消）<br/>- 单测覆盖（含 Redis down）}}
+    P2a --> P2b --> P2c --> P2d --> G2
   end
 
   G2 --> P3a
 
-  subgraph P3["Phase 3 L2-L3 日记子系统（SQLite + Markdown）+ FAISS"]
+  %% Phase 3 技术点（L2-L3：持久层 + 日记子系统 + 向量/关键词检索）
+  %% - SQLite 为主要一致性存储（WAL + busy_timeout）；写入集中在单一 worker（避免多线程写冲突）
+  %% - Markdown 作为人类可读镜像：通过 outbox/job 保证最终一致（写失败可补偿）
+  %% - Episode 为主要检索粒度：聚合 turn（时间间隔 + 话题/参与者 + 重要度）；每个 episode 有 summary 与证据引用
+  %% - 召回双通道：FAISS（语义）+ SQLite FTS5（若可用；关键词/无 embeddings 降级）
+  %% - Embeddings 失败/超时：不阻塞检索；标记待补齐并后台 backfill
+
+  subgraph P3["Phase 3 L2-L3 长期/核心记忆（SQLite + Markdown + FAISS/FTS）"]
     direction TB
-    P3a["P3.1 存储布局（从空白开始）<br/>data/users/<id>/memory_v2/<br/>- memory.sqlite3<br/>- journal/YYYY-MM-DD.md<br/>- faiss.index (+ idmap/meta)"]
-    P3b["P3.2 SQLite 元数据 schema（时间戳为一等公民）<br/>tables: turns, diary_entries, tags, emotion, importance<br/>columns: importance_score(1-10), last_accessed_unix?, turn_time_unix（UTC）, mentioned_time_start/end_unix?, timezone?<br/>tables: episodes（记忆群/场景）, episode_members（turn→episode）, episode_embeddings<br/>episodes cols: importance_score, last_accessed_unix?, episode_start/end_unix（turn_time, UTC）, scene_start/end_unix?（mentioned_time, UTC）<br/>tables: embeddings, embedding_queue（异步）<br/>索引：user_id + turn_time_unix + session_id（turns）; user_id + episode_start/end_unix（episodes）；user_id + scene_start/end_unix（episodes，可选）"]
-    P3c["P3.3 Markdown 原文归档<br/>- 每日/每会话文件<br/>- 原文不可变（append-only）+ 引用锚点"]
-    P3d["P3.4 EmbeddingClient（OpenAI-compatible only）<br/>- OpenAI SDK：base_url+api_key+model<br/>- timeout/max_retries/httpx 连接池<br/>- 批量 input + 指数退避（429/timeout）"]
-    P3e["P3.5 Embedding 降级（不阻塞聊天）<br/>- 写入先落 SQLite/Markdown（先有证据）<br/>- embedding 失败→入 embedding_queue<br/>- 后台 worker 续跑（限速/重试/可暂停）"]
-    P3f["P3.6 Episodic Consolidation（记忆群/场景，后台）<br/>- episodes：episode_id/episode_start/end_unix(turn_time)/scene_start/end_unix?(mentioned_time)/summary_anchor/importance_score(1-10)/participants<br/>- 规则：时间间隔 + 话题/参与者 + 重要度阈值（避免碎片）<br/>- 场景时间轴：优先聚合 mentioned_time（可为空），缺失则回退到 episode_start/end<br/>- 输出：episode embedding（用于 Phase 4 检索；Scene 也从此生成）"]
-    P3g["P3.7 FAISS 索引策略（episode 为主，支持子集搜索）<br/>- IndexIDMap2 + add_with_ids（episode_id → vector）<br/>- 子集搜索：SearchParameters + IDSelectorBatch(episode_ids)（时间过滤）<br/>- 持久化：write_index/read_index<br/>- Turn 级向量：可选（仅用于精细回忆/引用）"]
-    G3{{Gate#3<br/>- 重启后可回忆（持久化通过）<br/>- 单测覆盖：sqlite/markdown/faiss 读写<br/>- 性能不退化（检索耗时受控）}}
+    P3a["P3.1 存储布局（每 user 独立）<br/>- SQLite: memory_v2.sqlite3<br/>- Markdown: diary/（可选镜像）<br/>- Index: episodes.faiss + meta"]
+    P3b["P3.2 SQLite schema（草案）<br/>turns/episodes/core_items/jobs(outbox)<br/>索引：turn_time/mentioned_time/last_accessed"]
+    P3c["P3.3 日记子系统（Markdown 镜像）<br/>- 追加写 + anchor（turn_id）<br/>- outbox 补偿（失败可重试）"]
+    P3d["P3.4 Episode 构建（后台）<br/>- 规则：时间间隔 + 话题/参与者 + 重要度阈值<br/>- 输出：summary + evidence anchors"]
+    P3e["P3.5 核心记忆抽取（L3）<br/>- 稳定偏好/长期触发点（可回滚/可编辑）<br/>- 小而精（上下文预算）"]
+    P3f["P3.6 Embeddings（OpenAI-compatible）<br/>- 缓存/批量/超时/重试<br/>- 模型变更→重建索引"]
+    P3g["P3.7 索引与召回<br/>- FAISS：episode 向量索引（主）<br/>- FTS5（若可用）：关键词降级/补充召回"]
+    G3{{Gate#3<br/>- 重启后可回忆（持久化通过）<br/>- 单测覆盖：sqlite/markdown/index 读写<br/>- 性能不退化（检索耗时受控）}}
     P3a --> P3b --> P3c --> P3d --> P3e --> P3f --> P3g --> G3
   end
 
   G3 --> P4a
 
-  subgraph P4["Phase 4 检索编排（时间 + 语义召回）"]
+  %% Phase 4 技术点（检索编排：时间 + 语义/关键词）
+  %% - 时间词解析必须可控：优先选择可离线/可测试方案；输出明确的 time range + timezone
+  %% - 先时间过滤再语义召回：避免“语义命中但时间错位”
+  %% - 召回结果必须带证据：episode_id + turn_id/anchor；并限制注入大小（不刷屏）
+
+  subgraph P4["Phase 4 检索编排（时间范围推断 + 召回 + 重排 + 注入）"]
     direction TB
-    P4a["P4.1 时间词解析（写入+检索共用）<br/>- dateparser（中英相对时间）<br/>- 输出 unix time range（UTC）+ timezone（可选）"]
-    P4b["P4.2 时间范围→候选 episodes（两条时间轴）<br/>SQLite：优先按 scene_start/end overlap（提及时间）；缺失则按 episode_start/end overlap（对话时间）→ episode_ids"]
-    P4c["P4.3 语义召回（FAISS on episodes）<br/>SearchParameters + IDSelectorBatch(episode_ids)<br/>召回→重排（relevance+recency+importance + 角色一致性）"]
-    P4d["P4.4 展开到证据（不复制全量）<br/>- 从 top episodes 取：summary + 关键 turn 引用（最多 N 条）<br/>- evidence：turn_id/markdown_anchor 追溯到原文"]
-    P4e["P4.5 注入上下文（对齐角色扮演）<br/>- Core Memory：人设/稳定偏好/长期触发点（始终可见）<br/>- Recall Memory：按需回忆（不刷屏；以“场景/记忆群”为单位）<br/>- 访问回写：更新 last_accessed（用于 recency/巩固）"]
+    P4a["P4.1 时间词解析（写入+检索共用）<br/>- 评估方案：dateparser/规则/自定义<br/>- 输出：unix time range（UTC）+ timezone"]
+    P4b["P4.2 时间范围→候选 episodes（两条时间轴）<br/>优先 mentioned_time overlap（Scene）<br/>缺失则 turn_time overlap（Episode）"]
+    P4c["P4.3 语义/关键词召回（budget）<br/>- embeddings 可用：FAISS on episodes<br/>- embeddings 不可用：FTS5（若可用）关键词召回"]
+    P4d["P4.4 重排 & 证据展开<br/>- relevance + recency + importance + 角色一致性<br/>- 展开：summary + 少量 turn 引用"]
+    P4e["P4.5 注入上下文 + 回写<br/>- Core Memory 始终可见（小）<br/>- Recall Memory 按需（场景/记忆群）<br/>- 更新 last_accessed + 指标记录"]
     G4{{Gate#4（体验门禁）<br/>- 时间词查询命中率达标<br/>- 流式/GUI 无卡顿回归<br/>- 失败可降级（无向量/无图谱）}}
     P4a --> P4b --> P4c --> P4d --> P4e --> G4
   end
 
   G4 --> P5a
 
-  subgraph P5["Phase 5 L4 心智云图（Neo4j + Web 可视化）"]
+  %% Phase 5 技术点（L4：可选图谱，默认关闭）
+  %% - 图谱只索引“稳定关系/偏好/事件”，不承载每条 turn（避免噪声与爆炸）
+  %% - 抽取必须强约束：predicate 白名单 + confidence + 证据；实体归一化与去重合并
+  %% - Neo4j 不可用：写入进入 sqlite graph_queue，主链路无感继续
+
+  subgraph P5["Phase 5 L4 心智云图（Neo4j + 可视化；默认关闭）"]
     direction TB
-    P5a["P5.1 图谱 schema（Property Graph，面向角色扮演；L4 仅索引）<br/>Nodes: User/Agent/Entity/Scene（episode_id 索引节点）<br/>Scene props: episode_id/episode_start/end_unix + scene_start/end_unix? + summary_anchor?<br/>Edges（白名单）: PREFERS/DISLIKES/CARES_ABOUT/RELATES_TO/MENTIONED/CAUSED_BY<br/>Edge props: strength/confidence/first_seen_unix/last_seen_unix/evidence_episode_id/mentioned_time_start/end_unix?/trigger_emotion?"]
-    P5b["P5.2 Neo4j 本机连接策略（官方 driver）<br/>- 共享 Driver；每线程独立 Session（session 非线程安全）<br/>- execute_query（内置 retry）+ Query(timeout=...)<br/>- driver 级：connection_timeout/max_transaction_retry_time"]
-    P5c["P5.3 五元组提取（参考 NagaAgent，改造为本项目方向）<br/>- 输入单位：episode（记忆群/场景），不是逐条 turn（避免分支爆炸）<br/>- 输出: (sub, sub_type, pred, obj, obj_type) + confidence + evidence_episode_id + mentioned_time?(optional)<br/>- predicate 强约束：必须命中白名单，否则丢弃<br/>- 情绪线索：仅当可归结为“长期触发点/稳定偏好”才记录（trigger_emotion + 映射到白名单 predicate）<br/>- 触发门控：仅对“偏好/关系/承诺/事件/长期目标”抽取（避免闲聊噪声）<br/>- 结构化输出优先（JSON schema），不支持则回退 JSON 文本解析<br/>- 实体归一化：entity_map（我/主人/用户 等）+ 去重合并更新 strength"]
-    P5d["P5.4 异步写入（不阻塞聊天）<br/>- 写入 Neo4j 失败→SQLite graph_queue（降级不丢）<br/>- 后台 flush：指数退避重试 + 可暂停/可关闭"]
-    P5e["P5.5 心智云图可视化（仅规划，未来独立服务）<br/>Backend: FastAPI + REST(snapshot/neighborhood) + WebSocket(broadcast)<br/>Frontend: Vue.js 3 + Cytoscape.js<br/>WS 事件: graph_snapshot / graph_patch / selection_sync<br/>离线降级: 读取后端 snapshot（Neo4j down 也可查看）"]
-    P5f["P5.6 安全与隐私（规划）<br/>- 本机默认仅 localhost<br/>- 只读视图默认开启；写操作需显式开关<br/>- 过滤敏感字段（密钥/路径/内部日志）"]
+    P5a["P5.1 图谱 schema（Property Graph）<br/>Nodes: User/Agent/Entity/Scene(episode_id)<br/>Edges（白名单）+ evidence + 时间戳"]
+    P5b["P5.2 Neo4j 连接策略（官方 driver）<br/>- Driver 复用；Session 不跨线程<br/>- timeout/retry/断路器"]
+    P5c["P5.3 五元组抽取（episode 粒度）<br/>- 白名单 predicate + confidence<br/>- trigger_emotion（仅长期触发）<br/>- 去重合并/strength 更新"]
+    P5d["P5.4 异步写入（不阻塞聊天）<br/>- 失败→SQLite graph_queue<br/>- 后台 flush：退避重试/可暂停"]
+    P5e["P5.5 可视化（规划，独立服务）<br/>- 只读默认；localhost<br/>- snapshot/neighborhood API"]
     G5{{Gate#5（可选功能）<br/>- 默认关闭，不影响主链路<br/>- Neo4j 不可用时自动跳过}}
-    P5a --> P5b --> P5c --> P5d --> P5e --> P5f --> G5
+    P5a --> P5b --> P5c --> P5d --> P5e --> G5
   end
 
   G5 --> STAB
@@ -120,8 +158,8 @@ flowchart TD
 
   subgraph P6["Phase 6 切换&删旧（零残留）"]
     direction TB
-    P6a["P6.1 清空重建（已确认）<br/>- 新系统不读取旧 Chroma 数据<br/>- 可选脚本：删除 data/users/<id>/vectordb/long_term_memory（延后清理更安全）"]
-    P6b["P6.2 删除旧实现与配置键<br/>Serena+rg：legacy memory=0 引用<br/>并清理旧测试/脚本/数据文件（零残留）"]
+    P6a["P6.1 清空重建（已确认）<br/>- 新系统不读取旧 Chroma 数据<br/>- 可选脚本：删除旧 data/users/{id}/vectordb/long_term_memory（延后更安全）"]
+    P6b["P6.2 删除 legacy 实现与配置键<br/>Serena+rg：清理 legacy 引用<br/>并清理旧测试/脚本/数据文件（零残留）"]
     G6{{Gate#6（最终门禁）<br/>pytest/black/flake8/mypy 全绿<br/>+ GUI/流式/记忆回忆冒烟通过}}
     P6a --> P6b --> G6
   end
